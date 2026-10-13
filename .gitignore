@@ -1,0 +1,38 @@
+# deps / build
+node_modules/
+dist/
+dist-electron/
+dist-renderer/
+release/
+*.tsbuildinfo
+.vite/
+
+# bundled binaries (fetched by CI / first-run, never in git)
+resources/bin/
+*.exe
+
+# local config & secrets (user cookies must never be committed)
+.config.local.json
+config.local.json
+.env
+.env.*
+!.env.example
+
+# electron-builder / updater caches
+.cache/
+*.7z
+*.blockmap
+*.zip
+latest.yml
+
+# logs & local data
+*.log
+userData/
+download/
+Downloads/
+
+# editors / os
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
