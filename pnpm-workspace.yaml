@@ -1,0 +1,12 @@
+# Windows: pnpm 默认 isolated linker 在 peer 循环图上触发 symlink 栈溢出（本机 pnpm 11.22 实测）；
+# hoisted 与 npm 布局一致，electron-builder 兼容性最好。
+nodeLinker: hoisted
+allowBuilds:
+  # esbuild 平台二进制走 optionalDependencies（win32-x64 已就位）；
+  # install.js 兜底脚本在沙箱内 spawn 会 EPERM，明确关闭
+  esbuild: false
+  # electron-winstaller 仅打包 nsis 阶段需要（CI/发布机自然触发）；骨架期跳过
+  electron-winstaller: false
+minimumReleaseAgeExclude:
+  - electron@44.7.2
+storeDir: D:\dsh_store\.pnpm-store

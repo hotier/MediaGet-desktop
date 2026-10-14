@@ -1,0 +1,89 @@
+{
+  "name": "mediaget-desktop",
+  "productName": "即刻解析",
+  "version": "0.1.0",
+  "description": "「即刻解析」桌面客户端（Electron，Windows 首发）：解析 + 下载闭环，解析内核单一代码源来自 mediaGet。",
+  "main": "dist-electron/main/index.js",
+  "author": "hotier",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n main,renderer,electron \"npm:dev:main\" \"npm:dev:renderer\" \"npm:dev:electron\"",
+    "dev:main": "tsup --watch",
+    "dev:renderer": "vite",
+    "dev:electron": "wait-on tcp:127.0.0.1:5432 file:./dist-electron/main/index.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5432 electron .",
+    "build": "npm run build:app && electron-builder --win",
+    "build:app": "tsup && vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.9",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.2.0",
+    "cross-env": "^10.1.0",
+    "electron": "^44.7.2",
+    "electron-builder": "^26.0.12",
+    "eslint": "^9.39.0",
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.0",
+    "vite": "^7.3.7",
+    "vitest": "^3.2.7",
+    "wait-on": "^8.0.4"
+  },
+  "build": {
+    "appId": "cc.hotier.mediaget.desktop",
+    "productName": "即刻解析",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist-electron/**",
+      "dist-renderer/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bin",
+        "to": "bin",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "${productName}-Portable-${version}.${ext}"
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "hotier",
+      "repo": "mediaGet-desktop"
+    }
+  }
+}

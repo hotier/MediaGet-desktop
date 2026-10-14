@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 临时桥（§8 定稿 = @mediaget/parse-core 版本化工件）：parse-core 未发布前，
+      # 以并列检出 + 路径别名跑通内核冒烟；工件首发后按 electron/main/engine.ts
+      # 切换清单删除本步骤，并把依赖换成版本号（不再需要源码并列检出）。
+      - name: Checkout kernel (mediaGet, transitional physical link)
+        uses: actions/checkout@v4
+        with:
+          repository: hotier/mediaGet
+          path: ../mediaGet
+          # 内核 commit 锁：发 Release 时在此固定 tag；main 冒烟暴露上游腐化
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+
+      - name: Typecheck
+        run: pnpm run typecheck
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Test (vitest, offline)
+        run: pnpm run test
+
+  build-win:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout kernel (mediaGet, transitional physical link)
+        uses: actions/checkout@v4
+        with:
+          repository: hotier/mediaGet
+          path: ../mediaGet
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Fetch yt-dlp / ffmpeg binaries
+        run: |
+          mkdir -p resources/bin
+          curl -sL -o resources/bin/yt-dlp.exe https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
+          curl -sL -o resources/bin/ffmpeg.exe https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl/ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe
+          node -e "const {createHash}=require('crypto');const {createReadStream}=require('fs');for(const f of ['yt-dlp','ffmpeg']){const h=createHash('sha256');createReadStream('resources/bin/'+f+'.exe').on('data',d=>h.update(d)).on('end',()=>console.log(f,h.digest('hex')))}"
+      - name: Build app + installer
+        run: pnpm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mediaget-desktop-win
+          path: release/*
+          if-no-files-found: warn

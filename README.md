@@ -3,7 +3,8 @@
 「即刻解析」桌面客户端（Windows 首发）：基于 [mediaGet](https://github.com/hotier/mediaGet) 的视频解析能力，在本机完成**解析 + 下载**闭环。
 
 - 仓库定位：桌面客户端工程（Electron）。**解析内核不在本仓**——单一代码源留在 `mediaGet` 仓 `src/lib/**`，本仓通过 workspace 引用（见下文「内核耦合」）。
-- 状态：规划 / P0 前置阶段，尚无代码。
+- 状态：**P1 骨架已落地**（main/preload/renderer + core-adapter + IPC 契约 + 下载管理器 + 线上回落 + 边界 CI）。上游 P0 抽取未完成前：识别/黑名单/归一化/快手解析走本地真内核（import `mediaGet/src/lib/**`），其余平台解析经线上回落通道（「失败回落」决策）；无网络环境自动落 mock，结果来源（local/online/mock）在结果卡如实标注。
+- 开发前置：两仓并列检出（`../mediaGet` 与 `../mediaGet-desktop` 同级），tsconfig/tsup/vitest 已按 `@ → ../mediaGet/src` 配好路径别名（消费方式 A·物理链接）。
 
 ## 为什么要桌面版
 
@@ -75,9 +76,9 @@ mediaGet-desktop/
 | 3 | env 读取两级化 | Cookie 类 env 改为「`process.env` → 可注入配置对象」，桌面端用后者（用户自配、存本机） |
 | 4 | 统一入口确认 | `parse-handler.js` / `unified-parser.js` 无 route/Next 依赖，可直接作桌面统一解析入口 |
 
-消费方式（二选一，倾向 A）：
-- **A. monorepo 物理链接**：开发期两仓并列，desktop 的 `package.json` 以 `file:`/workspace 指向 `../mediaGet`，配合 `tsconfig` paths 解析 `@/lib/*`；
-- **B. 发布 npm 包**：mediaGet 侧把内核单独发 `@mediaGet/parse-core`（私有或 scoped public），desktop 按版本消费。分叉风险最低但多一道发布流程。
+消费方式（**已定稿，完整论证与同步流水线见 [docs/ARCHITECTURE.md §8](docs/ARCHITECTURE.md)**）：内核发布为 `@mediaget/parse-core` **版本化工件**，首发载体是 mediaGet GitHub Release 附带的 tarball（零注册表运维，semver 语义完整，CI `npm ci` 直连可用）。物理链接 `../mediaGet` 仅作本地联调临时桥，**提交态必须是版本化工件**。
+
+P0 工件尚未发布前，本仓 engine 用临时物理链接（识别/黑名单/归一化/快手解析真跑本地内核）+ 其余平台线上回落 + mock 兜底顶替；工件首发后的切换清单见 `electron/main/engine.ts` 头注释（4 步，一次 PR 完成）。
 
 ## 本地适配层职责（core-adapter）
 
@@ -115,11 +116,17 @@ mediaGet-desktop/
 - **法律** → 工具属性（用户自带链接/Cookie、不代为存储与分发内容），沿用站点 DMCA/免责框架；不分发任何服务端凭据。
 - **两仓分叉** → 铁律 1/2 + CI 冒烟：desktop CI 每次对 mediaGet 最新内核跑一组固定链接冒烟解析，接口腐化当天暴露。
 
-## 开发命令（P1 起生效）
+## 开发命令（P1 已生效）
+
+前置：两仓并列——`mediaGet` 检出到与本仓同级的 `../mediaGet`（tsconfig/tsup/vitest 的 `@` 别名指向 `../mediaGet/src`，消费方式 A·物理链接；CI 同构）。
 
 ```bash
-npm run dev        # vite renderer + electron 联调
+npm install        # ELECTRON_SKIP_BINARY_DOWNLOAD=1 可跳过二进制下载（CI 冒烟用）
+npm run dev        # vite renderer + tsup main/preload + electron 联调
 npm run build      # 产物 → release/（nsis + portable）
-npm run test       # vitest（适配层与下载器单测）
-npm run lint
+npm run test       # vitest（适配层、下载器、IPC、边界约束、回落通道——全离线）
+npm run typecheck  # tsc --noEmit
+npm run lint       # eslint（flat config）
 ```
+
+内核态速记：`MG_KERNEL_MODE=mock` 强制 mock（UI 联调）；默认 auto = 本地纯模块识别/快手解析 + 已开回落时线上补全；设置页可关回落。二进制（yt-dlp/ffmpeg）见 `resources/README.md`。
