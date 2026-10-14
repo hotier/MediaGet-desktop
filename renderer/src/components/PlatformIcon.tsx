@@ -4,6 +4,7 @@
  * 按 img 静态资源引用（与封面图同规），不做远程请求。
  */
 import { platformIconFile } from "../lib/platform-icon-map";
+import { cn } from "../lib/utils";
 
 export function PlatformIcon({
   platform,
@@ -16,7 +17,7 @@ export function PlatformIcon({
   if (!file) return null;
   return (
     <img
-      className={`p-icon ${className ?? ""}`}
+      className={cn("size-[15px] shrink-0 rounded-[3px] object-contain align-[-3px]", className)}
       src={`./logos/${file}`}
       alt=""
       aria-hidden="true"

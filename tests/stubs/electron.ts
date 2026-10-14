@@ -16,12 +16,22 @@ export const shell = {
   },
 };
 
+/**
+ * 让进程「看起来像」Electron 主进程：`process.versions.electron` 在纯 Node 测试环境是
+ * undefined，而 app:getMeta 契约要求它是字符串 —— 桩不补齐，dev 出参校验就会把这份
+ * 环境差异误报成契约漂移（真主进程永远有值）。
+ */
+(process.versions as Record<string, string | undefined>).electron ??= "44.0.0-test";
+
+
 const appListeners: Record<string, ((...a: unknown[]) => void)[]> = {};
 
 export const app = {
   requestSingleInstanceLock: () => true,
   setAppUserModelId: (_id: string) => {},
   getVersion: () => "0.0.0-test",
+  // headless 测试永远是「未打包」：自动更新的发布通道不该在测试里被挂载
+  isPackaged: false,
   getPath: (name: string) => {
     if (name === "userData") return process.env.MG_TEST_USERDATA || "/tmp/mg-userData";
     return "/tmp/mg-downloads";

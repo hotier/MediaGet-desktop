@@ -54,15 +54,21 @@ mediaGet-desktop/
 │  ├─ preload/
 │  │  └─ index.ts          # contextBridge 白名单 API（唯一渲染层入口）
 │  └─ builder/             # electron-builder 配置（nsis + portable）
-├─ renderer/               # Vite + React
-│  ├─ src/pages/           # 解析页 / 下载页 / 设置页 / 历史页
-│  ├─ src/components/      # 复用 mediaGet 的 utils 与部分展示组件
-│  └─ src/lib/bridge.ts    # 对 preload API 的类型化封装
+├─ renderer/               # Vite + Tailwind v4 + shadcn/ui + React
+│  ├─ src/pages/           # 解析页 / 下载页 / 设置页 / 历史页 / 首页
+│  ├─ src/components/      # 业务组件（ResultCard / QueueRail / PlatformIcon / Update）
+│  ├─ src/components/ui/   # vendored shadcn 基座 16 件（cva + Radix + cn）
+│  ├─ src/lib/bridge.ts    # 对 preload API 的类型化封装
+│  └─ src/lib/utils.ts     # cn()：clsx + tailwind-merge
+├─ components.json          # shadcn CLI 配置（alias `~/*` → renderer/src/*）
 ├─ core-adapter/           # 本地适配层（对解析内核的注入件）
 │  ├─ cache.ts             # 结果缓存：内存 LRU（替代 Cloudflare Cache API）
 │  ├─ analytics.ts         # no-op（替代 Turso 上报）
 │  ├─ config.ts            # env → userData 配置文件两级取值（Cookie / 开关）
 │  └─ ratelimit.ts         # 本地不限流 / 可配温和节流
+├─ types/
+│  ├─ ipc-contract.ts      # 载荷形状唯一声明处（zod）：每通道 in/out + CONTRACT/EVENTS 注册表
+│  └─ ipc.ts               # 通道常量 + MgBridge + z.infer 派生类型（零运行时，renderer/main 共用）
 └─ resources/              # yt-dlp.exe、ffmpeg.exe（git-lfs 或 CI 下载，不入库）
 ```
 
@@ -83,7 +89,9 @@ P0 工件尚未发布前，本仓 engine 用临时物理链接顶替：`await im
 
 **P0 进度（2026-10-14）**：mediaGet 侧步骤 1 **已全量落地**——解析内核依赖闭包（15 个 `src/lib` 模块 + `types/api` + `config/video-platforms` + `utils/filename`）迁入上游仓 `packages/parse-core/`（包名 `@mediaget/parse-core`，`src/index.ts` 为 exports 白名单入口），web 侧原路径改 re-export 薄壳、行为零变化（上游 1082 测试全绿 + `tsc --noEmit` 过）；余下 15 个平台的 route 内联解析逻辑逐字搬入 `packages/parse-core/src/lib/<platform>Core.js`，并新增 `parser-registry.js`（21 键覆盖识别面全平台）与 `unified-core.js`（`createUnifiedParser` / `unifiedParseLocal`）——web 的 `unified-parser.js` 退化为注入「kuaishou 纯函数 + platformRoutes 动态路由」的薄包装（保留中间件缓存/限流语义），桌面只引用核心的 `unifiedParseLocal` + `localParserKeys`，不再自维护平台解析器表。联机走线冒烟：21 个平台链接全部 `via=local`（B 站/YouTube 拿到真实标题与直链，抖音/西瓜/皮皮虾等返回各自平台的服务端错误文案）。本仓物理链接穿过薄壳照常消费（`@/lib/*` 路径不变），`tests/kernel-sync.test.ts` 守卫镜像与上游真源字段集合一致。剩余：上游步骤 2（CI tag → Release tarball 发布）、本仓步骤 3（切 `@mediaget/parse-core` 工件依赖，删 kernelAlias/并列检出）。
 
-**UI/UX 施工进度（2026-10-14，按 [docs/UIUX-HANDOFF.md](docs/UIUX-HANDOFF.md) 排序）**：更新横幅文案已修正为与 electron-updater 实际行为一致；P0 三层 Design Token 基座落地（`renderer/src/styles.css` 单文件，暗色默认 + light 覆盖）；P3/批量图集下载页按 `groupId` 聚合 + 折叠；P5 托盘 + 关窗最小化（`minimizeToTray` 设置项，下载中关窗不杀任务）；P4 结果卡补全（画质选择器消费 `qualities`/`videos[].qualities`、图集缩略网格 + 模态预览、`stat`/`avatar`/`music`/频道计数元数据行含 `statsUnreliable` 警告、`embedOnly` 浏览器打开、`fallbackReason` 折叠、缓存命中 chip、失败态重试、直链 5 分钟时效提示——零 IPC 变更）；P2 明暗主题接线（小契约 `AppSettings.theme`，`renderer/src/lib/theme.ts` 解析 system/dark/light 落 `data-theme`，设置页「外观」卡）；布局改左右分栏（侧栏导航带 `⌃1–4` 快捷键角标）；品牌图标全站统一（复用上游 `public/logos` 21 枚 SVG 至 `renderer/public/logos`，`PlatformIcon` 单点出口，解析墙/结果卡/下载/历史/设置体检五处同源）；交互升级（粘贴 600ms 自动解析 + 实时识别提示条、平台墙点选注入 `platformHint`、Ctrl+1–4/Ctrl+,/Ctrl+D/Esc L1 快捷键、解析中骨架屏 + spinner、三页空态引导、卡片/按钮质感打磨）。**Air 风格迁移已落地（2026-10-14，规范见 [docs/UIUX-DESIGN.md §7](docs/UIUX-DESIGN.md)）**：Tailwind v4 CSS-first 接入（`@theme inline` 桥接三层 Token）；高对比黑白灰基座 + 四区悬浮玻璃布局（侧栏 220 / 顶栏 60 全局粘贴入口 Ctrl+K / 主内容 16px 间距 / 底部任务控制条 80——App 层订阅 `onProgress/onDone/onError` 跨页存活，封面模糊背景 400ms 交叉淡入 + 下载中 20s 呼吸缩放）；动态魔法色（`renderer/src/lib/accent.ts`：缩略图 32×32 主色提取、HSL 亮度钳位、`@property --accent-color` 400ms 过渡、`--accent-ink` 按亮度翻转，零 IPC 变更）。剩余：P6 完整自动更新 UI、真实 tray 图标资产。
+**UI/UX 施工进度（2026-10-14，按 [docs/UIUX-HANDOFF.md](docs/UIUX-HANDOFF.md) 排序）**：更新横幅文案已修正为与 electron-updater 实际行为一致；P0 三层 Design Token 基座落地（`renderer/src/styles.css` 单文件，暗色默认 + light 覆盖）；P3/批量图集下载页按 `groupId` 聚合 + 折叠；P5 托盘 + 关窗最小化（`minimizeToTray` 设置项，下载中关窗不杀任务）；P4 结果卡补全（画质选择器消费 `qualities`/`videos[].qualities`、图集缩略网格 + 模态预览、`stat`/`avatar`/`music`/频道计数元数据行含 `statsUnreliable` 警告、`embedOnly` 浏览器打开、`fallbackReason` 折叠、缓存命中 chip、失败态重试、直链 5 分钟时效提示——零 IPC 变更）；P2 明暗主题接线（小契约 `AppSettings.theme`，`renderer/src/lib/theme.ts` 解析 system/dark/light 落 `data-theme`，设置页「外观」卡）；布局改左右分栏（侧栏导航带 `⌃1–4` 快捷键角标）；品牌图标全站统一（复用上游 `public/logos` 21 枚 SVG 至 `renderer/public/logos`，`PlatformIcon` 单点出口，解析墙/结果卡/下载/历史/设置体检五处同源）；交互升级（粘贴 600ms 自动解析 + 实时识别提示条、平台墙点选注入 `platformHint`、Ctrl+1–4/Ctrl+,/Ctrl+D/Esc L1 快捷键、解析中骨架屏 + spinner、三页空态引导、卡片/按钮质感打磨）。**Air 风格迁移已落地（2026-10-14，规范见 [docs/UIUX-DESIGN.md §7](docs/UIUX-DESIGN.md)）**：Tailwind v4 CSS-first 接入（`@theme inline` 桥接三层 Token）；高对比黑白灰基座 + 三区悬浮玻璃布局（侧栏 220 / 顶栏 60 全局粘贴入口 Ctrl+K / 主内容 16px 间距；App 层仍订阅 `onProgress/onDone/onError` 供首页队列摘要跨页存活，但进度与暂停/继续/取消只在队列页呈现——2026-10-14 业主决策移除底部任务控制条，见 [docs/UIUX-HANDOFF.md](docs/UIUX-HANDOFF.md) §6）；动态魔法色（`renderer/src/lib/accent.ts`：缩略图 32×32 主色提取、HSL 亮度钳位、`@property --accent-color` 400ms 过渡、`--accent-ink` 按亮度翻转，零 IPC 变更）。剩余：真实 tray 图标资产。
+
+**P6 自动更新已落地（2026-10-14）**：`electron/main/updater.ts` 把 electron-updater 的离散事件收敛成单一 `UpdateState` 快照（idle/checking/up-to-date/available/downloading/downloaded/error/unsupported）；契约面新增四个 invoke channel（`update:state` / `update:check` / `update:download` / `update:install`）与 `app:updateState` 事件，替换原先只带一个版本号的 `app:updateAvailable`。`autoDownload` 显式关闭（更新包几十 MB，不该静默吃用户的家庭带宽），下载由横幅按钮触发，`autoInstallOnAppQuit` 保持开；横幅按阶段给真实文案与动作（发现新版本→下载、下载中→进度条、已下载→立即重启、失败→重试），设置页新增「更新」卡承载主动检查。未打包运行（dev / headless 测试）如实报 `unsupported` 并隐藏检查入口，不假装有更新源。端到端实测前置：先在 GitHub Releases 发布带 `latest.yml` 的版本。
 
 ## 本地适配层职责（core-adapter）
 
@@ -103,7 +111,9 @@ P0 工件尚未发布前，本仓 engine 用临时物理链接顶替：`await im
 - **失败回落**：本地解析失败可选回落线上 API（站点有 24h 结果缓存兜底），兼顾住宅 IP 高成功率与最坏情况。
 - **直链时效**：解析结果到下载启动的窗口以秒计——UI 上「下载」按钮直接触发主进程流式落盘，不做「先展示直链让用户点」的二跳。
 - **更新**：`electron-updater` + GitHub Releases；无签名证书阶段接受 SmartScreen 提示，后续补签。
-- **依赖基线（2026-10-14 修订）**：runtime 依赖从"零新增"放宽为**仅允许已评审的 headless 原语与图标包**——白名单：`@radix-ui/react-dialog` / `@radix-ui/react-select` / `@radix-ui/react-switch` / `@radix-ui/react-toast` / `lucide-react`（一次提完、lockfile 单 commit、CI 验证）。禁止：Tailwind / shadcn / framer-motion / tanstack 全家桶等绑架设计系统或样式范式的包。理由：模态/combobox/toast 的自研无障碍成本（1–2 天/件且易错）大于 headless 原语的供应链成本；Electron 安装包体积下 ~30KB 组件无感。样式仍走 [docs/UIUX-DESIGN.md](docs/UIUX-DESIGN.md) §5.2 的三层 CSS Token。
+- **依赖基线（2026-10-14 第三次修订：对 UI 框架不设限）**：此前两轮是"零新增 → headless 白名单（Radix dialog/select/switch/toast + lucide-react，禁 Tailwind/shadcn/framer-motion/tanstack）"，现**取消全部组件库/样式范式/动画库/路由的禁令**，按需引入。仍然有效的只有两条：① CSP `default-src 'self'` 禁远程字体 / icon font / 外链 SVG（技术边界，与选库无关）；② 新增 runtime 依赖与 `pnpm-lock.yaml` 同 commit 提交，并过 `typecheck`/`lint`/`test` 验收门。当前 runtime 依赖：react / react-dom / zod / electron-updater / lucide-react + **shadcn 基线**（`class-variance-authority` / `clsx` / `tailwind-merge` / `tw-animate-css` + 11 个 `@radix-ui/*`：checkbox、dialog、label、progress、radio-group、select、separator、slot、switch、tooltip），dev 侧 `tailwindcss@4` + `@tailwindcss/vite`。**shadcn/ui 已于 2026-10-14 落地为渲染层基线**（[docs/UIUX-DESIGN.md](docs/UIUX-DESIGN.md) §8：`components.json` + `renderer/src/components/ui/` 16 件 vendored 组件 + `@theme inline` 把层 2 Token 桥成 shadcn 语义 utility）。代价如实记账：renderer 产物 272.64 kB/gzip 86.42 → **448.85 kB/gzip 145.26**；zod 仍不进 renderer 包（`boundaries.test.ts` 铁律 3 守着）。样式语义真源仍是 [docs/UIUX-DESIGN.md](docs/UIUX-DESIGN.md) §5.2 三层 CSS Token。业主同日进一步指令「**都放宽，按照 Motrix 的 UI 设计框架和理念，不要给自己设限**」，为冷灰工具风写的三条审美禁令（不用玻璃、单一高程、不上浮缩放）随之解除：`tests/style-discipline.test.ts` 放宽为三条与选库无关的工程断言（hex 只在层 1 色板、消费的 CSS 变量必须已声明、不残留 `--air-*`），阴影层级与动效交由组件库主题决定。
+- **UI 基线 = shadcn/ui + Tailwind v4 + Radix（2026-10-14，对标 Motrix v2）**：渲染层从 1609 行自绘 `styles.css` 迁到组件库，组件样式写在 JSX 的 utility 里，CSS 只剩三层 Token 与少数无法 utility 化的全局（约 300 行）。语义映射钉死在蓝图 §8.3——**shadcn 的 `primary` 是本 App 的动态魔法色（封面主色），`accent` 是中性 hover 底，`muted` 是次级表面**，三者不可望文生义；色彩真源仍在层 1 色板。选型理由不是"流行"，而是与对标项目同栈后可以直接借用它的信息架构与组件行为，并让 Radix 接管焦点管理、Esc、ARIA 这些我们此前手写的部分。ui.shadcn.com 本机不可达，故组件源码 vendored 入仓由我们维护。
+- **IPC 契约（2026-10-14 单一真源改造）**：载荷形状只在 `types/ipc-contract.ts` 用 zod 声明一次，`types/ipc.ts` 以 `import type` + `z.infer` 派生并保持**零运行时**（否则整层 schema 会被打进 renderer 包）。主进程按 `CONTRACT` 注册表统一校验入参，dev 构建额外校验出参（漂移报 `contract-drift`，打包版不付这个代价）。理由：interface 与 zod 段各写一遍时两份会静默背离，用户侧只表现为结果卡少个字段、无人报错；`tests/contract.test.ts` 把「漏登记通道」也变成当天红叉。对标 Motrix v2 的契约层做法。
 
 ## 里程碑
 

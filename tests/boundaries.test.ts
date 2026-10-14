@@ -2,7 +2,9 @@
  * 依赖边界校验（docs/ARCHITECTURE.md §1 三条硬约束，"CI 应校验"的可执行化）：
  * 1. renderer/** 不得出现 @/lib（服务端解析层）——只能经 IPC
  * 2. 全仓不得 import mediaGet src/app/api/**（route 层属于线上服务）
- * 3. 跨进程共享类型只从 types/ipc.ts 取（renderer/main 不各自复制信封）
+ * 3. 跨进程共享类型只从 types/ipc.ts 取（renderer/main 不各自复制信封）；
+ *    契约的 zod schema 真源 types/ipc-contract.ts 只随主进程走 —— renderer 里
+ *    出现 zod 或 ipc-contract 的值 import，就意味着 schema 整层被打包进渲染进程。
  */
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -66,6 +68,22 @@ describe("铁律 3：IPC 类型单一真源", () => {
   it("preload 不暴露 ipcRenderer 原样（白名单只经 mg 对象）", () => {
     const preload = readFileSync(join(ROOT, "electron/preload/index.ts"), "utf8");
     expect(preload).not.toMatch(/exposeInMainWorld\(\s*["']ipcRenderer/);
+  });
+
+  it("renderer 不引 zod 运行时：入参校验只属主进程，ipc.ts 必须零运行时", () => {
+    // types/ipc.ts 用 `import type` 从 ipc-contract 派生类型；一旦有人写成值 import，
+    // 整个 schema 层就会被 vite 打进 renderer 包（272KB → +zod），且边界从此双向耦合。
+    const files = walk(join(ROOT, "renderer"), isSource);
+    files.push(join(ROOT, "types", "ipc.ts"));
+    for (const f of [...new Set(files)]) {
+      const src = readFileSync(f, "utf8");
+      expect(src, `${relative(ROOT, f)} 里有 zod 值 import`).not.toMatch(
+        /^\s*import\s+(?!type\s)[^;]*from\s+["']zod["']/m
+      );
+      expect(src, `${relative(ROOT, f)} 里有 ipc-contract 值 import`).not.toMatch(
+        /^\s*import\s+(?!type\s)[^;]*from\s+["'][^"']*ipc-contract["']/m
+      );
+    }
   });
 });
 

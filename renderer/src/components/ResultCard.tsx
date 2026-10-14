@@ -1,28 +1,43 @@
 /**
- * 结果卡：媒体信息 + 「下载」直达（点下载 = IPC 入队主进程流式落盘，
- * 直链本身不呈现给用户点选 —— README「直链时效」决策）。
+ * 结果卡：三层结构（信息层 / 选择层 / 下载清单层），样式走 shadcn + Tailwind utility。
  *
- * P4 补全（docs/UIUX-DESIGN §2.1）：全部消费契约里已有、此前渲染层漏读的字段 ——
- * qualities / videos[].qualities、images 网格、stat/avatar/music/creator 元数据、
- * embedOnly、fallbackReason 折叠、缓存命中、失败重试、直链 5 分钟时效。零 IPC 变更。
+ * 契约依据 docs/ARCHITECTURE.md §3，字段消费见 docs/UIUX-DESIGN.md §2.1。
+ * 「点下载 = IPC 入队主进程流式落盘」，直链本身不呈现给用户点选
+ * （README「直链时效」决策）。
+ *
+ * 三层各自的职责边界：
+ *  - 信息层：封面/标题/平台/作者/统计/音乐 —— 只读，帮用户确认「解析到的是不是这个东西」；
+ *  - 选择层：清晰度 —— 改它只改下载计划，不被队列状态锁死；
+ *  - 下载清单层：将要落盘的每一项（带勾选与回落标注），主按钮文案由它生成。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
 import { api } from "../lib/bridge";
-import type { AppMeta, DownloadItem, ParsedVideoQuality, ParseRunOutcome } from "../../../types/ipc";
+import { buildPlan, buildQualityPlan, summarize } from "../lib/download-plan";
+import { fmtCount } from "../lib/format";
+import { buildAuthorSnapshot } from "../lib/work-info";
+import type { AppMeta, ParseRunOutcome } from "../../../types/ipc";
 import { PlatformIcon } from "./PlatformIcon";
+import { Button } from "./ui/button";
+import { Badge } from "./ui/badge";
+import { Card, CardContent } from "./ui/card";
+import { Checkbox } from "./ui/checkbox";
+import { Alert, AlertDescription } from "./ui/alert";
+import { Separator } from "./ui/separator";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
 
 /** 直链时效：超过 5 分钟内核给的直链大概率已过期（README「分钟级」） */
 const LINK_TTL_MS = 5 * 60 * 1000;
 
-interface QualityOption {
-  label: string;
-  /** qualities[].url；null = 用内核给的主 data.url */
-  url: string | null;
-  /** 文件名后缀（'' = 不加） */
-  suffix: string;
-  /** 音频项：并入单项下载而非替代主视频 */
-  audio?: boolean;
-}
+/** 超过这个条数就默认折叠，避免图集/多 P 把整屏占掉 */
+const PLAN_COLLAPSE_AT = 3;
 
 export function ResultCard({
   outcome,
@@ -36,14 +51,17 @@ export function ResultCard({
   /** 用户输入的分享链接（写历史用，非直链） */
   sourceUrl?: string;
   onQueued: (count: number) => void;
-  /** 失败态 [重试]：由页面重新发起解析 */
+  /** 失败态 [重试] / 直链过期后 [重新解析并下载]：由页面重新发起解析 */
   onRetry?: () => void;
 }): React.ReactElement {
   const { result, via, fallbackReason, durationMs } = outcome;
   const data = result.data;
   const [queued, setQueued] = useState(false);
   const [err, setErr] = useState("");
-  const [qualityIdx, setQualityIdx] = useState(0);
+  /** null = 还没手选，用内核主直链对应档位（SSR 与首帧都走这条，不等 effect 纠正） */
+  const [qualityIdx, setQualityIdx] = useState<number | null>(null);
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [planOpen, setPlanOpen] = useState(false);
   const [previewIdx, setPreviewIdx] = useState<number | null>(null);
   const [reasonOpen, setReasonOpen] = useState(false);
 
@@ -54,268 +72,365 @@ export function ResultCard({
     const startedAt = Date.now();
     const timer = setInterval(() => setResultAge(Date.now() - startedAt), 15_000);
     return () => clearInterval(timer);
-  }, [outcome]);
+  }, [outcome, result.code]);
   const linkAged = resultAge >= LINK_TTL_MS;
+
+  // 新一轮解析 = 全新卡片状态：队列锁、勾选、清晰度、计龄都不该带过来。
+  // 依赖只写 outcome：清晰度切换会重算 plan，那时不能把用户的勾选与队列提示清掉。
+  useEffect(() => {
+    setQueued(false);
+    setErr("");
+    setQualityIdx(null);
+    setExcluded(new Set());
+    setResultAge(0);
+    // 短清单（≤3 项）摊开，长清单（图集/多 P）折叠 —— 结果卡不许吃掉整屏
+    const fresh = buildQualityPlan(data);
+    setPlanOpen(buildPlan(data, fresh.options[fresh.primaryIndex]).length <= PLAN_COLLAPSE_AT);
+  }, [outcome, data]);
+
+  const qualityPlan = useMemo(() => buildQualityPlan(data), [data]);
+  const qualityOptions = qualityPlan.options;
+  const activeIdx = Math.min(qualityIdx ?? qualityPlan.primaryIndex, Math.max(0, qualityOptions.length - 1));
+  const plan = useMemo(
+    () => buildPlan(data, qualityOptions[activeIdx]),
+    [data, qualityOptions, activeIdx]
+  );
+  const selected = useMemo(() => plan.filter((p) => !excluded.has(p.id)), [plan, excluded]);
 
   const platformName = useMemo(() => {
     if (!result.platform) return "";
     return meta?.platforms.find((p) => p.key === result.platform)?.name ?? result.platform;
   }, [meta, result.platform]);
 
-  const qualityOptions = useMemo<QualityOption[]>(() => {
-    const opts: QualityOption[] = (data?.qualities ?? []).map((q: ParsedVideoQuality) => ({
-      label: q.label || `${q.quality}P`,
-      url: q.url,
-      suffix: `-${q.label || `${q.quality}P`}`,
-    }));
-    if (data?.url) opts.unshift({ label: data.qualityLabel || "默认", url: null, suffix: "" });
-    if (data?.audioUrl) opts.push({ label: "仅音频", url: data.audioUrl, suffix: "", audio: true });
-    return opts;
-  }, [data]);
-
-  const items = useMemo<DownloadItem[]>(() => {
-    if (!data || result.code !== 200) return [];
-    const list: DownloadItem[] = [];
-    const title = data.title || data.desc || data.name || "media";
-    const sel = qualityOptions[qualityIdx];
-    // 主视频 / 音乐：按选中清晰度取直链（契约 qualities），无 qualities 时用主 url
-    if (sel && !sel.audio) {
-      const url = sel.url ?? data.url;
-      if (url) list.push({ url, filename: `${title}${sel.suffix}.mp4`, kind: "video" });
-    }
-    if (data.audioUrl && (!sel || sel.audio)) {
-      list.push({ url: data.audioUrl, filename: `${title}.mp3`, kind: "audio" });
-    }
-    // 多分P（bilibili 等）：按选中清晰度的 label 在同 label 项里取对应画质，取不到回落该 P 默认
-    for (const [i, v] of (data.videos ?? []).entries()) {
-      const byLabel = sel?.suffix && sel.url !== null
-        ? v.qualities?.find((q) => (q.label || `${q.quality}P`) === sel.suffix.slice(1))
-        : undefined;
-      const url = byLabel?.url ?? v.url;
-      if (url) list.push({ url, filename: `${title}-P${i + 1}.mp4`, kind: "video" });
-    }
-    // 图集（小红书/微博图文）：整组入队
-    for (const [i, img] of (data.images ?? []).entries()) {
-      if (img) list.push({ url: img, filename: `${title}-${i + 1}.jpg`, kind: "image" });
-    }
-    return list;
-  }, [result, data, qualityOptions, qualityIdx]);
-
-  // Ctrl+D = 下载全部（结果卡可见时，§3.4 L1）；Esc 关图片模态
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && previewIdx !== null) {
-        setPreviewIdx(null);
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "d") {
-        if (items.length > 0 && !queued) {
-          e.preventDefault();
-          void downloadAll();
-        }
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [items, queued, previewIdx]);
-
-  if (result.code !== 200) {
-    return (
-      <div className="card">
-        <div className="card-title">解析失败</div>
-        <p>
-          {result.msg}
-          {result.failType && <span className="chip warn">{result.failType}</span>}
-        </p>
-        {fallbackReason && <p className="hint">回落原因：{fallbackReason}</p>}
-        <div className="download-row">
-          {onRetry && (
-            <button onClick={onRetry}>重试</button>
-          )}
-          <ViaChip via={via} />
-          <span>{fmtDuration(durationMs)}</span>
-        </div>
-      </div>
-    );
-  }
-
-  async function downloadAll(): Promise<void> {
+  async function enqueue(): Promise<void> {
     setErr("");
-    if (items.length === 0) {
+    if (selected.length === 0) {
       onQueued(0);
       return;
     }
     try {
       await api.download.enqueue({
-        items,
+        items: selected.map((p) => ({
+          url: p.url,
+          filename: p.filename,
+          kind: p.kind,
+        })),
         meta: {
           platform: result.platform,
           title: data?.title ?? data?.desc,
           sourceUrl,
+          author: buildAuthorSnapshot(data),
         },
       });
       setQueued(true);
-      onQueued(items.length);
+      onQueued(selected.length);
     } catch (e) {
       setErr(String(e instanceof Error ? e.message : e));
     }
   }
 
+  /** 直链已过期：先重新解析，新结果到手自动入队（按钮说的就是它做的事） */
+  const reparseQueueRef = useRef(false);
+  function reparseThenDownload(): void {
+    reparseQueueRef.current = true;
+    onRetry?.();
+  }
+  useEffect(() => {
+    if (!reparseQueueRef.current) return;
+    reparseQueueRef.current = false;
+    if (result.code === 200 && plan.length > 0) void enqueue();
+  }, [outcome, result.code, plan, selected]);
+
+  // Ctrl+D = 下载全部（结果卡可见时，§3.4 L1）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "d") {
+        if (selected.length > 0) {
+          e.preventDefault();
+          void enqueue();
+        }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selected, plan, result.code]);
+
+  if (result.code !== 200) {
+    return (
+      <Card>
+        <CardContent className="flex flex-col gap-3 py-4">
+          <h2 className="font-semibold text-[15px]">解析失败</h2>
+          <p className="flex flex-wrap items-center gap-2 text-sm">
+            {result.msg}
+            {result.failType && <Badge variant="warn">{result.failType}</Badge>}
+          </p>
+          {fallbackReason && <p className="text-xs text-muted-foreground">回落原因：{fallbackReason}</p>}
+          <div className="flex flex-wrap items-center gap-2">
+            {onRetry && (
+              <Button size="sm" variant="outline" onClick={onRetry}>
+                重试
+              </Button>
+            )}
+            <ViaBadge via={via} />
+            <span className="text-xs tabular-nums text-muted-foreground">{fmtDuration(durationMs)}</span>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   const images = (data?.images ?? []).filter(Boolean);
   const stats = buildStatItems(data);
+  const planSummary = summarize(selected);
 
   return (
-    <div className="card result">
-      <div className="result-head">
-        {data?.cover && <img className="cover" src={data.cover} alt="" referrerPolicy="no-referrer" />}
-        <div className="result-info">
-          <div className="card-title">{data?.title || data?.desc || "（无标题）"}</div>
-          <div className="meta-lines">
-            {platformName && (
-              <span className="chip chip-icon">
-                <PlatformIcon platform={result.platform} />
-                {platformName}
-              </span>
+    <>
+      <Card>
+        <CardContent className="flex flex-col gap-4 py-4">
+          {/* —— 信息层 —— */}
+          <div className="flex gap-4">
+            {data?.cover && (
+              <img
+                src={data.cover}
+                alt=""
+                referrerPolicy="no-referrer"
+                className="aspect-video w-40 shrink-0 rounded-md border border-border object-cover"
+              />
             )}
-            {data?.author && (
-              <span className="author">
-                {data.avatar && <img className="avatar" src={data.avatar} alt="" referrerPolicy="no-referrer" />}
-                @{data.author}
-              </span>
-            )}
-            {typeof data?.duration === "number" && data.duration > 0 && (
-              <span>{Math.round((data.duration > 100000 ? data.duration / 1000 : data.duration))}s</span>
-            )}
-            {data?.type && <span className="chip">{data.type}</span>}
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              <h2 className="truncate font-semibold text-[15px]">{data?.title || data?.desc || "（无标题）"}</h2>
+              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                {platformName && (
+                  <Badge variant="outline" className="gap-1.5 ps-1">
+                    <PlatformIcon platform={result.platform} />
+                    {platformName}
+                  </Badge>
+                )}
+                {data?.author && (
+                  <span className="inline-flex items-center gap-1.5">
+                    {data.avatar && (
+                      <img
+                        src={data.avatar}
+                        alt=""
+                        referrerPolicy="no-referrer"
+                        className="size-4 rounded-full object-cover"
+                      />
+                    )}
+                    @{data.author}
+                  </span>
+                )}
+                {typeof data?.duration === "number" && data.duration > 0 && (
+                  <span className="tabular-nums">
+                    {Math.round((data.duration > 100000 ? data.duration / 1000 : data.duration))}s
+                  </span>
+                )}
+                {data?.type && <Badge variant="secondary">{typeLabel(data.type)}</Badge>}
+              </div>
+              {stats.length > 0 && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs tabular-nums text-muted-foreground">
+                  {stats.map((s) => (
+                    <span key={s.label}>
+                      {s.label} {s.value}
+                    </span>
+                  ))}
+                  {data?.statsUnreliable && (
+                    <Badge variant="warn" className="gap-1">
+                      <AlertTriangle />
+                      数据可能不准
+                    </Badge>
+                  )}
+                </div>
+              )}
+              {(data?.music?.author || data?.core) && (
+                <p className="text-xs text-muted-foreground">
+                  {data.music?.author && `♪ ${data.music.author}${data.music.title ? ` - ${data.music.title}` : ""}`}
+                  {data.core && (data.music?.author ? ` · 高潮片段 ${data.core}` : `高潮片段 ${data.core}`)}
+                </p>
+              )}
+            </div>
           </div>
-          {stats.length > 0 && (
-            <div className="meta-lines num">
-              {stats.map((s) => (
-                <span key={s.label}>
-                  {s.label} {s.value}
-                </span>
+
+          {data?.desc && data.desc !== data.title && (
+            <p className="line-clamp-3 text-xs leading-relaxed text-muted-foreground">{data.desc}</p>
+          )}
+
+          {images.length > 0 && (
+            <ul className="grid grid-cols-4 gap-2">
+              {images.slice(0, 8).map((src, i) => (
+                <li key={i}>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewIdx(i)}
+                    aria-label={`查看第 ${i + 1} 张图`}
+                    className="relative block aspect-square w-full overflow-hidden rounded-md border border-border outline-none transition-all hover:border-ring hover:shadow-sm focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  >
+                    <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" className="size-full object-cover" />
+                    {i === 7 && images.length > 8 && (
+                      <span className="absolute inset-0 flex items-center justify-center bg-[var(--overlay)] text-sm font-medium text-popover-foreground">
+                        +{images.length - 8}
+                      </span>
+                    )}
+                  </button>
+                </li>
               ))}
-              {data?.statsUnreliable && (
-                <span className="chip warn" title="该平台统计接口不保证准确">⚠︎ 数据可能不准</span>
-              )}
+            </ul>
+          )}
+
+          {/* —— 选择层：清晰度（队列状态不锁它，换清晰度是为了再下一份）—— */}
+          {qualityOptions.length > 1 && (
+            <div className="flex flex-wrap items-center gap-2" role="group" aria-label="选择清晰度">
+              <span className="text-xs text-muted-foreground">清晰度</span>
+              {qualityOptions.map((q, i) => (
+                <Button
+                  key={`${q.label}-${i}`}
+                  size="sm"
+                  variant={i === activeIdx ? "default" : "outline"}
+                  aria-pressed={i === activeIdx}
+                  className="h-7 rounded-full px-3 text-xs"
+                  onClick={() => setQualityIdx(i)}
+                >
+                  {q.label}
+                </Button>
+              ))}
             </div>
           )}
-          {(data?.music?.author || data?.core) && (
-            <div className="hint">
-              {data.music?.author && `♪ ${data.music.author}${data.music.title ? ` - ${data.music.title}` : ""}`}
-              {data.core && (data.music?.author ? ` · 高潮片段 ${data.core}` : `高潮片段 ${data.core}`)}
-            </div>
-          )}
-        </div>
-      </div>
 
-      {data?.desc && data.desc !== data.title && <p className="desc">{data.desc}</p>}
-
-      {qualityOptions.length > 1 && (
-        <div className="quality-select" role="radiogroup" aria-label="选择清晰度">
-          {qualityOptions.map((q, i) => (
+          {/* —— 下载清单层：点之前就知道会得到什么 —— */}
+          <Separator />
+          <div className="flex flex-col gap-2">
             <button
-              key={`${q.label}-${i}`}
-              className={`chip-btn${i === qualityIdx ? " on" : ""}`}
-              role="radio"
-              aria-checked={i === qualityIdx}
-              onClick={() => setQualityIdx(i)}
-              disabled={queued}
+              type="button"
+              onClick={() => setPlanOpen((v) => !v)}
+              aria-expanded={planOpen}
+              disabled={plan.length === 0}
+              className="flex items-center gap-2 self-start text-sm outline-none disabled:opacity-50 focus-visible:ring-[3px] focus-visible:ring-ring/50"
             >
-              {q.label}
+              <span className="font-medium">下载清单</span>
+              <span className="text-xs tabular-nums text-muted-foreground">
+                {selected.length === 0 ? "未选择任何文件" : planSummary}
+                {selected.length !== plan.length && `（已排除 ${plan.length - selected.length}）`}
+              </span>
+              {planOpen ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
             </button>
-          ))}
-        </div>
-      )}
-
-      {images.length > 0 && (
-        <ul className="img-grid">
-          {images.slice(0, 8).map((src, i) => (
-            <li key={i}>
-              <button
-                className="img-thumb"
-                onClick={() => setPreviewIdx(i)}
-                aria-label={`查看第 ${i + 1} 张图`}
-              >
-                <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" />
-                {i === 7 && images.length > 8 && <span className="more">+{images.length - 8}</span>}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="download-row">
-        {data?.embedOnly ? (
-          <a className="primary-link" href={data.embedUrl ?? data.url ?? "#"} target="_blank" rel="noreferrer">
-            ↗ 在浏览器中打开播放
-          </a>
-        ) : (
-          <button className="primary" onClick={() => void downloadAll()} disabled={queued || items.length === 0}>
-            {queued
-              ? "已加入队列 ✓"
-              : linkAged
-                ? "重新解析并下载"
-                : items.length > 1
-                  ? `下载全部（${items.length}）`
-                  : items.length === 1
-                    ? "下载"
-                    : "无可下载文件"}
-          </button>
-        )}
-        {linkAged && !queued && <span className="hint">直链可能已过期，重新解析后再下载</span>}
-        {!data?.embedOnly && data?.embedUrl && !data.url && !data.videos?.length && (
-          <a className="linkish" href={data.embedUrl} target="_blank" rel="noreferrer">
-            ↗ 官方播放页
-          </a>
-        )}
-      </div>
-      {err && <div className="banner error">{err}</div>}
-
-      <div className="via-line">
-        <ViaChip via={via} />
-        <span>{fmtDuration(durationMs)}</span>
-        {via === "local" && durationMs < 50 && <span className="chip">缓存命中</span>}
-        {fallbackReason && (
-          <span className="expand">
-            <button className="linkish" onClick={() => setReasonOpen((v) => !v)}>
-              {reasonOpen ? "收起" : "为什么走了线上？"}
-            </button>
-            {reasonOpen && <span className="hint">{fallbackReason}</span>}
-          </span>
-        )}
-      </div>
-
-      {previewIdx !== null && images[previewIdx] && (
-        <div
-          className="img-modal"
-          role="dialog"
-          aria-modal="true"
-          aria-label={`图片预览 ${previewIdx + 1}/${images.length}`}
-          onClick={() => setPreviewIdx(null)}
-        >
-          <img
-            className="img-full"
-            src={images[previewIdx]}
-            alt=""
-            referrerPolicy="no-referrer"
-            onClick={(e) => e.stopPropagation()}
-          />
-          <div className="img-modal-bar" onClick={(e) => e.stopPropagation()}>
-            <span className="hint">
-              {previewIdx + 1} / {images.length}
-            </span>
-            <div className="ops">
-              {previewIdx > 0 && <button onClick={() => setPreviewIdx(previewIdx - 1)}>上一张</button>}
-              {previewIdx < images.length - 1 && (
-                <button onClick={() => setPreviewIdx(previewIdx + 1)}>下一张</button>
-              )}
-              <button onClick={() => setPreviewIdx(null)}>关闭</button>
-            </div>
+            {planOpen && (
+              <ul className="flex flex-col gap-1.5">
+                {plan.map((p) => (
+                  <li key={p.id} className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      id={p.id}
+                      checked={!excluded.has(p.id)}
+                      onCheckedChange={() =>
+                        setExcluded((prev) => {
+                          const next = new Set(prev);
+                          if (next.has(p.id)) next.delete(p.id);
+                          else next.add(p.id);
+                          return next;
+                        })
+                      }
+                    />
+                    <label htmlFor={p.id} className="flex min-w-0 flex-1 items-center gap-2">
+                      <span className="shrink-0 text-xs text-muted-foreground">{p.label}</span>
+                      <span className="min-w-0 flex-1 truncate font-mono text-xs" title={p.filename}>
+                        {p.filename}
+                      </span>
+                      {p.fallbackNote && <Badge variant="warn">{p.fallbackNote}</Badge>}
+                    </label>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
-        </div>
-      )}
-    </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            {data?.embedOnly ? (
+              <Button asChild>
+                <a href={data.embedUrl ?? data.url ?? "#"} target="_blank" rel="noreferrer">
+                  <ExternalLink />
+                  在浏览器中打开播放
+                </a>
+              </Button>
+            ) : (
+              <Button onClick={() => void (linkAged && onRetry ? reparseThenDownload() : enqueue())} disabled={selected.length === 0}>
+                {linkAged && onRetry
+                  ? "重新解析并下载"
+                  : queued
+                    ? "再次下载所选"
+                    : selected.length === 1
+                      ? "下载"
+                      : `下载 ${selected.length} 项`}
+              </Button>
+            )}
+            {queued && <Badge variant="ok">已加入队列 ✓</Badge>}
+            {linkAged && !queued && (
+              <span className="text-xs text-muted-foreground">直链已超 {Math.round(LINK_TTL_MS / 60000)} 分钟，先重新解析</span>
+            )}
+            {!data?.embedOnly && data?.embedUrl && !data.url && !data.videos?.length && (
+              <Button asChild variant="link" size="sm" className="h-auto px-0">
+                <a href={data.embedUrl} target="_blank" rel="noreferrer">
+                  官方播放页
+                </a>
+              </Button>
+            )}
+          </div>
+          {err && (
+            <Alert variant="destructive">
+              <AlertDescription>{err}</AlertDescription>
+            </Alert>
+          )}
+
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <ViaBadge via={via} />
+            <span className="tabular-nums">{fmtDuration(durationMs)}</span>
+            {via === "local" && durationMs < 50 && <Badge variant="secondary">缓存命中</Badge>}
+            {fallbackReason && (
+              <span className="flex flex-wrap items-center gap-2">
+                <Button variant="link" size="sm" className="h-auto px-0" onClick={() => setReasonOpen((v) => !v)}>
+                  {reasonOpen ? "收起" : "为什么走了线上？"}
+                </Button>
+                {reasonOpen && <span className="text-xs">{fallbackReason}</span>}
+              </span>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 图集预览：Radix Dialog 接管 Esc 与焦点，页面级 Esc 因此让位 */}
+      <Dialog open={previewIdx !== null && !!images[previewIdx]} onOpenChange={(v) => !v && setPreviewIdx(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle className="text-sm">
+              图片预览 {previewIdx !== null ? previewIdx + 1 : 0}/{images.length}
+            </DialogTitle>
+            <DialogDescription className="sr-only">图集逐张预览</DialogDescription>
+          </DialogHeader>
+          {previewIdx !== null && images[previewIdx] && (
+            <img
+              src={images[previewIdx]}
+              alt=""
+              referrerPolicy="no-referrer"
+              className="max-h-[60vh] w-full rounded-md bg-sunken object-contain"
+            />
+          )}
+          <DialogFooter>
+            {previewIdx !== null && previewIdx > 0 && (
+              <Button variant="outline" size="sm" onClick={() => setPreviewIdx((i) => (i === null ? i : i - 1))}>
+                <ArrowLeft />
+                上一张
+              </Button>
+            )}
+            {previewIdx !== null && previewIdx < images.length - 1 && (
+              <Button variant="outline" size="sm" onClick={() => setPreviewIdx((i) => (i === null ? i : i + 1))}>
+                下一张
+                <ArrowRight />
+              </Button>
+            )}
+            <Button size="sm" onClick={() => setPreviewIdx(null)}>
+              关闭
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -352,17 +467,23 @@ function buildStatItems(data?: {
   return out;
 }
 
-function fmtCount(n: number): string {
-  if (n >= 1e8) return `${(n / 1e8).toFixed(1)}亿`;
-  if (n >= 1e4) return `${(n / 1e4).toFixed(1)}万`;
-  return n.toLocaleString("zh-CN");
-}
-
 function fmtDuration(ms: number): string {
   return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
-function ViaChip({ via }: { via: "local" | "online" | "mock" }): React.ReactElement {
+function ViaBadge({ via }: { via: "local" | "online" | "mock" }): React.ReactElement {
   const label = via === "local" ? "本地内核" : via === "online" ? "线上回落" : "mock 骨架";
-  return <span className={`chip ${via === "local" ? "ok" : via === "online" ? "warn" : ""}`}>{label}</span>;
+  return <Badge variant={via === "local" ? "ok" : via === "online" ? "warn" : "secondary"}>{label}</Badge>;
+}
+
+/** 契约里的 type 是英文枚举，界面不能直接把枚举值当文案（未知值原样显示，便于排查新平台） */
+const TYPE_LABEL: Record<string, string> = {
+  video: "视频",
+  image: "图集",
+  music: "音乐",
+  text: "图文",
+};
+
+function typeLabel(type: string): string {
+  return TYPE_LABEL[type] ?? type;
 }

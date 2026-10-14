@@ -11,7 +11,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
-import { IPC } from "../types/ipc";
+import { IPC, type UpdateState } from "../types/ipc";
+import { CONTRACT } from "../types/ipc-contract";
 import { app as stubApp, ipcMain as stubIpcMain } from "./stubs/electron";
 
 const dir = mkdtempSync(join(tmpdir(), "mg-boot-"));
@@ -38,26 +39,12 @@ describe("main/index.ts 装配冒烟", () => {
 
   it("全部 IPC channel 注册（单一真源，无拼写漂移）", () => {
     const registered = [...stubIpcMain._handlers.keys()];
-    for (const channel of [
-      IPC.appGetMeta,
-      IPC.parseIdentify,
-      IPC.parseRun,
-      IPC.downloadEnqueue,
-      IPC.downloadCancel,
-      IPC.downloadPause,
-      IPC.downloadResume,
-      IPC.downloadList,
-      IPC.settingsGet,
-      IPC.settingsSet,
-      IPC.historyList,
-      IPC.historyClear,
-      IPC.probeEngines,
-      IPC.appGetBinaryStatus,
-      "app:pickDownloadDir",
-      "app:showInFolder",
-    ]) {
+    // 通道集合真源 = CONTRACT；逐条对账，漏注册/多注册都是契约漂移
+    for (const channel of Object.keys(CONTRACT)) {
       expect(registered, `channel ${channel} 未注册`).toContain(channel);
     }
+    // 注册数不得超过契约表：多出来的通道就是没经 zod 校验的旁路
+    expect(registered.length).toBe(Object.keys(CONTRACT).length);
     expect(registered.every((c) => /^[a-z]+:[a-zA-Z]+$/.test(c))).toBe(true);
   });
 
@@ -74,8 +61,9 @@ describe("main/index.ts 装配冒烟", () => {
     const res = (await handler!({}, undefined)) as {
       ok: boolean;
       data: { version: string; platforms: { key: string }[]; kernelMode: string };
+      error?: { code: string; message: string };
     };
-    expect(res.ok).toBe(true);
+    expect(res, `getMeta 信封：${JSON.stringify(res?.error)}`).toHaveProperty("ok", true);
     expect(res.data.version).toBe("0.0.0-test");
     expect(res.data.platforms.map((p) => p.key)).toContain("douyin");
     expect(["local", "online", "mock"]).toContain(res.data.kernelMode);
@@ -83,6 +71,21 @@ describe("main/index.ts 装配冒烟", () => {
 
   it("before-quit 触发队列快照落盘路径不抛", () => {
     expect(() => stubApp._emit("before-quit")).not.toThrow();
+  });
+
+  it("update:state 端到端：未打包运行如实报 unsupported（不假装有更新源）", async () => {
+    const handler = stubIpcMain._handlers.get(IPC.updateGetState);
+    expect(typeof handler).toBe("function");
+    const res = (await handler!({}, undefined)) as { ok: boolean; data: UpdateState };
+    expect(res.ok).toBe(true);
+    expect(res.data.phase).toBe("unsupported");
+    expect(res.data.canCheck).toBe(false);
+    // 无更新源时检查动作必须是空操作，不能产生网络请求
+    const checked = (await stubIpcMain._handlers.get(IPC.updateCheck)!({}, undefined)) as {
+      ok: boolean;
+      data: UpdateState;
+    };
+    expect(checked.data.phase).toBe("unsupported");
   });
 
   it("app:getBinaryStatus 端到端：如实汇报两个二进制的完整性档位", async () => {

@@ -1,103 +1,59 @@
 /**
- * IPC 契约（v0）—— renderer 与 main 的唯一共享类型真源。
+ * IPC 契约 —— renderer 与 main 的唯一共享类型真源。
  *
  * 依据 docs/ARCHITECTURE.md §1 硬约束 3 与 §8：跨进程类型放这里（types/ipc.ts），
  * `ParseResult` 结构镜像 mediaGet `normalize-result` 的输出契约
  * （源：mediaGet/src/types/api.ts 的 ApiResponse/ParseData，此处注明镜像来源，
- * 不 import Next 工程，保持纯类型）。
+ * 不 import Next 工程）。
  *
- * ⚠️ 修改本文件 = 修改 IPC 协议：preload、main/ipc.ts、renderer/bridge.ts 三处联动。
+ * 2026-10-14 单一真源改造（对标 Motrix v2 的 Zod 契约层）：payload 的**形状**只在
+ * `types/ipc-contract.ts` 用 zod 声明一次，本文件以 `import type` + `z.infer` 派生。
+ * 「加一个字段」由此前四处联动（interface + 主进程 schema + preload + bridge，
+ * 且两份描述会各自漂移）收敛成改 ipc-contract 一处。
+ *
+ * `import type` 是硬要求，不是风格：本文件必须零运行时，否则 zod 会被卷进 renderer 包。
  */
+import type { z } from "zod";
+import type {
+  AppMetaSchema,
+  AppSettingsSchema,
+  AuthorSnapshotSchema,
+  BinaryStatusReportSchema,
+  BinaryStatusViewSchema,
+  DownloadItemSchema,
+  DownloadTaskViewSchema,
+  EngineHealthSchema,
+  EnqueueInputSchema,
+  EnqueueOutcomeSchema,
+  HistoryEntrySchema,
+  HistoryFilterSchema,
+  IdentifyInputSchema,
+  IdentifyOutcomeSchema,
+  ParseDataSchema,
+  ParseInputSchema,
+  ParseResultSchema,
+  ParseRunOutcomeSchema,
+  ParsedVideoItemSchema,
+  ParsedVideoQualitySchema,
+  PersistedQueueTaskSchema,
+  UpdateStateSchema,
+} from "./ipc-contract";
 
 // ————————————————————————————————————————————————
 // 镜像自 mediaGet src/types/api.ts（单一真源在上游，此处仅镜像消费）
 // ————————————————————————————————————————————————
 
 /** 单个清晰度直链（bilibili / youtube 等） */
-export interface ParsedVideoQuality {
-  quality: number;
-  label: string;
-  url: string;
-}
+export type ParsedVideoQuality = z.infer<typeof ParsedVideoQualitySchema>;
 
 /** 多分P / 多清晰度视频项 */
-export interface ParsedVideoItem {
-  title?: string;
-  url: string;
-  duration?: number;
-  durationFormat?: string;
-  accept?: string[];
-  qualities?: ParsedVideoQuality[];
-  cover?: string;
-}
+export type ParsedVideoItem = z.infer<typeof ParsedVideoItemSchema>;
 
 /** 统一解析数据结构（normalize-result 归一化后的 data 契约） */
-export interface ParseData {
-  title?: string;
-  desc?: string;
-  type?: "video" | "image" | "music" | "text";
-  duration?: number;
-  author?: string;
-  authorId?: string;
-  authorUrl?: string;
-  avatar?: string;
-  sign?: string;
-  tname?: string;
-  copyright?: number | string;
-  stat?: {
-    view?: number;
-    danmaku?: number;
-    reply?: number;
-    favorite?: number;
-    coin?: number;
-    share?: number;
-    like?: number;
-  };
-  cover?: string;
-  /** 主媒体直链（视频/音乐/单图）——渲染层只在结果卡内展示与转交下载，不自行发起网络请求 */
-  url?: string;
-  audioUrl?: string;
-  images?: string[];
-  videos?: ParsedVideoItem[];
-  videoId?: string;
-  embedUrl?: string;
-  embedOnly?: boolean;
-  qualityLabel?: string;
-  qualities?: ParsedVideoQuality[];
-  /** 频道订阅者数（YouTube，与 B站富信息对齐） */
-  subscriberCount?: number;
-  /** 频道投稿数（YouTube） */
-  videoCount?: number;
-  /** 频道累计播放（YouTube） */
-  channelViews?: number;
-  name?: string;
-  lyrics?: string;
-  /** 音乐高潮片段（汽水音乐等） */
-  core?: string;
-  like?: number;
-  retweets?: number;
-  replies?: number;
-  views?: number;
-  time?: number | string;
-  uid?: string;
-  awemeId?: string;
-  followerCount?: number;
-  followingCount?: number;
-  totalFavorited?: number;
-  statsUnreliable?: boolean;
-  music?: { author: string; title?: string; avatar: string };
-  [key: string]: unknown;
-}
+export type ParseData = z.infer<typeof ParseDataSchema>;
 
 /** 统一解析响应（IPC `parse:run` 的 data 载荷，与线上 API 契约同构） */
-export interface ParseResult {
-  code: number;
-  msg: string;
-  platform?: string;
-  data?: ParseData;
-  /** 失败细分类型，沿用 mediaGet 语义：bot-gated / sources-down / source-unavailable / script-error 等 */
-  failType?: string;
-}
+export type ParseResult = z.infer<typeof ParseResultSchema>;
 
 // ————————————————————————————————————————————————
 // IPC 信封（ARCHITECTURE §3：所有 invoke 返回统一信封）
@@ -129,148 +85,55 @@ export const IPC = {
   historyClear: "history:clear",
   probeEngines: "probe:engines",
   appGetBinaryStatus: "app:getBinaryStatus",
+  appPickDownloadDir: "app:pickDownloadDir",
+  appShowInFolder: "app:showInFolder",
+  updateGetState: "update:state",
+  updateCheck: "update:check",
+  updateDownload: "update:download",
+  updateInstall: "update:install",
   // main → renderer 事件
   evDownloadProgress: "download:progress",
   evDownloadDone: "download:done",
   evDownloadError: "download:error",
-  evUpdateAvailable: "app:updateAvailable",
-  evEngineStatus: "engine:status",
+  evUpdateState: "app:updateState",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
 
 // ————————————————————————————————————————————————
-// 各 channel 的入参 / 出参
+// 各 channel 的入参 / 出参（形状真源 = types/ipc-contract.ts）
 // ————————————————————————————————————————————————
 
 /** app:getMeta */
-export interface AppMeta {
-  version: string;
-  electron: string;
-  kernelMode: "local" | "online" | "mock";
-  /** 平台清单来自内核 PLATFORM_INFO，renderer 不复制 */
-  platforms: Array<{ key: string; name: string; nameEn: string; supportsIdParse: boolean }>;
-}
+export type AppMeta = z.infer<typeof AppMetaSchema>;
 
 /** parse:identify */
-export interface IdentifyInput {
-  text: string;
-}
-export interface IdentifyOutcome {
-  platform: string;
-  platformName: string;
-  /** 提取出的链接 */
-  url: string | null;
-  /** 内容粗类型（链接形态推断） */
-  kind: "url" | "share-text" | "unknown";
-}
+export type IdentifyInput = z.infer<typeof IdentifyInputSchema>;
+export type IdentifyOutcome = z.infer<typeof IdentifyOutcomeSchema>;
 
 /** parse:run */
-export interface ParseInput {
-  text: string;
-  platformHint?: string;
-  source?: string;
-  id?: string;
-  /** 强制走线上回落（跳过本地），内测对比用 */
-  forceOnline?: boolean;
-}
+export type ParseInput = z.infer<typeof ParseInputSchema>;
 /** parse:run 返回：归一化结果 + 来源标记（本地内核 / 线上回落 / mock） */
-export interface ParseRunOutcome {
-  result: ParseResult;
-  /** 结果来源 */
-  via: "local" | "online" | "mock";
-  /** 本地失败转线上的原因（via=online 时有值） */
-  fallbackReason?: string;
-  durationMs: number;
-}
+export type ParseRunOutcome = z.infer<typeof ParseRunOutcomeSchema>;
 
 /** download:enqueue */
-export interface DownloadItem {
-  url: string;
-  filename: string;
-  referer?: string;
-  headers?: Record<string, string>;
-  kind: "video" | "image" | "audio" | "file";
-}
-export interface EnqueueInput {
-  items: DownloadItem[];
-  /** 图集等成组下载共用 groupId */
-  groupId?: string;
-  /** 关联展示信息（写历史用，不存直链） */
-  meta?: { platform?: string; title?: string; sourceUrl?: string };
-}
-export interface EnqueueOutcome {
-  taskIds: string[];
-  groupId: string;
-}
+export type DownloadItem = z.infer<typeof DownloadItemSchema>;
+export type EnqueueInput = z.infer<typeof EnqueueInputSchema>;
+export type EnqueueOutcome = z.infer<typeof EnqueueOutcomeSchema>;
 
-export type DownloadStatus =
-  | "queued"
-  | "downloading"
-  | "paused"
-  | "done"
-  | "error"
-  | "canceled";
+/** 作者快照（解析那一刻的公开信息，随任务/历史透传） */
+export type AuthorSnapshot = z.infer<typeof AuthorSnapshotSchema>;
+
+export type DownloadStatus = z.infer<typeof PersistedQueueTaskSchema>["status"];
 
 /** 队列持久化条目（重启恢复；store.ts 与 downloader.ts 共用） */
-export interface PersistedQueueTask {
-  taskId: string;
-  groupId: string;
-  url: string;
-  filename: string;
-  referer?: string;
-  headers?: Record<string, string>;
-  kind: string;
-  received: number;
-  total: number;
-  createdAt: number;
-  platform?: string;
-  title?: string;
-  sourceUrl?: string;
-  status: DownloadStatus;
-}
+export type PersistedQueueTask = z.infer<typeof PersistedQueueTaskSchema>;
 
 /** download:progress 事件 / download:list 项 */
-export interface DownloadTaskView {
-  taskId: string;
-  groupId: string;
-  url: string;
-  filename: string;
-  kind: string;
-  status: DownloadStatus;
-  received: number;
-  total: number;
-  /** 字节/秒 */
-  speed: number;
-  /** 落地路径（done 后） */
-  filePath?: string;
-  error?: string;
-  platform?: string;
-  title?: string;
-  /** 用户输入的分享链接（透传给历史，非直链） */
-  sourceUrl?: string;
-  createdAt: number;
-}
+export type DownloadTaskView = z.infer<typeof DownloadTaskViewSchema>;
 
 /** settings:get / settings:set —— 部分字段 set，返回全量生效配置 */
-export interface AppSettings {
-  /** 下载目录（绝对路径） */
-  downloadDir: string;
-  /** 并发上限 */
-  maxConcurrent: number;
-  /** 本地解析失败回落线上 API */
-  fallbackOnline: boolean;
-  /** 线上 API 基址（默认站点，可换自建） */
-  onlineApiBase: string;
-  /** 用户自配 Cookie（键位沿用 mediaGet：DOUYIN_COOKIE / XHS_COOKIE / IG_COOKIE / BILIBILI_COOKIE…） */
-  cookies: Record<string, string>;
-  /** 温和节流（毫秒，0=不限） */
-  throttleMs: number;
-  /** 点 ✕ 关窗时最小化到托盘而非退出（下载中关窗不杀任务） */
-  minimizeToTray: boolean;
-  /** 明暗主题；system = 跟随系统（renderer matchMedia / 主进程 nativeTheme 语义） */
-  theme: "system" | "dark" | "light";
-}
+export type AppSettings = z.infer<typeof AppSettingsSchema>;
 
 export const DEFAULT_SETTINGS: AppSettings = {
   downloadDir: "",
@@ -284,35 +147,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
 };
 
 /** history:list */
-export interface HistoryEntry {
-  id: string;
-  /** 图集等成组下载共用（聚合一行用） */
-  groupId?: string;
-  platform?: string;
-  title?: string;
-  /** 媒体类型（视频/图集/音频/文件） */
-  kind?: string;
-  /** 文件字节数（done 时的 received） */
-  bytes?: number;
-  /** 落地文件路径列表 */
-  files: string[];
-  /** 分享来源链接（用户自己的输入，非直链） */
-  sourceUrl?: string;
-  createdAt: number;
-}
-export interface HistoryFilter {
-  platform?: string;
-  limit?: number;
-}
+export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
+export type HistoryFilter = z.infer<typeof HistoryFilterSchema>;
 
 /** probe:engines —— 本地版体检 */
-export interface EngineHealth {
-  platform: string;
-  name: string;
-  ok: boolean;
-  detail?: string;
-  durationMs?: number;
-}
+export type EngineHealth = z.infer<typeof EngineHealthSchema>;
 
 // ————————————————————————————————————————————————
 // 随包二进制（yt-dlp / ffmpeg）完整性汇报
@@ -325,24 +164,19 @@ export interface EngineHealth {
  * （dev 自备 / 旧包未带 manifest），此时只定位不校验 —— 不假装有防护。
  * 设置页应把它如实展示，而不是只显示「可用」。
  */
-export interface BinaryStatusView {
-  name: "yt-dlp" | "ffmpeg";
-  available: boolean;
-  origin?: "user" | "extracted" | "packaged";
-  path?: string;
-  integrity: "verified" | "degraded" | "rejected" | "missing";
-  /** 期望 SHA-256（有基线时） */
-  expected?: string;
-}
+export type BinaryStatusView = z.infer<typeof BinaryStatusViewSchema>;
 
 /** app:getBinaryStatus 返回 */
-export interface BinaryStatusReport {
-  /** 本次进程是否带完整性基线（= 随包 manifest.json 被读到） */
-  manifestLoaded: boolean;
-  /** extraResources 落点（prod）/ MG_BIN_DIR（dev）；null = 无随包目录 */
-  packagedDir: string | null;
-  binaries: BinaryStatusView[];
-}
+export type BinaryStatusReport = z.infer<typeof BinaryStatusReportSchema>;
+
+// ————————————————————————————————————————————————
+// 自动更新（P6）—— 主进程状态机收敛成一个可渲染快照
+// ————————————————————————————————————————————————
+
+export type UpdatePhase = z.infer<typeof UpdateStateSchema>["phase"];
+
+/** update:state / update:check / update:download 返回，亦是 app:updateState 事件载荷 */
+export type UpdateState = z.infer<typeof UpdateStateSchema>;
 
 // ————————————————————————————————————————————————
 // preload 暴露给 window.mg 的 API 面（contextBridge 白名单）
@@ -376,9 +210,16 @@ export interface MgBridge {
   app: {
     pickDownloadDir(): Promise<InvokeResult<string | null>>;
     showInFolder(path: string): Promise<InvokeResult<{ ok: boolean }>>;
-    onUpdateAvailable(cb: (info: { version: string }) => void): () => void;
     /** 随包二进制完整性状态（降级可见：degraded/rejected 要能被用户看到） */
     getBinaryStatus(): Promise<InvokeResult<BinaryStatusReport>>;
+    /** 自动更新（P6）：state 是快照，check/download 返回迁移后的快照 */
+    update: {
+      state(): Promise<InvokeResult<UpdateState>>;
+      check(): Promise<InvokeResult<UpdateState>>;
+      download(): Promise<InvokeResult<UpdateState>>;
+      install(): Promise<InvokeResult<{ ok: boolean }>>;
+      onState(cb: (s: UpdateState) => void): () => void;
+    };
   };
 }
 

@@ -4,7 +4,7 @@
 | --- | --- |
 | 交付物 | 设计系统 + 四界面信息架构 + 交互规范 + 渐进式落地路线 |
 | 适用版本 | `0.1.0`（P1 骨架 + P2 下载/历史/设置 + P3 二进制随包/自动更新骨架） |
-| 技术基线 | Electron 44 + Vite 7 + React 19 + TypeScript 5.9，**无 UI 组件库、无 react-router**，样式集中在 `renderer/src/styles.css` 单文件；Tailwind v4 已于 §7 迁移中经业主授权接入（CSS-first `@theme inline` 桥接 Token，非 utility 重写样式） |
+| 技术基线 | Electron 44 + Vite 7 + React 19 + TypeScript 5.9，**无 react-router**（state 路由），样式集中在 `renderer/src/styles.css` 单文件；Tailwind v4 已于 §7 迁移中经业主授权接入（CSS-first `@theme inline` 桥接 Token）；**组件库当前仍是自绘，但业主已于 2026-10-14 三修 C4 解除禁令：UI 框架不设限**（见 §0 C4） |
 | 首发平台 | Windows（NSIS + portable），窗口 1080×740，最小 820×560 |
 | 作者 | UI 设计师 Agent |
 | 日期 | 2026-10-14 |
@@ -22,8 +22,8 @@
 | --- | --- | --- | --- |
 | C1 | CSP `default-src 'self'`、`script-src 'self'`、`style-src 'self' 'unsafe-inline'` | `renderer/index.html:6-9` | **禁止 Web 字体（Google Fonts / CDN 字体）**。排版系统只能建立在 Windows 系统字体栈上。图标必须内联 SVG（`'self'` + `data:`），不允许 icon font / 外链 SVG |
 | C2 | `img-src 'self' data: blob: https:` | 同上 | 平台封面图、头像可远程加载 —— 但必须处理加载失败与防盗链 403（现用 `referrerPolicy="no-referrer"`） |
-| C3 | renderer 只能经 `window.mg` 白名单通信，`sandbox:true` + `contextIsolation:true` | `electron/main/index.ts:206-213`、`docs/ARCHITECTURE.md §1 铁律 1` | 任何新增 UI 能力若要主进程配合，等于**改 4 处**：`types/ipc.ts` → `electron/preload/index.ts` → `electron/main/ipc.ts` → `renderer/src/lib/bridge.ts`。设计必须优先选择**零契约变更**的方案 |
-| C4 | 依赖基线（**2026-10-14 业主修订 ×2**）：仅允许已评审的 headless 原语与图标包；package.json 现有 4 个 runtime dep（react/react-dom/zod/electron-updater）+ §7 迁移新增 tailwindcss@4（dev）/lucide-react | `package.json:25-30` + README「关键设计决策」 | **白名单**：`@radix-ui/react-dialog`、`react-select`、`react-switch`、`react-toast`、`lucide-react`、**Tailwind v4（§7 授权，仅作 Token 桥接与少量工具类）**。**仍禁止**：shadcn / framer-motion / tanstack（绑架样式范式或本方案 Token 已覆盖）。动效与 Token 系统仍走原生 CSS；Radix 只接行为/a11y，样式仍由本方案 Token 提供 |
+| C3 | renderer 只能经 `window.mg` 白名单通信，`sandbox:true` + `contextIsolation:true` | `electron/main/index.ts:206-213`、`docs/ARCHITECTURE.md §1 铁律 1` | 任何新增 UI 能力若要主进程配合，**载荷形状只在 `types/ipc-contract.ts` 声明一次**（2026-10-14 单一真源改造），但通道接线仍是 4 处：`types/ipc.ts`（常量+派生类型）→ `preload/index.ts` → `main/ipc.ts`（handler）→ `renderer/lib/bridge.ts`，并由 `tests/contract.test.ts` 逐条对账。设计必须优先选择**零契约变更**的方案 |
+| C4 | 依赖基线（**2026-10-14 业主第三次修订：对 UI 框架不设限**）：`package.json` runtime 依赖已含 react / react-dom / zod / electron-updater / lucide-react + `class-variance-authority` / `clsx` / `tailwind-merge` / `tw-animate-css` + 11 个 `@radix-ui/*` 原语；dev 侧 `tailwindcss@4` + `@tailwindcss/vite` | `package.json` + README「关键设计决策」 | **组件库 / 样式范式 / 动画库 / 路由一律不设限**——shadcn/ui 已按 §8 落地为渲染层基线，此前两轮修订留下的「仅允许已评审 headless 原语」白名单**作废**。仍然成立的是三条工程约束，不是审美禁令：① C1 的 CSP 禁远程字体 / 远程 SVG / icon font（技术边界，与选哪个库无关）；② 新增 runtime 依赖须与 lockfile 同 commit 提交并跑验收门；③ 换库不等于放弃语义层——色彩/密度/状态仍由 §5.2 三层 Token 描述，库的默认主题要桥进 `@theme inline`（映射表见 §8.3），组件里不许散落 hex。原为冷灰工具风写的三条审美禁令（无玻璃、单一高程、不上浮缩放）已于同日由业主解除，`tests/style-discipline.test.ts` 只剩三条工程断言 |
 
 **结论**：本方案是"**在 437 行 CSS 上做加法**"的设计，不是"重做前端"的设计。所有 Token 都是 CSS 自定义属性，可直接替换 `:root` 块而不动一行 TSX。
 
@@ -310,7 +310,7 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 | 层级 | 内容 | 关键决策 |
 | --- | --- | --- |
 | L1 输入 | 粘贴框 + 识别提示 + 解析按钮 | 识别提示**从框下方 `.hint` 移入框内顶部**（现状在框下，与按钮同行 `justify-content:space-between`，视线要横跨 600px 才看得到）。提示带**状态色左边条**：识别成功 `--accent`、未识别 `--warning` |
-| L1 输入 | 「20 个平台 ▾」下拉 | `meta.platforms` 有完整的 `key/name/nameEn/supportsIdParse`（`types/ipc.ts:144`），**但现状只用了 `.length`**（`ParsePage.tsx:116`）—— 数据已在，只差渲染。点击 chip 填 `platformHint`（`ParseInput.platformHint` 契约已存在） |
+| L1 输入 | 「20 个平台 ▾」下拉 | `meta.platforms` 有完整的 `key/name/nameEn/supportsIdParse`（`types/ipc-contract.ts:207` 的 `AppMetaSchema`），**但现状只用了 `.length`**（`ParsePage.tsx:116`）—— 数据已在，只差渲染。点击 chip 填 `platformHint`（`ParseInput.platformHint` 契约已存在） |
 | L2 结果 | 结果卡 | 见下 |
 | L3 辅助 | 最近解析 + 平台墙 | 填补首屏下半部的空白；数据源 `history:list`（已有）+ `meta.platforms`（已有） |
 
@@ -319,7 +319,7 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 1. **清晰度 / 多音质选择器（最大功能缺口）**：契约里 `ParseData.qualities`、`ParsedVideoItem.qualities`、`.accept` **全部未被消费**（`ResultCard.tsx:21-41` 只读 `url / audioUrl / videos / images`）。B站/YouTube 这类多清晰度平台，用户**无法选择画质，只能拿到内核给的那一个**。
    - UI：chip 组（`1080P` / `720P` / `仅音频`），默认选中内核返回的主 `url` 对应项，单选。
    - **落地成本极低**：下载项本就由渲染层拼 `DownloadItem[]`（`ResultCard.tsx:26-40`），改成"按选中清晰度取 `qualities[i].url`"即可 —— **零 IPC 契约变更**。
-   - 文件名需带清晰度后缀（`${title}-1080P.mp4`），注意 `ipc.ts:162` 的 `sanitizeFilename(name, 80, "download")` 会截断到 80 字符 —— UI 显示的最终名应与截断后一致，否则会"显示的和学习到的不一样"。
+   - 文件名需带清晰度后缀（`${title}-1080P.mp4`），注意 `electron/main/ipc.ts:168` 的 `sanitizeFilename(name, 80, "download")` 会截断到 80 字符 —— UI 显示的最终名应与截断后一致，否则会"显示的和学习到的不一样"。
 2. **图集预览**：`data.images[]` 现状被平铺进 `items`（`ResultCard.tsx:37-39`）但**界面上看不见有几张、长什么样**，用户只能信任按钮上那个数字。改为 **9 张缩略网格 + "+N"**，点击进入模态大图（`--z-modal`）。
 3. **元数据补全**：`data.stat`（view/like/share）、`data.avatar`、`data.music` 全部未使用 —— 在结果卡加一行统计（12px muted，`tabular-nums`），信息密度提升但需处理 `statsUnreliable`（契约字段）：为 true 时该行加 `⚠︎ 数据可能不准` tooltip。
 4. **`embedUrl` 的处理**：现状只在下载按钮旁挂一句 hint（`ResultCard.tsx:110-112`），但 `ParseData.embedUrl` 意味着"这平台只能官方嵌入播放"。建议：隐藏下载按钮，改为 `[↗ 在浏览器中打开播放]`（走 `shell.openExternal` —— 注意 renderer 无此 API，`main/index.ts:219-221` 的 `setWindowOpenHandler` 会拦截 `window.open`，所以用 `<a target="_blank">` 触发它，**零契约变更**）。
@@ -369,7 +369,7 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 
 #### 任务行操作（状态 × 动作矩阵）
 
-按 `DownloadStatus` 6 态（`types/ipc.ts:199-205`）× 现状代码行为（`DownloadsPage.tsx:76-90`）核对，**并修正两处语义错误**：
+按 `DownloadStatus` 6 态（`types/ipc.ts:123`，枚举在 `types/ipc-contract.ts` 的 `PersistedQueueTaskSchema.status`）× 现状代码行为（`DownloadsPage.tsx:76-90`）核对，**并修正两处语义错误**：
 
 | 状态 | 建议徽标（图标+文字+色） | 行内可见（≤3 个） | `⋯` 更多菜单 | 双击行 | 备注 |
 | --- | --- | --- | --- | --- | --- |
@@ -394,7 +394,7 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 
 ### 2.3 历史页（`HistoryPage.tsx`）
 
-**契约事实**：`HistoryEntry{platform,title,files[],sourceUrl?,createdAt}`，存储上限 500（`store.ts:32 HISTORY_MAX`），接口默认返回 200（`ipc.ts:239`）。**不存直链**是隐私红线（`ARCHITECTURE.md §3`），设计必须尊重：不出现"复制直链""重新下载"这类需要直链的动作 —— 用"**重新解析**"（把 `sourceUrl` 回填首页输入框，由内核重新走一遍）替代。
+**契约事实**：`HistoryEntry{platform,title,kind?,files[],sourceUrl?,author?,createdAt}`，存储上限 500（`store.ts:32 HISTORY_MAX`），接口默认返回 200（`ipc.ts:239`）。**不存媒体直链**是隐私红线（`ARCHITECTURE.md §3`），设计必须尊重：不出现"复制直链""重新下载"这类需要直链的动作 —— 用"**重新解析**"（把 `sourceUrl` 回填首页输入框，由内核重新走一遍）替代。`author` 是下载那一刻的作者快照（昵称/ID/主页/头像/粉丝·关注·获赞），2026-10-14 业主批准入档：主页与头像是公开页面，不是媒体直链；数字用快照值、不拉实时主页，所以卡片文案必须写明"之后不会自动更新"。
 
 ```
 ┌ 工具栏 ───────────────────────────────────────────────────────────────────┐
@@ -418,12 +418,12 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 | **日期分组 + 粘性头** | 今天 / 昨天 / 具体日期，可折叠 | 现状平铺 `<ul>`，500 条无锚点 |
 | **文件芯片折叠** | 单条 entry 显示前 3 个文件芯片 + `+N`，点击展开 | 现状 `h.files.map` 全量平铺（`HistoryPage.tsx:55-66`）—— 30 图 entry 撑出 5 行芯片墙 |
 | **失效文件态** | 渲染前对每个路径做一次存在性检查（`app:pathExists`，§4-P7）；不存在 → 芯片置灰 + tooltip「文件已移动或删除」 | 现状点开不存在的文件：`shell.showItemInFolder` 静默无效，用户以为程序坏了。**这是可复现的死按钮** |
-| **搜索** | 关键词匹配 `title`/`filename`/`path` —— 先做**纯渲染层过滤**（当页 200 条内），跨量搜索再加 `HistoryFilter.keyword` | `HistoryFilter` 目前只有 `platform/limit`（`types/ipc.ts:280-283`） |
+| **搜索** | 关键词匹配 `title`/`filename`/`path` —— 先做**纯渲染层过滤**（当页 200 条内），跨量搜索再加 `HistoryFilter.keyword` | `HistoryFilter` 目前只有 `platform/limit`（`types/ipc-contract.ts:178`） |
 | **单条删除** | `⋯` 菜单：打开目录 / 复制路径 / **从历史移除** | 只有"清空全部"这一个原子操作 —— **误点即丢 500 条**，粒度太粗 |
 | **清空确认** | 自定义模态：`420px`，红色实心 danger 主按钮，文案明确"不删除已下载文件"（现状文案正确，保留） | 用了原生 `confirm()`（`HistoryPage.tsx:30`）：Electron 里是系统级灰框，**与主题完全脱节**，且阻塞式无取消回退 |
 | **撤销** | 清空后 toast 带「撤销」（渲染层保留副本 30s，重新写入） | 现状不可撤销 |
 
-**空态**：图标 + 「暂无下载历史」+ 一句"历史只记录平台 / 标题 / 时间 / 落地路径，不保存直链"（现状文案诚实且传达隐私承诺，**原样保留**）+ `[ 去解析第一条 ]` 主按钮。
+**空态**：图标 + 「暂无历史记录」+ 一句"解析并下载成功的作品会自动记录在这里。"（2026-10-14 业主删掉了自述隐私口径的说明文案；隐私承诺归本节上方的契约事实段）+ 去解析入口在首页。
 
 ### 2.4 设置页（`SettingsPage.tsx`）
 
@@ -604,7 +604,7 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 
 ### 3.6 隐私与"如实呈现"规范（本项目的品牌性格）
 
-代码注释里反复出现"如实"二字（`README:6`「结果来源如实标注」、`types/ipc.ts:296-313`「降级可见 —— 不假装有防护」、`index.ts:71`「启动期如实汇报完整性档位」）。这是这个产品最稀缺的设计资产，**UI 必须把它当视觉语言来强化，而不是抹平**：
+代码注释里反复出现"如实"二字（`README:6`「结果来源如实标注」、`types/ipc-contract.ts:292`「降级可见 —— 不假装有防护」、`index.ts:71`「启动期如实汇报完整性档位」）。这是这个产品最稀缺的设计资产，**UI 必须把它当视觉语言来强化，而不是抹平**：
 
 1. 任何"降级/回落/mock/未校验"状态**不得只显示一个绿点**。三态色 + 文字 + 可展开原因。
 2. 二进制完整性四态（`verified/degraded/rejected/missing`）在**首页**也应有一处低干扰的存在感（如结果卡底部 `via` 行出现「TikTok 需 ffmpeg · 当前未校验 ⓘ」），因为它是解析失败的潜在根因。
@@ -620,10 +620,10 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 
 | 原则 | 具体化 |
 | --- | --- |
-| **依赖只用白名单** | 允许 `@radix-ui/react-dialog/select/switch/toast` + `lucide-react`（headless/无样式，只接行为与 a11y）；**不加** Tailwind / shadcn / framer-motion / tanstack。理由见 C4 业主修订（2026-10-14）：模态/combobox/toast 自研 a11y 成本 1–2 天/件且易错，headless 原语收益为正；样式仍全走现有 `styles.css` Token |
+| **依赖不做禁令**（2026-10-14 业主三修 C4） | 组件库/样式范式/动画库/路由不设限，按需引入；约束只剩工程侧：新增 runtime dep 与 lockfile 同 commit + 过验收门，C1 的 CSP 远程资源禁令照旧。历史上这里写过"只用 Radix headless 白名单、禁止 shadcn/Tailwind/tanstack"，已作废 |
 | **不推翻结构** | 保留 `App.tsx` 的 state 路由（不引 router）、保留四页文件划分、保留 `.page / .card / .chip / .table / .field` 等现有选择器名（**只在原选择器上换 Token，不重命名**，把 diff 压到最小）|
 | **不动功能代码** | `electron/main/downloader.ts`（19KB，含 Range/Referer/重试/避让，且 `tests/downloader.test.ts` 覆盖）、`engine.ts`、`fallback.ts`、`core-adapter/*` 的**逻辑一律不改**。需要新数据时**只加可选字段/新 channel**，向后兼容 |
-| **契约变更最贵，最后做** | 每加一个字段要同改 `types/ipc.ts` + `preload/index.ts` + `main/ipc.ts`(+zod) + `renderer/lib/bridge.ts`（`types/ipc.ts:9` 的警告注释已写死这条）。§4.2 明确标注每个阶段的"契约成本" |
+| **契约变更最贵，最后做** | 每加一个字段只改 `types/ipc-contract.ts` 一处 schema（2026-10-14 单一真源改造；`types/ipc.ts` 的 `z.infer` 自动跟着走），加一个新 channel 才要接线 4 处 + 在 `CONTRACT` 登记（`tests/contract.test.ts` 会漏登记即红）。§4.2 明确标注每个阶段的"契约成本" |
 | **CI 不破坏** | `npm run typecheck`（`strict` + `noUnusedLocals` + `noUnusedParameters`）与 `npm run test`（含 `boundaries.test.ts` 铁律 1：renderer 不得出现 `@/lib`）是每阶段的验收门 |
 
 ### 4.1 分阶段路线（P0 纯样式 → P6 需契约扩展）
@@ -651,25 +651,26 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 | 文件是否存在（失效灰） | `app:pathExists{paths[]}` | 历史点开失效路径静默无反应 | 随 P6 |
 | 更新完整流程 | `evUpdateDownloaded` + `app:quitAndInstall` + `download-progress` 事件 | **现状文案"重启应用即自动更新"与实际不符**：`index.ts:273` 只监听 `update-available`，从未监听 `update-downloaded`，也没触发 `quitAndInstall` —— 重启并不会自动装上。这是**文案骗人**，P0 阶段就应把该横幅改为「发现新版本，去设置检查并安装」，或补 `update-downloaded` | 文案修正立即（P0/P1）；完整 UI 随 P6 |
 | 剪贴板监听（打开窗口自动填入） | 主进程 `clipboard.readText()` + `app:pasteFromClipboard` | 无自动化，需用户 Ctrl+V（已够用）—— **不建议做**，静默读剪贴板是隐私噪音 | 不做，除非用户要求 |
-| 远程功能开关（README P4） | `engine:status` 事件 | `IPC.evEngineStatus`（`types/ipc.ts:129`）**已在契约里定义但全仓无人发送、无人订阅** —— 属于"预留位"。等 P4 远程开关真正落地时一并接 UI（首页顶部黄条"部分平台暂停服务：X"） | 随上游 P4 |
+| 远程功能开关（README P4） | `engine:status` 事件 | `IPC.evEngineStatus` 曾定义但全仓无人发送/订阅，2026-10-14 单一真源改造时**已从契约删除**（连带 `docs/ARCHITECTURE.md §3` 事件清单）。P4 远程开关真正落地时，先在 `types/ipc-contract.ts` 的 `EVENTS` 登记再接线，UI 侧首页顶部黄条"部分平台暂停服务：X" | 随上游 P4 |
 | 导出脱敏配置 | `app:exportConfig`（`store.ts:118 exportRedacted` **已实现但无 IPC 通道暴露**） | 后端能力在，UI 摸不到 → "备份设置"无法做 | 低成本（store 现成），P6 |
 
 ### 4.2 契约变更的标准动作清单（每次改动照抄）
 
 ```
-1) types/ipc.ts            —— 加字段用 `?:` 或给 DEFAULT_SETTINGS 兜底；加 channel 进 IPC 常量表（禁散落字面量）
-2) electron/main/ipc.ts    —— zod schema 同步（.strict() 会拒未知键！注意 SettingsPatchSchema 是 strict）
-3) electron/preload/index.ts —— 白名单加一行，返回解绑函数（事件类）
-4) renderer/src/lib/bridge.ts —— 类型化封装 + unwrap
-5) tests/ipc.test.ts / boot.test.ts —— 端到端断言新字段；boundaries.test.ts 应无需改（renderer 不得 import @/lib）
-6) 旧档兼容：userData/config.json 缺新字段 → loadConfig() 的 { ...DEFAULT_SETTINGS, ...raw.settings } 已兜底 ✅（store.ts:95-101）
+1) types/ipc-contract.ts   —— 形状唯一声明处：改/加 schema，并在 CONTRACT（invoke）或 EVENTS（事件）登记该通道
+2) types/ipc.ts            —— 加 channel 进 IPC 常量表（禁散落字面量）；类型是 z.infer 派生，一般无需改
+3) electron/main/ipc.ts    —— handler 里 wrap(IPC.xxx, XxxSchema, …)；入参自动校验，dev 下出参自动校验
+4) electron/preload/index.ts —— 白名单加一行，返回解绑函数（事件类）
+5) renderer/src/lib/bridge.ts —— 类型化封装 + unwrap
+6) tests/contract.test.ts / boot.test.ts —— 契约对账（漏登记即红）；tests/ipc.test.ts 端到端断言新字段
+7) 旧档兼容：userData/config.json 缺新字段 → loadConfig() 的 { ...DEFAULT_SETTINGS, ...raw.settings } 已兜底 ✅（store.ts:95-101）
 ```
 
 ⚠️ 三个易踩的坑（读码所得）：
 
-- `SettingsPatchSchema` 是 **`.strict()`**（`ipc.ts:71`）→ renderer 传任何未声明字段直接 `bad-input`。P2 加 `theme` 必须先加 schema。
+- `SettingsPatchSchema` 是 **`.strict()`**（`types/ipc-contract.ts:176`）→ renderer 传任何未声明字段直接 `bad-input`。P2 加 `theme` 必须先加 schema。
 - `settings:set` 传**全量** `AppSettings`（`SettingsPage.tsx:38-42` 现状 `...current`）→ 新字段若漏进 `current` 会被 strict 拒。
-- Cookie 掩码约定：`"***"` = 不修改、`""` = 清除（`ipc.ts:196-200`）。任何"清空 Cookie"的新按钮必须**发空串**，不能不发。
+- Cookie 掩码约定：`"***"` = 不修改、`""` = 清除（`electron/main/ipc.ts:217`）。任何"清空 Cookie"的新按钮必须**发空串**，不能不发。
 
 ### 4.3 每条设计声明的验收方式（不靠感觉交付）
 
@@ -688,7 +689,7 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 
 | 诱惑 | 为什么不做 |
 | --- | --- |
-| 换 shadcn/Tailwind/Next 风格栈 | C1–C4 全线冲突；`typecheck` 的 `strict` + 现有 11 个渲染文件的体量，重写收益为负 |
+| ~~换 shadcn/Tailwind/Next 风格栈~~（**2026-10-14 业主三修 C4：解禁，UI 框架不设限**） | 原判定「C1–C4 全线冲突」里的 C4 已改；换栈与否变成**收益判断**而非合规判断。仍然成立的技术约束只剩两条：C1 的 CSP（禁远程字体 / icon font / 外链 SVG）与 `strict` 下的迁移量。Tailwind v4 已接入（§7），shadcn/ui 按 Motrix v2 的基座在其上落地；原先挡路的 §7 工具风三条审美禁令已由同日指令**解除**，`tests/style-discipline.test.ts` 相应放宽为三条工程断言 |
 | 侧边栏导航 | 820px 最小宽下吃 200px 内容；现有拖拽区逻辑已跑通；4 个页面不需要 |
 | 首屏 hero 化 / 大插画营销风 | 工具类应用，用户停留时长集中在任务列表；视觉预算该给进度与状态 |
 | ~~引入 lucide-react 等图标包~~（**2026-10-14 业主修订：允许**） | 原判定"违反无新依赖基线"已被 README C4 修订取代：`lucide-react` 进入白名单（tree-shaking、按需打包）。仍不建议引入**其他**图标方案（icon font 违反 C1、SVG sprite 外链违反 CSP）。注意：图标统一 `strokeWidth={1.5}` 以保持原方案 1.5px 描边一致性 |
@@ -731,11 +732,13 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 | 23 | **中** | `store.exportRedacted()` 已实现但**无 IPC 通道暴露** → 无法"备份设置" | `store.ts:118` vs `preload/index.ts` | §4.2-P6 |
 | 24 | **中** | 无 Light 主题：`:root` 硬编码暗色，无 `data-theme`/`prefers-color-scheme`（grep 零命中）| `styles.css:2-13` | §1.2 / P2 |
 | 25 | **低** | 无 `z-index` 体系；原生 `confirm()` 用于危险操作（清空历史）| `styles.css` 全文 / `HistoryPage.tsx:30` | §1.5.4 / §2.3 |
-| 26 | **低** | `IPC.evEngineStatus` 已定义但全仓无发送/订阅（预留位）| `types/ipc.ts:129` | §4.2-P6 随上游 P4 |
-| 27 | **低** | UI 显示的文件名由渲染层拼装，主进程 `sanitizeFilename(x,80)` 会截断 → 显示名与实际落盘名可能不一致 | `ResultCard.tsx:24-40` vs `ipc.ts:162` | §2.1 结果卡注 1 |
+| 26 | **低** | ~~`IPC.evEngineStatus` 已定义但全仓无发送/订阅（预留位）~~ → 2026-10-14 单一真源改造时随死通道删除；P4 落地再在 `EVENTS` 登记 | 已清 | §4.2-P6 随上游 P4 |
+| 27 | **低** | UI 显示的文件名由渲染层拼装，主进程 `sanitizeFilename(x,80)` 会截断 → 显示名与实际落盘名可能不一致 | `ResultCard.tsx:24-40` vs `electron/main/ipc.ts:168` | §2.1 结果卡注 1 |
 | 28 | **低** | `.mono` 用 Consolas；`已保存 ✓`/`已加入队列 ✓` 用文本字符而非 SVG 图标 | `styles.css:362-365,341` | §1.7 |
 
 ### 5.2 Design Token 总表（可直接粘贴的 CSS）
+
+> 本表的**三层 Token 结构**仍是色彩/密度/状态的语义真源；§8 之后组件层不再写进 CSS —— `@theme inline` 把层 2 桥成 shadcn 语义 utility（映射表 §8.3），组件用 utility 表达。表内的 `--fs-*` / `--sp-*` / `--z-*` 已并入 Tailwind 刻度，实际留在仓库里的层 2.5 只剩字体族、圆角、侧栏与右栏宽度。
 
 ```css
 /* —— 层 1：原始色板（唯一允许 hex 字面量之处）—— */
@@ -811,6 +814,8 @@ button:disabled{color:var(--text-disabled);border-color:var(--line);opacity:1} /
 
 ### 5.3 组件状态速查（交付给开发的规格粒度）
 
+> 2026-10-14 起，本表的**实现方式**已被 §8 取代（shadcn utility + cva 变体，不再是 `.card / .chip` 手写类）；表里的状态语义（rest/hover/active/focus/disabled/loading 该给用户什么反馈）仍然有效，`--sh-1/2/3` 一类多高程写法在 §8 下也不再是违例。
+
 | 组件 | rest | hover | active | focus-visible | disabled | loading |
 | --- | --- | --- | --- | --- | --- | --- |
 | Button solid | `--accent-solid` / `--text-on-accent` | 亮度 −6% + `--sh-2` + `translateY(-1px)` | `translateY(0)` + 亮度 −10% | ring `--line-focus` 2px/offset 2 | `--surface-2` 底 + `--text-disabled` | 16px spinner + 文案不变，宽度锁定（防抖） |
@@ -832,7 +837,7 @@ button:disabled{color:var(--text-disabled);border-color:var(--line);opacity:1} /
 | 识别 | identify | `parse:identify` |
 | 任务 / 队列 | download task | `DownloadTaskView` / `DownloadStatus` |
 | 图集（一组文件） | group | `groupId` / `EnqueueOutcome` |
-| 历史 | history | `HistoryEntry`（**不含直链**）|
+| 历史 | history | `HistoryEntry`（**不含媒体直链**，含作者快照）|
 | 线上回落 | fallback / via=`online` | `fallbackReason` |
 | 本地内核 | via=`local` | `kernelMode`（app 级）与 `via`（请求级）**不同层级** |
 | 骨架演示 | via=`mock` | `MG_KERNEL_MODE` |
@@ -859,16 +864,17 @@ button:disabled{color:var(--text-disabled);border-color:var(--line);opacity:1} /
 
 - **高对比黑白灰基座**（Token 层 1，`styles.css`）：底色 `#121212`、卡片 `#1E1E1E`、主文字 `#F2F2F2`（非纯白）、次要 `#B3B3B3`；light 覆盖 `#F2F2F3/#FBFBFC/#1A1A1C`。静态强调一律灰（`--air-accent-fallback #D4D4D4`），色彩只经动态魔法色进入。
 - **动态魔法色**（`renderer/src/lib/accent.ts`）：当前封面 → canvas 32×32 降采样 → 每通道 32 级量化直方图、权重 =1+3×饱和度（死黑/过曝像素剔除）→ 主色 HSL 亮度钳位 L∈[0.45,0.75] → 写 `documentElement` 的 `--accent-color`；`@property --accent-color`（syntax `<color>`, inherits true）+ **只在 `:root` 声明** 400ms `cubic-bezier(0.4,0,0.2,1)` 过渡（写在 `*` 会覆盖组件自身 transition 简写）；`--accent-ink` 按相对亮度翻转（>0.5→`--air-on-accent-dark`，否则 light）。提取失败/跨域污染画布 = 移除内联覆盖回落缺省灰。**JS 内不写 hex 字面量**（色值只活在层 1）。
-- 派生角色全走 `color-mix`：`--accent-soft 18%`、`--accent-glow 30%`、`--tint-info 12%`、`--line-focus/--accent-solid/--progress-fill = --accent-color`。消费点：选中竖条（侧栏 3px）、进度条填充、主按钮填充、聚焦描边、底条光晕。
+- 派生角色全走 `color-mix`：`--accent-soft 18%`、`--tint-info 12%`、`--line-focus/--accent-solid/--progress-fill = --accent-color`。消费点：选中竖条（侧栏 3px）、进度条填充、主按钮填充、聚焦描边。（`--accent-glow 30%` 随底部任务条一并移除 —— 它唯一的消费点是底条光晕。）
 
-### 7.3 四区布局（App Shell 修订，替代 §2.0）
+### 7.3 三区布局（App Shell 修订，替代 §2.0；2026-10-14 业主决策移除底部任务条，见 HANDOFF §6）
 
 | 区 | 规格（实测值） | 说明 |
 | --- | --- | --- |
 | 左侧栏 | 220px；`#121212` 60% + `backdrop-filter: blur(20px)`；含品牌字、五页导航（lucide 图标 + `⌃1–5` 角标 + 选中左侧 3px accent 竖条）、版本 meta-chip | 拖拽区，控件 no-drag |
 | 悬浮顶栏 | 高 60px，距边 16px（`.air-main` padding/gap 均 16）；玻璃同侧栏、圆角 8px；**全局粘贴入口**（输入 + 解析按钮，Ctrl+K 直达，Enter 提交后切解析页自动解析） | 聚焦光感 = accent 描边 |
 | 主内容 | 大卡片网格；缩略图 16:9 圆角 6px；标题 16px/500、元信息 12px 灰；页面切换 `page-in` 250ms 淡入上移 8px（`key={page}` 重挂载） | 首页 `HomePage.tsx`（最近历史 + 队列摘要） |
-| 底部任务条 | 高 80px 悬浮玻璃 `blur(30px)`；`.taskbar-bg` = 当前封面 `blur(60px) saturate(1.3)`，上叠 `#00000099` 遮罩；下载中 `breathe` 20s alternate scale 1→1.05（reduced-motion 关闭）；左=首字缩略/文件名/状态，中=进度条(4px)+速度+ETA+暂停/继续/取消，右=队列数→点切队列页；App 层订阅 `download.list/onProgress/onDone/onError`，跨页存活 | 封面切换 = 双层交叉淡入 400ms（旧层垫底 + 新层 `key` 重挂载淡入；`background-image` 不可 transition，故用双层） |
+
+进度与任务控制只在**队列页**（`DownloadsPage`，逐任务 4px 进度 + 暂停/继续/取消）与**首页队列摘要**呈现，不再有常驻底条；App 层仍订阅 `download.list/onProgress/onDone/onError`，因为首页的进行中任务要跨页存活。
 
 ### 7.4 组件状态与动效包
 
@@ -877,10 +883,62 @@ button:disabled{color:var(--text-disabled);border-color:var(--line);opacity:1} /
 - 进度条：轨道 `rgba(255,255,255,.3)`（light `#00000026`），填充 accent，宽度过渡 300ms linear。
 - 日志/详情：等宽字体、`#0D0D0D` 底 `#D4D4D4` 字（既有实现对齐即可）。
 - 图标分工：导航/动作 = lucide-react（strokeWidth 1.5）；平台 = 上游品牌 SVG（`PlatformIcon` 单点出口，遵守 §1.7 同源纪律）。字体族维持 §1.4.1 系统栈（C1 不变）。
-- 降级：`prefers-reduced-motion` 关 `page-in`/`breathe`/`enter`/进度宽度过渡。
+- 降级：`prefers-reduced-motion` 以全局 `animation/transition-duration` 压缩覆盖 `page-in`、骨架 shimmer、进度宽度过渡（底条 `breathe`/`enter` 两个专用关键帧已随底部任务条移除）。
 
 ### 7.5 实现落点与验收
 
-`vite.config.ts`（`@tailwindcss/vite`，CSS-first 无 tailwind.config）；`styles.css`（层 1 Air 色板 + `@theme inline` 桥工具类到语义变量，运行时 var 变更即时生效）；`App.tsx`（四区 + 全局粘贴 + 任务订阅）；`components/Taskbar.tsx`；`pages/HomePage.tsx`；`lib/accent.ts`。验收门：typecheck/lint/165 测试/build:app 全绿；浏览器数值实测四区几何 220/60/16/80、玻璃 blur 20·30·60 与 alpha、accent 竖条 3px、进度 4px、`--accent-glow` 随内联 accent 更新（headless 隐藏页会挂起过渡时钟，插值终值以解除 transition 后取样验证）。
+`vite.config.ts`（`@tailwindcss/vite`，CSS-first 无 tailwind.config）；`styles.css`（层 1 Air 色板 + `@theme inline` 桥工具类到语义变量，运行时 var 变更即时生效）；`App.tsx`（三区 + 全局粘贴 + 任务订阅）；`pages/HomePage.tsx`；`lib/accent.ts`。验收门：typecheck/lint/198 测试/build:app 全绿；浏览器数值实测三区几何 220/60/16、玻璃 blur 20 与 alpha、accent 竖条 3px、进度 4px（底条 80px、`blur(30px)`/`blur(60px)` 与 `--accent-glow` 光晕一项已随任务条移除作废）。
 
 **零 IPC 变更**：封面 URL 经解析结果 `data.cover` 由 ParsePage 上抛（`onCover`），契约未加字段（C3 纪律保持）。
+
+---
+
+## 8. shadcn/ui 基线迁移（2026-10-14，业主指令：按 Motrix v2 的 UI 框架与理念，不给自己设限）
+
+### 8.1 定位与前置
+
+本节**取代 §5.2 的「可粘贴 CSS 组件层」与 §5.3 的组件状态表**（Token 三层仍然有效，组件写法变了）：渲染层从自绘单文件 CSS 迁到 **shadcn/ui + Tailwind v4 + Radix 原语**，即 Motrix v2 的视觉基座。两条前置同日闭环：① C4 三修解除组件库禁令；② 三条工具风审美禁令（无玻璃 / 单一高程 / 不上浮缩放）解除，`tests/style-discipline.test.ts` 相应放宽为三条工程断言。
+
+### 8.2 工程接线
+
+| 件 | 作用 |
+| --- | --- |
+| `components.json` | shadcn CLI 配置（style=new-york、`cssVariables: true`、alias `~/*` → `renderer/src/*`）。本机 ui.shadcn.com 不可达，组件源码按官方实现 vendored 进仓库，改由我们 own |
+| `~` alias | tsconfig `paths` + `vite.config.ts` + `vitest.config.ts` 三处一致。**不能用 `@`** —— 它是上游内核 `../mediaGet/src` 的专用 alias（铁律 1 的边界靠它） |
+| `renderer/src/lib/utils.ts` | 只有一个 `cn()`：clsx 合条件类 + tailwind-merge 后者胜出 |
+| `renderer/src/components/ui/*` | 16 件：alert / badge / button / card / checkbox / dialog / input / label / progress / radio-group / select / separator / skeleton / switch / table / textarea / tooltip。每件的对外语义由下表决定 |
+| `tw-animate-css` | 浮层的 `data-[state=open]` 淡入/缩放动效（Radix 状态属性驱动），替代此前的手写关键帧 |
+
+### 8.3 Token 映射（`@theme inline` 是唯一桥）
+
+shadcn 的语义名与本仓角色**不能望文生义**，映射钉死如下：
+
+| shadcn utility | 桥到的层 2 角色 | 说明 |
+| --- | --- | --- |
+| `bg-primary` / `text-primary-foreground` | `--accent-solid` / `--accent-ink` | **primary = 动态魔法色**（封面主色），不是「品牌蓝」；ink 由 `accent.ts` 按相对亮度翻转 |
+| `bg-accent` / `text-accent-foreground` | `--surface-2` / `--text` | shadcn 的 accent 是**中性 hover 底**，与魔法色无关 |
+| `bg-muted` / `text-muted-foreground` | `--surface-2` / `--text-muted` | muted 是次级表面，muted-foreground 才是次要文字 |
+| `bg-card` / `bg-popover` | `--surface` | 卡片与浮层同底，靠 `--sh-pop` 与描边分层 |
+| `bg-background` / `bg-panel` / `bg-sunken` | `--bg` / `--panel` / `--surface-sunken` | 外壳三区与输入凹陷 |
+| `border-input` / `border-border` / `border-hairline` | `--line-control` / `--line` / `--line-strong` | 控件描边永远比分隔线强一档 |
+| `ring-ring` | `--ring` = accent 55% alpha | 聚焦环随魔法色，无光晕 |
+| `bg-destructive` / `text-destructive-foreground` | `--err` / `--on-destructive` | `--on-destructive` 新Token：暗色 err 偏亮配深字，浅色反之 |
+| `bg-progress` / `bg-progress-track` | `--progress-fill` / `--progress-track` | 契约驱动的进度填充 |
+| `bg-ok/warn/err` + tint alpha | `--ok` / `--warn` / `--err` | 状态色是内容，不是装饰；badge/alert 用 `/15`–`/20` 透明度做 tint |
+
+圆角随组件库尺度放宽为 **6 / 8 / 12px**（`--r-sm/md/lg`），字号、间距、动效时长、层级改用 Tailwind 刻度，层 2.5 只留字体族、圆角、侧栏与右栏宽度五项。**层 1 仍是唯一写 hex 的地方**，`@theme inline` 里只出现 `var()`。
+
+### 8.4 视觉决定（不再由禁令决定，而由取向决定）
+
+- 高程恢复为两级：卡片 `shadow-sm` + 浮层 `shadow-pop`（`--sh-pop`），描边仍在（Windows 上纯阴影不稳）。
+- 反馈允许 `hover:` 底色与轻微缩放/位移，过渡统一 `duration-150/200`；`prefers-reduced-motion` 全局压缩照旧。
+- 模态遮罩用 `--overlay` + `backdrop-blur-sm`（玻璃只作为遮罩与浮层的轻度处理，界面主体仍是实心面板）。
+- 控件默认高度回到 Tailwind/shadcn 尺度（`h-9` 36px、`sm` 32px），放弃此前 28px 的极限紧凑密度。
+- 平台图标 `PlatformIcon` 与 lucide 图标分工不变（§1.7），`strokeWidth={1.5}` 保持。
+
+### 8.5 验收与验证边界
+
+- 验收门：`typecheck` / `lint` / `test` 全绿（19 文件 283 例，`boundaries.test.ts` 按源文件数生成用例，故删掉未使用的 `ui/tabs.tsx` 后少 2 例；`style-discipline` 由 6 例减为 3 例）；`vite build` renderer **448.85 kB / gzip 145.26 kB**（迁移前 272.64 / 86.42，代价来自 Radix + cva + tailwind-merge），CSS 40.86 kB / gzip 8.62 kB；产物内 zod 命中 **0 次**（铁律 3 保持）。
+- 真实浏览器逐屏核对（dev-only mock 桥 + Vite 5433）：五页结构、明暗双主题、Select 5 项展开、Dialog 遮罩与 12px 圆角、Tooltip 焦点触发、Switch 拇指位移 20px、Checkbox 排除后按钮文案与清单摘要联动、魔法色经 `primary` 驱动主按钮与进度填充。
+- **未做的验证要说清**：本机 in-app Browser 无可见表面，截图不可用，因此以上是 computed-style / 几何 / 结构层面的核对，不是像素级观感评审；Electron 真窗口与打包态未复核（见 HANDOFF 铁律 5 与 README 验收门）。
+

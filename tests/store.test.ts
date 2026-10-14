@@ -106,6 +106,25 @@ describe("历史：追加序与上限", () => {
     expect(s.loadHistory().map((h) => h.id)).toEqual(["h2", "h1"]);
   });
 
+  it("作者快照原样往返；磁盘上的老记录（无 author 键）读得出、不炸", () => {
+    const s = new JsonStore(dir);
+    const withAuthor: HistoryEntry = {
+      ...entry("h-author"),
+      author: { name: "胶片修复所", id: "19324001", followerCount: 1284000 },
+    };
+    s.appendHistory(withAuthor);
+    expect(s.loadHistory()[0]?.author).toEqual(withAuthor.author);
+
+    // 本版本之前写的 history.json 根本没有 author 键 —— 无迁移机制，只能读侧容错
+    writeFileSync(
+      join(dir, "history.json"),
+      JSON.stringify([{ id: "h-legacy", platform: "bilibili", title: "老记录", files: [], createdAt: 1 }])
+    );
+    const legacy = s.loadHistory();
+    expect(legacy).toHaveLength(1);
+    expect(legacy[0]?.author).toBeUndefined();
+  });
+
   it("超过 500 条截断（HISTORY_MAX）", () => {
     const s = new JsonStore(dir);
     for (let i = 0; i < 505; i++) s.appendHistory(entry(`h${i}`));

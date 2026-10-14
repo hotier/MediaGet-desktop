@@ -19,6 +19,7 @@ import type {
   MgBridge,
   ParseInput,
   ParseRunOutcome,
+  UpdateState,
 } from "../../../types/ipc";
 
 export class BridgeError extends Error {
@@ -82,7 +83,12 @@ export const api = {
     pickDownloadDir: () => unwrap<string | null>(bridge().app.pickDownloadDir()),
     showInFolder: (path: string) => unwrap(bridge().app.showInFolder(path)),
     getBinaryStatus: () => unwrap<BinaryStatusReport>(bridge().app.getBinaryStatus()),
-    onUpdateAvailable: (cb: (info: { version: string }) => void) =>
-      bridge().app.onUpdateAvailable(cb),
+    update: {
+      state: () => unwrap<UpdateState>(bridge().app.update.state()),
+      check: () => unwrap<UpdateState>(bridge().app.update.check()),
+      download: () => unwrap<UpdateState>(bridge().app.update.download()),
+      install: () => unwrap(bridge().app.update.install()),
+      onState: (cb: (s: UpdateState) => void) => bridge().app.update.onState(cb),
+    },
   },
 };

@@ -5,13 +5,13 @@
  * 事件订阅只暴露三个受控 on* 且返回解绑函数，channel 名不出 preload。
  */
 import { contextBridge, ipcRenderer } from "electron";
-import { IPC, type MgBridge, type DownloadTaskView } from "../../types/ipc";
+import { IPC, type MgBridge, type UpdateState } from "../../types/ipc";
 
 type Invoke = <T>(channel: string, input?: unknown) => Promise<T>;
 const invoke: Invoke = (channel, input) => ipcRenderer.invoke(channel, input);
 
-function on(channel: string, cb: (t: DownloadTaskView) => void): () => void {
-  const listener = (_e: Electron.IpcRendererEvent, payload: DownloadTaskView) => cb(payload);
+function on<T>(channel: string, cb: (payload: T) => void): () => void {
+  const listener = (_e: Electron.IpcRendererEvent, payload: T) => cb(payload);
   ipcRenderer.on(channel, listener);
   return () => ipcRenderer.removeListener(channel, listener);
 }
@@ -42,13 +42,15 @@ const mg: MgBridge = {
     engines: () => invoke(IPC.probeEngines),
   },
   app: {
-    pickDownloadDir: () => invoke("app:pickDownloadDir"),
-    showInFolder: (path) => invoke("app:showInFolder", path),
+    pickDownloadDir: () => invoke(IPC.appPickDownloadDir),
+    showInFolder: (path) => invoke(IPC.appShowInFolder, path),
     getBinaryStatus: () => invoke(IPC.appGetBinaryStatus),
-    onUpdateAvailable: (cb) => {
-      const listener = (_e: Electron.IpcRendererEvent, info: { version: string }) => cb(info);
-      ipcRenderer.on(IPC.evUpdateAvailable, listener);
-      return () => ipcRenderer.removeListener(IPC.evUpdateAvailable, listener);
+    update: {
+      state: () => invoke(IPC.updateGetState),
+      check: () => invoke(IPC.updateCheck),
+      download: () => invoke(IPC.updateDownload),
+      install: () => invoke(IPC.updateInstall),
+      onState: (cb: (s: UpdateState) => void) => on(IPC.evUpdateState, cb),
     },
   },
 };

@@ -110,7 +110,7 @@ describe("Downloader 流式落盘", () => {
     const [taskId] = dl.enqueue(
       [{ url: "https://cdn.example.com/v.mp4", filename: "v.mp4", kind: "video", referer: "https://douyin.com/" }],
       "g1",
-      { platform: "douyin", title: "测试视频" }
+      { platform: "douyin", title: "测试视频", author: { name: "信号铺子", id: "9527", followerCount: 12000 } }
     );
     await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "done"));
 
@@ -125,6 +125,11 @@ describe("Downloader 流式落盘", () => {
     expect(events.some((e) => e.taskId === taskId && e.status === "done")).toBe(true);
     expect(history[0]?.files[0]).toBe(target);
     expect(history[0]?.groupTask.platform).toBe("douyin");
+    // 作者快照随任务视图外发，并原样进历史（历史页作者列的唯一数据源）
+    expect(dl.list().find((t) => t.taskId === taskId)?.author?.name).toBe("信号铺子");
+    expect(history[0]?.groupTask.author).toEqual({ name: "信号铺子", id: "9527", followerCount: 12000 });
+    // 完成时刻只在 done 时写入（队列页「完成时间」列的数据源）
+    expect(dl.list().find((t) => t.taskId === taskId)?.finishedAt).toBeTypeOf("number");
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -259,7 +264,8 @@ describe("Downloader 流式落盘", () => {
 
     const [taskId] = dl.enqueue(
       [{ url: "https://cdn.example.com/slow.mp4", filename: "slow.mp4", kind: "video" }],
-      "g6"
+      "g6",
+      { author: { name: "晚风合唱团", followerCount: 88 } }
     );
     // 验收信号：首块进 .part（write 即落 OS 缓冲，readFileSync 可见）
     await waitUntil(() => {
@@ -278,6 +284,8 @@ describe("Downloader 流式落盘", () => {
     // paused 态重启后保持 paused（用户意图保留），须显式 resume 才续传
     const snap = dl.snapshot();
     expect(snap.some((s) => s.taskId === taskId)).toBe(true);
+    // 作者快照要跟着落 queue.json，否则重启后历史页作者列凭空少一批
+    expect(snap.find((s) => s.taskId === taskId)?.author?.name).toBe("晚风合唱团");
     const { dl: dl2 } = makeDownloader(dir, async (_i, init2) => {
       const h = new Headers(init2?.headers);
       expect(h.get("range")).toBe("bytes=4-");
@@ -289,6 +297,7 @@ describe("Downloader 流式落盘", () => {
     dl2.restore(snap as unknown as PersistedQueueLike[]);
     const revived = dl2.list().find((t) => t.taskId === taskId);
     expect(revived?.status).toBe("paused"); // 恢复不越权自动开跑
+    expect(revived?.author?.name).toBe("晚风合唱团");
     dl2.resume(taskId);
     await waitUntil(
       () => dl2.list().some((t) => t.taskId === taskId && t.status === "done"),

@@ -30,6 +30,7 @@
 1. `renderer/**` 不得出现 `@/lib/`（服务端解析层）——只能经 IPC。
 2. 全仓不得 import `mediaGet/src/app/api/**`；route 层属于线上服务。
 3. 跨进程共享的类型放 `packages/shared-types`（或 `types/ipc.ts`），单一真源，renderer 与 main 都从这里取。
+   - 载荷**形状**的声明真源是 `types/ipc-contract.ts`（zod），`types/ipc.ts` 只做 `z.infer` 派生 + 通道常量 + `MgBridge`；ipc.ts 必须保持零运行时（只 `import type`），否则 zod 会被卷进 renderer 包（`tests/boundaries.test.ts` 铁律 3 守这一条）。
 
 ## 2. 目录职责
 
@@ -37,19 +38,30 @@
 | --- | --- | --- |
 | `electron/main/index.ts` | 应用生命周期、窗口、菜单、单实例锁、深链注册 | 业务逻辑 |
 | `electron/main/engine.ts` | 解析引擎装配：注入 `core-adapter`（cache/config/analytics）→ 调 parse-core 工件（§8）→ 暴露 `parse(textOrUrl)` / `identify(text)` | HTTP、窗口操作 |
-| `electron/main/ipc.ts` | 所有 `ipcMain.handle` 注册；入参校验（不可信输入一律 zod 式校验后才进内核） | 直接调平台解析器 |
+| `electron/main/ipc.ts` | 所有 `ipcMain.handle` 注册；入参按 `types/ipc-contract.ts` 的 in schema 校验（不可信输入才进内核），dev 构建再对出参过 out schema（漂移报 `contract-drift`） | 直接调平台解析器；在本文件重声明 schema |
 | `electron/main/downloader.ts` | 下载队列：并发上限、优先级、断点续传、Referer/UA 组装、进度事件、失败重试 | 解析逻辑 |
 | `electron/main/resources.ts` | yt-dlp/ffmpeg 定位：dev 用本地路径，prod 首启从 `resources/` 释放到 `userData/bin/` 并校验哈希 | — |
 | `electron/main/fallback.ts` | 线上 API 回落：按开关把请求转发 `https://get.hotier.cc.cd/api/parse`，超时与错误归类 | 自造解析 |
+| `electron/main/updater.ts` | 自动更新状态机：把 electron-updater 事件收敛成单个 `UpdateState` 快照（阶段 + 进度 + 错误），守卫「无源不检查、未下载完不安装」 | 窗口操作、下载队列 |
 | `electron/main/store.ts` | `userData` 配置/历史读写（JSON 文件 + 原子写；不用 SQLite 除非历史量大） | 敏感凭据明文（见 §6） |
 | `electron/preload/index.ts` | `contextBridge.exposeInMainWorld('mg', {...})` 白名单 | 通配转发（禁止 `ipcRenderer` 原样暴露） |
 | `renderer/src/lib/bridge.ts` | 对 `window.mg` 的类型化封装 + React hooks | 直接拼 IPC channel 名 |
+| `renderer/src/components/ui/` | vendored shadcn/ui 基座（16 件，`cva` 变体 + Radix 原语 + `cn()`），组件只在这里包一层视觉 | 业务语义、IPC 调用、契约类型（真源在 `types/`）；件与件之间不互相依赖业务字段 |
+| `renderer/src/lib/utils.ts` | 只有 `cn()`：clsx 合条件类 + tailwind-merge 后者胜出 | 任何格式化/业务工具（别把这里长成杂物间） |
+| `renderer/src/styles.css` | 三层 Token（层 1 唯一 hex 处）+ `@theme inline` 把层 2 桥成 shadcn 语义 utility + 少数无法 utility 化的全局（`@utility drag-region/no-drag`、细滚动条、reduced-motion） | 组件层样式（2026-10-14 迁 shadcn 后已删，组件样式在 JSX 的 utility 里） |
+| `renderer/src/lib/download-plan.ts` | 下载计划纯函数：`ParseData` + 清晰度选择 → 将要落盘的每一项（含多 P 清晰度回落标注、同直链去重） | 渲染、IPC 调用 |
 | `core-adapter/` | 内核的本地注入件（cache/analytics/config/ratelimit） | 任何解析算法 |
+| `types/ipc-contract.ts` | 载荷形状的唯一声明处（zod）：每通道 in/out schema + `CONTRACT`/`EVENTS` 注册表 | 运行时以外的东西；被 renderer 以值 import |
+| `types/ipc.ts` | 通道常量 `IPC`、`MgBridge` 面、`DEFAULT_SETTINGS`，以及从 contract 派生的类型 | 任何运行时值（须保持只 `import type`）|
 | `resources/` | 第三方二进制（git-lfs 或 CI 拉取，**不入 git**） | 源码 |
 
 ## 3. IPC 契约（v0 草案）
 
 约定：所有 invoke 返回 `{ ok: true, data } | { ok: false, error: { code, message, failType? } }`；`failType` 沿用 mediaGet 语义（`bot-gated` / `sources-down` / `source-unavailable` / `script-error`），renderer 据此差异化提示与触发回落。
+
+入参校验失败的 `code` 固定为 `bad-input`，`message` 是 zod 的 `path: message; …` 单行文案（设置页按字段拆内联提示）；内部异常是 `internal`；`contract-drift` 只在 dev 出现，代表主进程产出与出参 schema 不符 —— 它是给开发者看的，不是给用户看的。
+
+下表是**说明**，不是真源。形状与通道集合的真源是 `types/ipc-contract.ts` 的 `CONTRACT`/`EVENTS`，由 `tests/contract.test.ts` 逐条对账（每个 `IPC` 常量都必须登记、注册集合 == 契约键集合、每通道跑一次真 handler）。
 
 ### 请求/响应
 
@@ -62,12 +74,17 @@
 | `download:progress` | —（事件流） | `{ taskId, received, total, speed, status }` | `webContents.send` 推送，节流 ~200ms |
 | `download:cancel` / `pause` / `resume` | `{ taskId }` | `{ ok }` | 续传依赖 `.part` + `Range: bytes=` |
 | `settings:get` / `settings:set` | 部分字段 | 全量生效配置 | Cookie/下载目录/并发/回落开关 |
-| `history:list` / `history:clear` | `{ filter? }` | `HistoryEntry[]` | 只存平台/标题/时间/落地路径，**不存直链**（时效与隐私） |
+| `history:list` / `history:clear` | `{ filter? }` | `HistoryEntry[]` | 只存平台/标题/作者快照/时间/落地路径，**不存媒体直链**（时效与隐私）；作者主页与头像是公开页面，2026-10-14 业主批准入档 |
 | `probe:engines` | — | `EngineHealth[]` | 本地版体检：逐平台跑固定样例，替代线上 `/api/engines` |
+| `update:state` | — | `UpdateState` | 当前更新快照（renderer 挂载时先取一次，补上窗口未建期间丢掉的事件） |
+| `update:check` / `update:download` | — | `UpdateState` | 主动检查 / 显式下载；失败不外抛，收敛进快照的 `phase=error` |
+| `update:install` | — | `{ ok }` | 仅 `downloaded` 阶段有效，触发 `quitAndInstall`（进程随即退出） |
 
 ### 事件（main → renderer）
 
-`download:progress`、`download:done`、`download:error`、`app:updateAvailable`、`engine:status`。
+`download:progress`、`download:done`、`download:error`、`app:updateState`。
+
+（`engine:status` 曾是契约里的预留位，全仓无发送/订阅，2026-10-14 单一真源改造时删除；P4 远程开关落地时再随 `CONTRACT`/`EVENTS` 一并登记。）
 
 ## 4. 下载管理器要点
 
@@ -197,4 +214,4 @@ mediaGet（已有，web 仓）                     mediaGet-desktop（本仓）
 | 抽取进度跟踪 | mediaGet 仓 `docs/DESKTOP-PLAN.md`（若存在）；P0 未完成前本仓只实现骨架 + mock 内核，避免等阻塞 |
 | 分叉防线 | 本仓不写平台解析；若某天必须临时补，标 `// DIVERGENCE:` 并在 issue 跟踪回流上游 |
 | 域名/平台清单 | 一律来自内核 `PLATFORM_INFO`，客户端不复制表 |
-| 契约类型 | `normalize-result` 的输出结构是唯一真源，放 `types/ipc.ts` 镜像并注明来源 |
+| 契约类型 | `normalize-result` 的输出结构是唯一真源，在 `types/ipc-contract.ts` 以 zod 镜像并注明来源；`types/ipc.ts` 只做 `z.infer` 派生 |

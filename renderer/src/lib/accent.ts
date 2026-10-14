@@ -1,15 +1,22 @@
 /**
- * 动态魔法色（Air「专辑封面魔法色」的迁移位：视频缩略图主色驱动）。
- * 缩略图 → 32×32 降采样 → 饱和度加权直方图取主色 → 亮度钳位 L∈[0.45,0.75]
+ * 动态魔法色（工具风保留位：视频缩略图主色驱动，但剂量收敛）。
+ * 缩略图 → 32×32 降采样 → 饱和度加权直方图取主色 → HSL 钳位（S≤0.55、L∈[0.45,0.75]）
  * → 写 documentElement 的 --accent-color（:root 已声明 400ms 过渡，禁跳变）；
  * --accent-ink 按相对亮度翻转（浅 accent→深字 / 深 accent→浅字）。
- * 提取失败（含跨域污染画布）= 移除内联覆盖，回落样式表 --air-accent-fallback。
+ * 饱和度上限是工具风的硬约束：封面再艳，主按钮/进度条也不能染成霓虹。
+ * 提取失败（含跨域污染画布）= 移除内联覆盖，回落样式表 --wb-accent-fallback（冷灰）。
  * 不在 JS 里写 hex：颜色字面量只活在 Token 层 1。
  */
 import { useEffect } from "react";
 
 const L_MIN = 0.45;
 const L_MAX = 0.75;
+const S_MAX = 0.55;
+
+/** 钳位到「可用作界面强调色」的范围：压饱和、兜亮度，色相不动 */
+export function clampAccent(h: number, s: number, l: number): [number, number, number] {
+  return [h, Math.min(s, S_MAX), Math.min(L_MAX, Math.max(L_MIN, l))];
+}
 
 function relLuminance(r: number, g: number, b: number): number {
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
@@ -105,8 +112,7 @@ export async function extractAccent(src: string): Promise<string | null> {
     let r = best.r / best.w;
     let g = best.g / best.w;
     let b = best.b / best.w;
-    const [h, s, l] = rgbToHsl(r, g, b);
-    if (l < L_MIN || l > L_MAX) [r, g, b] = hslToRgb(h, s, Math.min(L_MAX, Math.max(L_MIN, l)));
+    [r, g, b] = hslToRgb(...clampAccent(...rgbToHsl(r, g, b)));
     return `rgb(${Math.round(r)} ${Math.round(g)} ${Math.round(b)})`;
   } catch {
     return null;
@@ -139,7 +145,7 @@ export function useAccent(cover: string | null): void {
         .map(Number);
       root.style.setProperty(
         "--accent-ink",
-        relLuminance(r, g, b) > 0.5 ? "var(--air-on-accent-dark)" : "var(--air-on-accent-light)"
+        relLuminance(r, g, b) > 0.5 ? "var(--wb-on-accent-dark)" : "var(--wb-on-accent-light)"
       );
     });
     return () => {

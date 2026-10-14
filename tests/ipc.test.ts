@@ -10,6 +10,7 @@ import { registerIpc } from "../electron/main/ipc";
 import { createEngine } from "../electron/main/engine";
 import { Downloader } from "../electron/main/downloader";
 import { JsonStore } from "../electron/main/store";
+import { createUpdater } from "../electron/main/updater";
 import { IPC, type InvokeResult } from "../types/ipc";
 
 type Handler = (event: unknown, input: unknown) => Promise<InvokeResult<unknown>>;
@@ -59,6 +60,9 @@ function harness() {
     store,
     getAppMeta: () => ({ version: "0.0.0-test", electron: "44" }),
     kernelMode: () => "local",
+    updater: createUpdater({ currentVersion: "0.0.0-test", onChange: () => {} }),
+    // 出参也过契约：这批用例跑的是真 handler，正好当 contract 的冒烟面
+    validateOutputs: true,
   });
 
   const call = async (channel: string, input?: unknown): Promise<InvokeResult<unknown>> => {

@@ -15,6 +15,7 @@ import { JsonStore } from "./store";
 import { createResources, readManifest } from "./resources";
 import { SECRET_CONFIG_KEYS } from "../../core-adapter/config";
 import { registerIpc } from "./ipc";
+import { createUpdater } from "./updater";
 import { IPC, type HistoryEntry, type PersistedQueueTask } from "../../types/ipc";
 
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
@@ -167,6 +168,7 @@ const downloader = new Downloader({
         bytes: groupTask.received,
         files,
         sourceUrl: groupTask.sourceUrl,
+        author: groupTask.author,
         createdAt: Date.now(),
       };
       store.appendHistory(entry);
@@ -185,6 +187,28 @@ function kernelMode(): "local" | "online" | "mock" {
   return process.env.MG_KERNEL_MODE === "mock" ? "mock" : "local";
 }
 
+// —— 自动更新（P6）——
+// 状态机同步建好（未挂源时快照为 unsupported，dev 也读得到），更新源稍后异步挂：
+// electron-updater 在模块加载时 require('electron')，必须动态 import；
+// 且只有打包态才有发布通道 —— 未打包（dev、headless 测试）挂载等于对着
+// 不存在的 latest.yml 发网络请求。
+const updater = createUpdater({
+  currentVersion: app.getVersion(),
+  onChange: (state) => emit(IPC.evUpdateState, state),
+});
+
+if (app.isPackaged) {
+  void (async () => {
+    try {
+      const { autoUpdater } = await import("electron-updater");
+      updater.attach(autoUpdater);
+      await updater.check(); // 启动静默检查一次，失败留在 error 由设置页重试
+    } catch {
+      /* 无发布源 / electron-updater 不可用：保持 unsupported，不阻断启动 */
+    }
+  })();
+}
+
 registerIpc({
   ipcMain,
   engine,
@@ -193,11 +217,14 @@ registerIpc({
   getAppMeta: () => ({ version: app.getVersion(), electron: process.versions.electron }),
   kernelMode,
   onSettingsChanged: publishKernelEnv,
+  updater,
   getBinaryStatus: () => ({
     manifestLoaded: resources.verified,
     packagedDir: packagedBinDir,
     binaries: resources.describe(),
   }),
+  // dev 里出参不符契约会当场报 contract-drift；打包版不为校验付代价
+  validateOutputs: !app.isPackaged,
 });
 
 function createWindow(): void {
@@ -334,19 +361,3 @@ app.on("before-quit", () => {
   store.saveQueueThrottled(downloader.snapshot() as PersistedQueueTask[]);
   store.flush();
 });
-
-// —— 自动更新（P3 完整启用；这里挂骨架，无 update URL 时静默）——
-void (async () => {
-  if (isDev) return;
-  try {
-    const { autoUpdater } = await import("electron-updater");
-    autoUpdater.on("update-available", (info) =>
-      emit(IPC.evUpdateAvailable, { version: info.version })
-    );
-    autoUpdater.checkForUpdatesAndNotify().catch(() => {
-      /* 无发布源/离线：静默 */
-    });
-  } catch {
-    /* electron-updater 不可用不阻断启动 */
-  }
-})();

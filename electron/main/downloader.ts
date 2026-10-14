@@ -25,6 +25,7 @@ import {
 } from "node:fs";
 import { basename, join, extname } from "node:path";
 import type {
+  AuthorSnapshot,
   DownloadItem,
   DownloadTaskView,
   DownloadStatus,
@@ -145,7 +146,7 @@ export class Downloader {
   enqueue(
     items: DownloadItem[],
     groupId: string,
-    meta?: { platform?: string; title?: string; sourceUrl?: string }
+    meta?: { platform?: string; title?: string; sourceUrl?: string; author?: AuthorSnapshot }
   ): string[] {
     mkdirSync(this.opts.getDownloadDir(), { recursive: true });
     const ids: string[] = [];
@@ -169,6 +170,7 @@ export class Downloader {
           platform: meta?.platform,
           title: meta?.title,
           sourceUrl: meta?.sourceUrl,
+          author: meta?.author,
         };
         this.tasks.set(id, t);
         this.order.unshift(id);
@@ -193,6 +195,7 @@ export class Downloader {
         platform: meta?.platform,
         title: meta?.title,
         sourceUrl: meta?.sourceUrl,
+        author: meta?.author,
         referer: item.referer,
         headers: item.headers,
         filePath: target,
@@ -337,6 +340,7 @@ export class Downloader {
         platform: t.platform,
         title: t.title,
         sourceUrl: t.sourceUrl,
+        author: t.author,
         status: t.status as DownloadStatus,
       }));
   }
@@ -511,6 +515,7 @@ export class Downloader {
       }
       t.status = "done";
       t.speed = 0;
+      t.finishedAt = Date.now();
       this.opts.events.progress(toView(t));
       this.opts.events.done(toView(t));
       this.opts.events.history({
@@ -575,6 +580,8 @@ export function toView(t: InternalTask): DownloadTaskView {
     createdAt: t.createdAt,
   };
   if (t.sourceUrl) v.sourceUrl = t.sourceUrl;
+  if (t.author) v.author = t.author;
+  if (t.finishedAt) v.finishedAt = t.finishedAt;
   if (t.status === "done" && t.filePath) v.filePath = t.filePath;
   return v;
 }
