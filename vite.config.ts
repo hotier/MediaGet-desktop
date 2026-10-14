@@ -17,7 +17,8 @@ export default defineConfig({
   },
   server: {
     host: "127.0.0.1",
-    port: 5432,
+    // 别选 5432：PostgreSQL 默认端口，本机常驻服务会抢（实测撞端口报 EACCES 假象）
+    port: 5433,
     strictPort: true,
   },
   build: {
