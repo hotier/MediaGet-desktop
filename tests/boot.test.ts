@@ -52,6 +52,7 @@ describe("main/index.ts 装配冒烟", () => {
       IPC.historyList,
       IPC.historyClear,
       IPC.probeEngines,
+      IPC.appGetBinaryStatus,
       "app:pickDownloadDir",
       "app:showInFolder",
     ]) {
@@ -82,5 +83,26 @@ describe("main/index.ts 装配冒烟", () => {
 
   it("before-quit 触发队列快照落盘路径不抛", () => {
     expect(() => stubApp._emit("before-quit")).not.toThrow();
+  });
+
+  it("app:getBinaryStatus 端到端：如实汇报两个二进制的完整性档位", async () => {
+    const handler = stubIpcMain._handlers.get(IPC.appGetBinaryStatus);
+    expect(typeof handler).toBe("function");
+    const res = (await handler!({}, undefined)) as {
+      ok: boolean;
+      data: {
+        manifestLoaded: boolean;
+        packagedDir: string | null;
+        binaries: { name: string; integrity: string }[];
+      };
+    };
+    expect(res.ok).toBe(true);
+    // 两个二进制都必须被汇报（缺一个就等于对用户隐瞒）
+    expect(res.data.binaries.map((b) => b.name).sort()).toEqual(["ffmpeg", "yt-dlp"]);
+    // 档位只能是这四个之一；「无基线」必须体现为 degraded 而不是 verified
+    for (const b of res.data.binaries) {
+      expect(["verified", "degraded", "rejected", "missing"]).toContain(b.integrity);
+      if (!res.data.manifestLoaded) expect(b.integrity).not.toBe("verified");
+    }
   });
 });

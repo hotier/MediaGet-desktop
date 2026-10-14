@@ -9,4 +9,14 @@ allowBuilds:
   electron-winstaller: false
 minimumReleaseAgeExclude:
   - electron@44.7.2
-storeDir: D:\dsh_store\.pnpm-store
+overrides:
+  # app-builder-lib@26.15.x 声明 "@electron/get": "^3.0.0"，但它的
+  # resolveCacheMode() 读的是 ElectronDownloadCacheMode —— 该枚举 3.1.0 才加入。
+  # lockfile 把嵌套那支钉在 3.0.0 上，导致打包阶段抛
+  # "Cannot read properties of undefined (reading 'ReadWrite')"。
+  # 精确只抬 3.x 这一支，不碰 electron 自己需要的 5.x。
+  # 上游修好（声明改为 ^3.1.0 或更高）后可删本 override。
+  "@electron/get@^3.0.0": "3.1.0"
+# 注意：不要在这里写死 storeDir 绝对路径（如 D:\dsh_store\.pnpm-store）——
+# 那是开发机专属路径，泄漏进共享配置后换机器/CI 会失效。需要自定义 store
+# 位置时用环境变量 PNPM_STORE_DIR 或 `pnpm config set store-dir`，属本机配置。

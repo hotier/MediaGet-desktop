@@ -6,19 +6,22 @@
  * 安全（§6.4）：nodeIntegration:false、contextIsolation:true、sandbox:true、
  * webSecurity 不关、renderer 只加载本地文件。
  */
-import { app, BrowserWindow, ipcMain, session, shell } from "electron";
+import { app, BrowserWindow, ipcMain, Menu, nativeImage, session, shell, Tray } from "electron";
 import { join } from "node:path";
 import { createEngine } from "./engine";
 import { createOnlineFallback } from "./fallback";
 import { Downloader } from "./downloader";
 import { JsonStore } from "./store";
-import { createResources } from "./resources";
+import { createResources, readManifest } from "./resources";
+import { SECRET_CONFIG_KEYS } from "../../core-adapter/config";
 import { registerIpc } from "./ipc";
 import { IPC, type HistoryEntry, type PersistedQueueTask } from "../../types/ipc";
 
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let isQuitting = false;
 const emit = (channel: string, payload: unknown) => {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send(channel, payload);
@@ -36,20 +39,49 @@ app.setAppUserModelId("cc.hotier.mediaget.desktop");
 
 // —— 装配 ——
 const store = new JsonStore(app.getPath("userData"));
+
+/**
+ * 随包二进制目录（extraResources 落点）：
+ * - prod：`process.resourcesPath/bin`
+ * - dev：MG_BIN_DIR 指向本地 resources/bin（或 null = 不自带）
+ */
+const packagedBinDir = isDev
+  ? process.env.MG_BIN_DIR ?? null
+  : typeof process.resourcesPath === "string"
+    ? join(process.resourcesPath, "bin")
+    : null;
+
+/**
+ * 完整性基线：优先用随包 manifest.json（scripts/fetch-binaries.cjs 产出），
+ * 其次用 dev 目录下的同名清单。都没有时 expectedHashes 为空 ⇒ 退回
+ * 「只定位不校验」，并由 createResources().verified 如实汇报降级。
+ */
+const expectedHashes =
+  readManifest(packagedBinDir) ??
+  (isDev ? readManifest(process.env.MG_BIN_DIR ?? null) : null) ??
+  undefined;
+
 const resources = createResources({
   userDataDir: app.getPath("userData"),
-  // 真实 Electron 下 resourcesPath 必有；桩/无头环境防御性回落 null（= 无 packaged 二进制）
-  packagedDir: isDev
-    ? process.env.MG_BIN_DIR ?? null
-    : typeof process.resourcesPath === "string"
-      ? join(process.resourcesPath, "bin")
-      : null,
+  packagedDir: packagedBinDir,
   readKernelConfig: (k) => store.getKernelValue(k),
+  expectedHashes,
 });
 
 /**
+ * 启动期如实汇报完整性档位（不静默降级）：缺 manifest 时应用仍能跑，
+ * 但「只定位不校验」必须留下痕迹 —— 日志一条 + 设置页可见（app:getBinaryStatus）。
+ */
+if (!resources.verified) {
+  console.warn(
+    "[resources] 未加载到随包 SHA-256 清单（manifest.json）：二进制仅定位、不校验完整性。" +
+      "发布包不应出现此状态；本地开发用 `node scripts/fetch-binaries.cjs` 生成。"
+  );
+}
+
+/**
  * 内核配置读取：用户自配 > （YTDLP/FFMPEG）资源定位自动值。
- * 内核 ytDlpClient 按 YTDLP_BIN 取二进制；P3 随包释放后这里自动接上，
+ * 内核 ytDlpClient 按 YTDLP_BIN 取二进制；随包释放后这里自动接上，
  * 未随包时 locate 返回 null → 不注入（TikTok 走线上回落）。
  */
 function readKernelConfig(key: string): string | undefined {
@@ -59,6 +91,50 @@ function readKernelConfig(key: string): string | undefined {
   if (key === "FFMPEG_BIN") return resources.locate("ffmpeg")?.path;
   return undefined;
 }
+
+/**
+ * 把「内核需要但从没拿到」的运行期配置铺进 process.env。
+ *
+ * 为什么必须在这一层做（两个独立事实叠出来的）：
+ *  1. 内核多个模块在**模块作用域**读取 env 并固化 —— ytDlpClient.js:11
+ *     `const YTDLP_CMD = (process.env.YTDLP_BIN || "yt-dlp")...`、
+ *     instagram.js:18 `IG_COOKIE`、qqmusic-id.js:31 `QQMUSIC_COOKIE`、
+ *     youtube.js:45 `YOUTUBE_API_KEY`。
+ *  2. core-adapter/config 的 env 级只在 NODE_ENV=development 时开启
+ *     （engine.ts:97 `allowEnv`），prod 下 config 层读不到 env。
+ * 所以 prod 必须由主进程显式写 process.env，config 层只能算 dev 便利。
+ *
+ * 时序：engine 的核心入口是惰性 import（见 engine.ts loadCore 注释），
+ * 首次求值推迟到第一次真正解析 —— 本函数在顶层同步执行，必定早于它。
+ */
+const publishedCookieKeys = new Set<string>();
+
+function publishKernelEnv(): void {
+  // —— 二进制路径：dev 已显式设置的 env 优先（不覆盖开发者手配）——
+  for (const [envKey, cfgKey] of [
+    ["YTDLP_BIN", "YTDLP_BIN"],
+    ["FFMPEG_BIN", "FFMPEG_BIN"],
+  ] as const) {
+    const resolved = readKernelConfig(cfgKey);
+    if (resolved && !process.env[envKey]) process.env[envKey] = resolved;
+  }
+
+  // —— 用户 Cookie：设置页是产品内的配置面，以它为准 ——
+  // 只处理 SECRET_CONFIG_KEYS，避免任意设置键污染进程环境；
+  // 只回收「我们自己铺过」的键，dev .env 里手写的 Cookie 不会被误删。
+  const { settings } = store.loadConfig();
+  for (const key of SECRET_CONFIG_KEYS) {
+    const value = settings.cookies?.[key];
+    if (value) {
+      process.env[key] = value;
+      publishedCookieKeys.add(key);
+    } else if (publishedCookieKeys.has(key)) {
+      delete process.env[key];
+      publishedCookieKeys.delete(key);
+    }
+  }
+}
+publishKernelEnv();
 
 const engine = createEngine({
   readKernelConfig,
@@ -84,9 +160,13 @@ const downloader = new Downloader({
     history: ({ groupTask, files }) => {
       const entry: HistoryEntry = {
         id: groupTask.taskId,
+        groupId: groupTask.groupId,
         platform: groupTask.platform,
         title: groupTask.title ?? groupTask.filename,
+        kind: groupTask.kind,
+        bytes: groupTask.received,
         files,
+        sourceUrl: groupTask.sourceUrl,
         createdAt: Date.now(),
       };
       store.appendHistory(entry);
@@ -96,13 +176,13 @@ const downloader = new Downloader({
 
 /**
  * 内核态标记（app:getMeta / 关于页展示）：
- * - 本地已抽取平台 > 0 → "local"（识别与部分解析走本机内核，其余经线上回落补全）
  * - MG_KERNEL_MODE=mock → "mock"（离线骨架演示）
+ * - 其余 → "local"：parse-core 统一入口注册表覆盖全平台，本地即主通道，
+ *   线上回落只是异常逃生口（不再按「抽取进度」猜测，避免为取 meta 提前求值内核）。
  * UI 里每条解析结果的 via 字段（local/online/mock）才是逐请求的真实通道。
  */
 function kernelMode(): "local" | "online" | "mock" {
-  if (process.env.MG_KERNEL_MODE === "mock") return "mock";
-  return engine.localCoverage().length > 0 ? "local" : "online";
+  return process.env.MG_KERNEL_MODE === "mock" ? "mock" : "local";
 }
 
 registerIpc({
@@ -112,6 +192,12 @@ registerIpc({
   store,
   getAppMeta: () => ({ version: app.getVersion(), electron: process.versions.electron }),
   kernelMode,
+  onSettingsChanged: publishKernelEnv,
+  getBinaryStatus: () => ({
+    manifestLoaded: resources.verified,
+    packagedDir: packagedBinDir,
+    binaries: resources.describe(),
+  }),
 });
 
 function createWindow(): void {
@@ -151,11 +237,71 @@ function createWindow(): void {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+
+  // 关窗即最小化到托盘（P5：下载中关窗=杀死全部任务，是用户可感知的最高伤害项）：
+  // preventDefault 后窗口只是隐藏，进程与下载队列存活；托盘菜单/二次启动负责恢复。
+  mainWindow.on("close", (e) => {
+    if (isQuitting) return;
+    const { settings } = store.loadConfig();
+    if (settings.minimizeToTray ?? true) {
+      e.preventDefault();
+      mainWindow?.hide();
+    }
+  });
+}
+
+/** 托盘（关窗最小化的另一半）。无随包托盘图标时用纯色 16px 图占位，不阻塞功能。 */
+function createTray(): void {
+  if (tray) return;
+  const icon = nativeImage.createFromPath(join(__dirname, "../../resources/tray.png"));
+  const image = icon.isEmpty() ? nativeImage.createEmpty() : icon;
+  tray = new Tray(image.isEmpty() ? createFallbackTrayIcon() : image);
+  tray.setToolTip("即刻解析");
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      {
+        label: "显示主窗口",
+        click: () => {
+          if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+          else {
+            mainWindow.show();
+            mainWindow.focus();
+          }
+        },
+      },
+      { type: "separator" },
+      {
+        label: "退出",
+        click: () => {
+          isQuitting = true;
+          app.quit();
+        },
+      },
+    ])
+  );
+  tray.on("click", () => {
+    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
+    else if (mainWindow.isVisible()) mainWindow.focus();
+    else mainWindow.show();
+  });
+}
+
+function createFallbackTrayIcon(): Electron.NativeImage {
+  const size = 16;
+  const buf = Buffer.alloc(size * size * 4);
+  for (let i = 0; i < size * size; i++) {
+    buf[i * 4] = 0x2f; // B
+    buf[i * 4 + 1] = 0x6f; // G
+    buf[i * 4 + 2] = 0xed; // R（accent #2f6fed）
+    buf[i * 4 + 3] = 255; // A
+  }
+  return nativeImage.createFromBitmap(buf, { width: size, height: size });
 }
 
 app.on("second-instance", () => {
   if (mainWindow) {
     if (mainWindow.isMinimized()) mainWindow.restore();
+    if (!mainWindow.isVisible()) mainWindow.show();
     mainWindow.focus();
   }
 });
@@ -166,6 +312,7 @@ app.whenReady().then(() => {
   session.defaultSession.setPermissionRequestHandler((_wc, _p, cb) => cb(false));
 
   createWindow();
+  createTray();
 
   // 队列恢复（P2 验收：重启后队列/历史完整）
   downloader.restore(store.loadQueue() as PersistedQueueTask[]);
@@ -181,6 +328,9 @@ app.on("window-all-closed", () => {
 });
 
 app.on("before-quit", () => {
+  isQuitting = true;
+  tray?.destroy();
+  tray = null;
   store.saveQueueThrottled(downloader.snapshot() as PersistedQueueTask[]);
   store.flush();
 });

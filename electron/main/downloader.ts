@@ -168,6 +168,7 @@ export class Downloader {
           createdAt: Date.now(),
           platform: meta?.platform,
           title: meta?.title,
+          sourceUrl: meta?.sourceUrl,
         };
         this.tasks.set(id, t);
         this.order.unshift(id);
@@ -191,6 +192,7 @@ export class Downloader {
         createdAt: Date.now(),
         platform: meta?.platform,
         title: meta?.title,
+        sourceUrl: meta?.sourceUrl,
         referer: item.referer,
         headers: item.headers,
         filePath: target,
@@ -334,6 +336,7 @@ export class Downloader {
         createdAt: t.createdAt,
         platform: t.platform,
         title: t.title,
+        sourceUrl: t.sourceUrl,
         status: t.status as DownloadStatus,
       }));
   }
@@ -571,6 +574,7 @@ export function toView(t: InternalTask): DownloadTaskView {
     title: t.title,
     createdAt: t.createdAt,
   };
+  if (t.sourceUrl) v.sourceUrl = t.sourceUrl;
   if (t.status === "done" && t.filePath) v.filePath = t.filePath;
   return v;
 }

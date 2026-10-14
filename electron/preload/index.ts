@@ -44,6 +44,7 @@ const mg: MgBridge = {
   app: {
     pickDownloadDir: () => invoke("app:pickDownloadDir"),
     showInFolder: (path) => invoke("app:showInFolder", path),
+    getBinaryStatus: () => invoke(IPC.appGetBinaryStatus),
     onUpdateAvailable: (cb) => {
       const listener = (_e: Electron.IpcRendererEvent, info: { version: string }) => cb(info);
       ipcRenderer.on(IPC.evUpdateAvailable, listener);

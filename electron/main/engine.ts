@@ -4,30 +4,26 @@
  * 职责：装配 core-adapter（cache/config/analytics/ratelimit）+ 解析内核，
  * 暴露 identify(text) / parse(textOrUrl) 两个纯异步方法。不做 HTTP、不碰窗口。
  *
- * 内核三态（README「内核耦合」+ §8「P0 未完成前本仓只实现骨架 + mock 内核」）：
- * - local：直接 import mediaGet `src/lib/**` 纯模块（单一代码源，物理链接方案 A）。
- *   P0 进度决定可用解析面：目前仅 kuaishou（parseKuaishou）完成纯函数化抽取；
- *   识别 / 黑名单 / 归一化 / 文案提取等纯模块全部本地可用。
- * - online：local 面之外（解析器还在 route 层的平台）且设置开启回落时，
- *   经 fallback.ts 调线上 /api/parse —— 这是 P0 未完成期间的**主解析通道**。
+ * 内核三态：
+ * - local：只引用上游整解析核心 @mediaget/parse-core 的统一入口（unifiedParseLocal）。
+ *   黑名单/识别/平台分发/全部平台解析器/快手兜底/直链验证/ID 模式都在核心内完成，
+ *   本仓不再自维护平台解析器表 —— 覆盖清单由核心 localParserKeys() 如实给出。
+ * - online：核心未覆盖或本地异常且设置开启回落时，经 fallback.ts 调线上 /api/parse
+ *   （上游改版风暴时的逃生通道，不再是主通道）。
  * - mock：离线开发/测试用假内核（MG_KERNEL_MODE=mock 或两者皆不可用时兜底）。
  *
  * 铁律 2（依赖边界）：本文件只 import `@/lib/**`，永不 import `@/app/api/**`。
  *
- * ⚠️ 临时桥（§8 定稿 = `@mediaget/parse-core` 版本化工件）：
- * parse-core 尚未发布，当前用 `@ → ../mediaGet/src` 物理链接顶替。工件首发后
- * 按此清单切换（一次 PR 完成，防误读成违宪）：
- *  1. engine.ts / ipc.ts / core-adapter/cache.ts 的 `@/lib/*`、`@/utils/filename`
- *     import 换成 `@mediaget/parse-core` 对应公开入口；
- *  2. tsup.config.ts 删 kernelAlias 插件；tsconfig/vitest 删 `@` 别名；
- *  3. .github/workflows/ci.yml 删「Checkout kernel」并列检出步骤；
- *  4. LOCAL_PARSERS 表内容改由工件入口导出（上游抽取进度 = 升版本号）。
+ * ⚠️ 临时桥（§8 定稿 = `@mediaget/parse-core` 版本化工件）：parse-core 尚未发布
+ * npm 工件，当前经 `@ → ../mediaGet/src` 物理链接 + src/lib 薄壳消费
+ * `@/lib/unifiedCore`（真源 packages/parse-core/src/lib/unified-core.js）。
+ * 工件首发后：本文件 import 换成 `@mediaget/parse-core` 公开入口；tsup 删
+ * kernelAlias、tsconfig/vitest 删 `@` 别名、CI 删「Checkout kernel」并列检出。
  */
 import { identifyPlatform, getPlatformName, PLATFORM_INFO } from "@/lib/platforms";
 import { extractUrlFromShareText } from "@/lib/share-text";
 import { isBlockedText } from "@/lib/blockedPlatforms";
 import { normalizeResult } from "@/lib/normalize-result";
-import { parseKuaishou } from "@/lib/kuaishouCore";
 import type { ParseResult } from "../../types/ipc";
 import { createResultCache } from "../../core-adapter/cache";
 import { createNoopAnalytics } from "../../core-adapter/analytics";
@@ -64,20 +60,40 @@ export interface EngineDeps {
   isFallbackEnabled: () => boolean;
   /** 强制模式（测试/内测），auto 按能力降级 */
   forceMode?: KernelMode;
+  /** 核心入口加载器覆盖（测试注入假核；缺省惰性 import 真 parse-core） */
+  coreLoader?: () => Promise<CoreEntry>;
 }
 
 /**
- * 本地已抽取完成（P0 项 1）的平台解析器表。
- * 上游每完成一个平台纯函数化（parseCore 提取进 src/lib/<platform>Core.js），
- * 就在这里加一行 —— 这是两仓之间唯一的、显式的耦合点。
+ * 本地解析内核 = 上游整解析核心（parse-core）的统一入口，本仓不再自维护平台解析器表。
+ * unifiedParseLocal 内含：黑名单 / 平台识别 / 全 21 平台解析器注册表 / 快手 17change
+ * 兜底 / 直链有效性验证 / source+id 模式 —— 覆盖清单由核心 localParserKeys() 给出。
+ *
+ * ⚠️ 为什么惰性加载（P3-1 原样成立）：
+ * 内核多个模块在**模块作用域**读取 process.env（ytDlpClient.js 的 `YTDLP_BIN`、
+ * instagram.js 的 `IG_COOKIE`、youtube.js 的 `YOUTUBE_API_KEY`、
+ * qqmusic-id.js 的 `QQMUSIC_COOKIE`、xhsCore 的 `XHS_COOKIE`、twitterCore 的
+ * `TWITTER_FIXER_SERVICES` …），只在模块首次求值那一刻固化。注册表静态引满全部
+ * 平台核，任何一处静态 import 都会把它们的 env 在 require 瞬间定死 —— 那时资源
+ * 定位（resources.locate）与用户 Cookie 注入（settings.cookies）都还没铺进
+ * process.env。推迟到**第一次真正解析**，此时 index.ts 的 publishKernelEnv()
+ * 已执行完毕。esbuild/tsup 的 cjs 产物会把 `await import()` 编译成惰性 thunk，语义一致。
  */
-const LOCAL_PARSERS: Record<
-  string,
-  (url: string) => Promise<Record<string, unknown>>
-> = {
-  kuaishou: parseKuaishou as unknown as (url: string) => Promise<Record<string, unknown>>,
+export type CoreEntry = {
+  unifiedParseLocal: (
+    input: string,
+    options?: { source?: string; id?: string }
+  ) => Promise<Record<string, unknown>>;
+  localParserKeys: () => string[];
 };
 
+let coreEntry: Promise<CoreEntry> | null = null;
+function loadCore(): Promise<CoreEntry> {
+  if (!coreEntry) {
+    coreEntry = import("@/lib/unifiedCore") as Promise<CoreEntry>;
+  }
+  return coreEntry;
+}
 export function createEngine(deps: EngineDeps) {
   const cache = createResultCache();
   const analytics = createNoopAnalytics();
@@ -86,6 +102,7 @@ export function createEngine(deps: EngineDeps) {
     allowEnv: process.env.NODE_ENV === "development",
   });
   const throttle = createThrottle({ getIntervalMs: deps.getThrottleMs });
+  const coreLoader = deps.coreLoader ?? loadCore;
 
   /** 平台清单（来自内核 PLATFORM_INFO，renderer 不复制） */
   function platforms() {
@@ -97,9 +114,9 @@ export function createEngine(deps: EngineDeps) {
     }));
   }
 
-  /** 本地已抽取内核的平台集合（probe:engines 如实汇报覆盖率用） */
-  function localCoverage(): string[] {
-    return Object.keys(LOCAL_PARSERS);
+  /** 核心注册表平台清单（probe:engines 如实汇报覆盖率用；首次调用会触发内核惰性求值） */
+  async function localCoverage(): Promise<string[]> {
+    return (await coreLoader()).localParserKeys();
   }
 
   /**
@@ -144,7 +161,7 @@ export function createEngine(deps: EngineDeps) {
       data: {
         type: "video",
         title: `mock · ${platform} · 演示结果`,
-        desc: `来源 ${sourceUrl || "（无链接）"} —— 骨架期 mock 输出。P0 内核抽取完成后本地解析自动启用；未抽取平台走线上回落。`,
+        desc: `来源 ${sourceUrl || "（无链接）"} —— 骨架期 mock 输出。本地内核（parse-core 统一入口）与线上回落均不可用时才走到这里。`,
         author: "mock-author",
         cover: "",
         url: "https://example.com/mock/video.mp4",
@@ -217,29 +234,80 @@ export function createEngine(deps: EngineDeps) {
 
     await throttle.acquire();
 
-    // —— 通道 1：本地内核（P0 已抽取的平台）——
-    const localParser = deps.forceMode === "mock" || opts.forceOnline ? undefined : LOCAL_PARSERS[platform];
-    if (localParser && deps.forceMode !== "online") {
-      try {
-        const raw = await localParser(url);
-        const result = normalizeResult(raw) as unknown as ParseResult;
-        if (result?.code === 200) {
-          result.platform = result.platform || platform;
-          cache.set(cacheKey, result);
+    // —— 通道 1：本地内核（parse-core 统一入口，注册表覆盖全平台）——
+    if (deps.forceMode !== "mock" && deps.forceMode !== "online" && !opts.forceOnline) {
+      const core = await coreLoader();
+      const covered = new Set(core.localParserKeys());
+      const localEligible = url
+        ? covered.has(platform)
+        : !!source && covered.has(String(source).toLowerCase());
+      if (localEligible) {
+        try {
+          const raw = url
+            ? await core.unifiedParseLocal(url)
+            : await core.unifiedParseLocal("", { source, id });
+          const result = normalizeResult(raw) as unknown as ParseResult;
+          // 核心未给出契约结果（解析器返回 undefined / 异形）= 本地失败，
+          // 不能把 null 直接递给 renderer（UI 只会显示空错误）；沿用旧「本地失败 → 回落」语义。
+          if (!result || typeof result.code !== "number") {
+            const reason = "本地内核未返回有效解析结果";
+            if (deps.isFallbackEnabled() && deps.onlineFallback) {
+              return await viaOnlineFallback(
+                url || input,
+                platform,
+                reason,
+                t0,
+                deps,
+                cache,
+                analytics,
+                url ? undefined : { source, id, cacheKey }
+              );
+            }
+            return {
+              result: { code: 500, msg: `${reason}（${platform}）`, platform, failType: "script-error" },
+              via: "local",
+              durationMs: Date.now() - t0,
+            };
+          }
+          if (result.code === 200) {
+            result.platform = result.platform || platform;
+            cache.set(cacheKey, result);
+          } else if (!url && deps.isFallbackEnabled() && deps.onlineFallback) {
+            // ID 模式本地未命中（核心解析器未挂 parseVideoId）→ 沿用旧行为给线上兜底
+            return await viaOnlineFallback(
+              url,
+              platform,
+              "本地内核 ID 解析未命中",
+              t0,
+              deps,
+              cache,
+              analytics,
+              { source, id, cacheKey }
+            );
+          }
+          analytics.track("parse", { platform, via: "local", ok: result.code === 200 });
+          return { result, via: "local", durationMs: Date.now() - t0 };
+        } catch (e) {
+          // 本地失败 → 继续走回落，不吞错
+          const reason = e instanceof Error ? e.message : String(e);
+          if (!deps.isFallbackEnabled() || !deps.onlineFallback) {
+            return {
+              result: { code: 500, msg: `本地解析失败：${reason}`, platform, failType: "script-error" },
+              via: "local",
+              durationMs: Date.now() - t0,
+            };
+          }
+          return await viaOnlineFallback(
+            url || input,
+            platform,
+            reason,
+            t0,
+            deps,
+            cache,
+            analytics,
+            url ? undefined : { source, id, cacheKey }
+          );
         }
-        analytics.track("parse", { platform, via: "local", ok: result?.code === 200 });
-        return { result, via: "local", durationMs: Date.now() - t0 };
-      } catch (e) {
-        // 本地失败 → 继续走回落，不吞错
-        const reason = e instanceof Error ? e.message : String(e);
-        if (!deps.isFallbackEnabled() || !deps.onlineFallback) {
-          return {
-            result: { code: 500, msg: `本地解析失败：${reason}`, platform, failType: "script-error" },
-            via: "local",
-            durationMs: Date.now() - t0,
-          };
-        }
-        return await viaOnlineFallback(url || input, platform, reason, t0, deps, cache, analytics);
       }
     }
 
@@ -247,12 +315,12 @@ export function createEngine(deps: EngineDeps) {
       return { result: mockResult(url, platform || "mock"), via: "mock", durationMs: Date.now() - t0 };
     }
 
-    // —— 通道 2：线上回落（P0 未抽取平台的主通道；README「失败回落」决策）——
+    // —— 通道 2：线上回落（核心未覆盖平台 / 强制线上时的逃生通道；README「失败回落」决策）——
     if (deps.isFallbackEnabled() && deps.onlineFallback) {
       return await viaOnlineFallback(
         url,
         platform,
-        url ? "本地内核尚未支持该平台（P0 抽取进行中）" : "source+id 模式经线上入口解析",
+        url ? "本地内核注册表未覆盖该平台" : "source+id 模式经线上入口解析",
         t0,
         deps,
         cache,

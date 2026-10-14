@@ -62,14 +62,30 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Fetch yt-dlp / ffmpeg binaries
-        run: |
-          mkdir -p resources/bin
-          curl -sL -o resources/bin/yt-dlp.exe https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe
-          curl -sL -o resources/bin/ffmpeg.exe https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl/ffmpeg-master-latest-win64-gpl/bin/ffmpeg.exe
-          node -e "const {createHash}=require('crypto');const {createReadStream}=require('fs');for(const f of ['yt-dlp','ffmpeg']){const h=createHash('sha256');createReadStream('resources/bin/'+f+'.exe').on('data',d=>h.update(d)).on('end',()=>console.log(f,h.digest('hex')))}"
+      # 固定 tag + 强校验 SHA-256，并产出 resources/bin/manifest.json（首启校验用）。
+      # 不要退回 `curl -sL -o .../latest/download/...`：不带 --fail 时 404 的 HTML
+      # 错误页会被原样写成 .exe，构建成功但产物是垃圾（静默投毒）。
+      - name: Fetch yt-dlp / ffmpeg binaries (pinned + verified)
+        run: node scripts/fetch-binaries.cjs
+      # 守门人：manifest.json 是运行时完整性校验的唯一基线，缺了它应用会静默降级成
+      # 「只定位不校验」。在打包前断言清单在位且与二进制自洽，让问题在构建期暴露。
+      - name: Verify binaries + manifest before packaging
+        run: node scripts/fetch-binaries.cjs --verify-only --require-all
       - name: Build app + installer
         run: pnpm run build
+      # 产物自检：安装包里必须真的带上 bin/ 与 manifest.json（extraResources 配错
+      # 时构建仍会成功，但用户机器上两个二进制都不可用）。
+      - name: Assert packaged resources landed in the installer
+        shell: pwsh
+        run: |
+          $unpacked = Get-ChildItem -Path release -Recurse -Directory -Filter 'win-unpacked' | Select-Object -First 1
+          if (-not $unpacked) { throw "release/win-unpacked 不存在：打包产物缺失" }
+          $bin = Join-Path $unpacked.FullName 'resources\bin'
+          foreach ($f in @('yt-dlp.exe','ffmpeg.exe','manifest.json')) {
+            $p = Join-Path $bin $f
+            if (-not (Test-Path $p)) { throw "安装包内缺少 resources\bin\$f" }
+            Write-Host "  OK $f ($((Get-Item $p).Length) 字节)"
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: mediaget-desktop-win

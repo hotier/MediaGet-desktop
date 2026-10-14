@@ -7,6 +7,7 @@
 import type {
   AppMeta,
   AppSettings,
+  BinaryStatusReport,
   DownloadTaskView,
   EnqueueInput,
   EnqueueOutcome,
@@ -80,6 +81,7 @@ export const api = {
   app: {
     pickDownloadDir: () => unwrap<string | null>(bridge().app.pickDownloadDir()),
     showInFolder: (path: string) => unwrap(bridge().app.showInFolder(path)),
+    getBinaryStatus: () => unwrap<BinaryStatusReport>(bridge().app.getBinaryStatus()),
     onUpdateAvailable: (cb: (info: { version: string }) => void) =>
       bridge().app.onUpdateAvailable(cb),
   },

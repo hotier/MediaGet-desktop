@@ -29,6 +29,16 @@ function harness() {
     getThrottleMs: () => store.loadConfig().settings.throttleMs,
     isFallbackEnabled: () => false, // 测试全离线
     onlineFallback: async () => null,
+    // 假内核：只声明 kuaishou 覆盖，探测/解析通道全部离线可控
+    coreLoader: async () => ({
+      localParserKeys: () => ["kuaishou"],
+      unifiedParseLocal: async (input: string) => ({
+        code: 200,
+        msg: "解析成功",
+        platform: "kuaishou",
+        data: { url: input },
+      }),
+    }),
   });
   const downloader = new Downloader({
     getDownloadDir: () => dir,
@@ -150,6 +160,58 @@ describe("IPC 信封与校验", () => {
     cleanup();
   });
 
+  it("settings:set 可写字段往返（P2 明暗主题前的可选布尔面）", async () => {    const { call, store, cleanup } = harness();
+    try {
+      const flag = (r: Awaited<ReturnType<typeof call>>): unknown =>
+        r.ok ? (r.data as { minimizeToTray?: boolean }).minimizeToTray : undefined;
+
+      // 默认 true（关窗最小化到托盘，下载中关窗不杀任务）
+      expect(flag(await call(IPC.settingsGet))).toBe(true);
+
+      const set = await call(IPC.settingsSet, { minimizeToTray: false });
+      expect(set.ok).toBe(true);
+      expect(store.loadConfig().settings.minimizeToTray).toBe(false);
+      expect(flag(await call(IPC.settingsGet))).toBe(false);
+
+      // 旧档缺字段（无 minimizeToTray 键）→ DEFAULT_SETTINGS 兜底
+      const raw = store.loadConfig();
+      delete (raw.settings as { minimizeToTray?: boolean }).minimizeToTray;
+      expect(flag(await call(IPC.settingsGet))).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("settings:set theme 往返（P2 明暗主题小契约）", async () => {
+    const { call, store, cleanup } = harness();
+    try {
+      const themeOf = (r: Awaited<ReturnType<typeof call>>): unknown =>
+        r.ok ? (r.data as { theme?: string }).theme : undefined;
+
+      expect(themeOf(await call(IPC.settingsGet))).toBe("system");
+
+      const set = await call(IPC.settingsSet, { theme: "light" });
+      expect(set.ok).toBe(true);
+      expect(store.loadConfig().settings.theme).toBe("light");
+      expect(themeOf(await call(IPC.settingsGet))).toBe("light");
+
+      await call(IPC.settingsSet, { theme: "dark" });
+      expect(store.loadConfig().settings.theme).toBe("dark");
+
+      // 枚举外值被 strict schema 拒绝，不落盘
+      const bad = await call(IPC.settingsSet, { theme: "neon" });
+      expect(bad.ok).toBe(false);
+      expect(store.loadConfig().settings.theme).toBe("dark");
+
+      // 旧档缺 theme 键 → DEFAULT_SETTINGS 兜底 system
+      const raw = store.loadConfig();
+      delete (raw.settings as { theme?: string }).theme;
+      expect(themeOf(await call(IPC.settingsGet))).toBe("system");
+    } finally {
+      cleanup();
+    }
+  });
+
   it("settings:set 拒绝未知字段（strict schema）", async () => {
     const { call, cleanup } = harness();
     const r = await call(IPC.settingsSet, { evilField: 1 });
@@ -158,7 +220,7 @@ describe("IPC 信封与校验", () => {
     cleanup();
   });
 
-  it("probe:engines：回落关闭时未抽取平台 ok=false（如实汇报）", async () => {
+  it("probe:engines：回落关闭时未覆盖平台 ok=false（如实汇报）", async () => {
     const { call, cleanup } = harness();
     const r = await call(IPC.probeEngines);
     expect(r.ok).toBe(true);
@@ -166,8 +228,8 @@ describe("IPC 信封与校验", () => {
       const list = r.data as { platform: string; ok: boolean }[];
       const ks = list.find((x) => x.platform === "kuaishou");
       const dy = list.find((x) => x.platform === "douyin");
-      expect(ks?.ok).toBe(true); // 本地已抽取
-      expect(dy?.ok).toBe(false); // 未抽取且回落关（harness isFallbackEnabled=false）
+      expect(ks?.ok).toBe(true); // 假内核声明覆盖
+      expect(dy?.ok).toBe(false); // 未覆盖且回落关（harness isFallbackEnabled=false）
     }
     cleanup();
   });

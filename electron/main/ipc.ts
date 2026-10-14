@@ -16,6 +16,7 @@ import {
   DEFAULT_SETTINGS,
   type AppMeta,
   type AppSettings,
+  type BinaryStatusReport,
   type EngineHealth,
   type EnqueueInput,
   type EnqueueOutcome,
@@ -66,6 +67,8 @@ const SettingsPatchSchema = z
     onlineApiBase: z.string().url().max(200).optional(),
     cookies: z.record(z.string().max(60), z.string().max(20000)).optional(),
     throttleMs: z.number().int().min(0).max(60000).optional(),
+    minimizeToTray: z.boolean().optional(),
+    theme: z.enum(["system", "dark", "light"]).optional(),
   })
   .strict();
 const HistoryFilterSchema = z
@@ -93,6 +96,18 @@ export interface IpcRegistryDeps {
   store: JsonStore;
   getAppMeta: () => { version: string; electron: string };
   kernelMode: () => AppMeta["kernelMode"];
+  /**
+   * 设置写入后的副作用钩子（index.ts 注入 = publishKernelEnv）。
+   * 存在的理由：内核在**模块作用域**固化 process.env 里的 Cookie，
+   * 用户在设置页改 Cookie 后必须把新值铺回 process.env，否则要重启才生效。
+   */
+  onSettingsChanged?: () => void;
+  /**
+   * 随包二进制完整性状态提供者（index.ts 注入 = resources.describe）。
+   * 存在的理由：manifest 缺失会让运行时静默降级为「只定位不校验」——
+   * 把状态暴露给 UI 才谈得上「降级可见」。
+   */
+  getBinaryStatus?: () => BinaryStatusReport;
 }
 
 export function registerIpc(deps: IpcRegistryDeps): void {
@@ -194,6 +209,8 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     if (patch.fallbackOnline !== undefined) next.settings.fallbackOnline = patch.fallbackOnline;
     if (patch.onlineApiBase !== undefined) next.settings.onlineApiBase = patch.onlineApiBase;
     if (patch.throttleMs !== undefined) next.settings.throttleMs = patch.throttleMs;
+    if (patch.minimizeToTray !== undefined) next.settings.minimizeToTray = patch.minimizeToTray;
+    if (patch.theme !== undefined) next.settings.theme = patch.theme;
     if (patch.cookies) {
       const entries = Object.entries(patch.cookies) as [string, string][];
       for (const [k, v] of entries) {
@@ -208,6 +225,8 @@ export function registerIpc(deps: IpcRegistryDeps): void {
       }
     }
     store.saveConfig(next);
+    // Cookie 变更立即铺进 process.env（内核模块作用域读 env，重启才生效太反直觉）
+    deps.onSettingsChanged?.();
     return {
       ...next.settings,
       cookies: Object.fromEntries(
@@ -229,18 +248,26 @@ export function registerIpc(deps: IpcRegistryDeps): void {
   });
   // —— probe:engines（本地版体检：如实汇报解析通道覆盖，不发抓取、不打平台风控）——
   wrap(IPC.probeEngines, async (): Promise<EngineHealth[]> => {
-    const local = new Set(engine.localCoverage());
+    const local = new Set(await engine.localCoverage());
     const onlineReady = engine.fallbackEnabled();
     return engine.platforms().map((p) => ({
       platform: p.key,
       name: p.name,
       ok: local.has(p.key) || onlineReady,
       detail: local.has(p.key)
-        ? "本地内核已抽取（P0 完成）"
+        ? "本地内核直连（parse-core 注册表覆盖）"
         : onlineReady
           ? "经线上回落通道"
-          : "本地未抽取且线上回落已关闭：不可用",
+          : "本地内核未覆盖且线上回落已关闭：不可用",
     }));
+  });
+
+  // —— app:getBinaryStatus（随包二进制完整性：把「降级」如实报到 UI）——
+  wrap(IPC.appGetBinaryStatus, (): BinaryStatusReport => {
+    const report = deps.getBinaryStatus?.();
+    return (
+      report ?? { manifestLoaded: false, packagedDir: null, binaries: [] }
+    );
   });
 
   // —— 辅助通道（renderer 经白名单调用）——

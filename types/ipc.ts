@@ -64,8 +64,16 @@ export interface ParseData {
   embedOnly?: boolean;
   qualityLabel?: string;
   qualities?: ParsedVideoQuality[];
+  /** 频道订阅者数（YouTube，与 B站富信息对齐） */
+  subscriberCount?: number;
+  /** 频道投稿数（YouTube） */
+  videoCount?: number;
+  /** 频道累计播放（YouTube） */
+  channelViews?: number;
   name?: string;
   lyrics?: string;
+  /** 音乐高潮片段（汽水音乐等） */
+  core?: string;
   like?: number;
   retweets?: number;
   replies?: number;
@@ -120,6 +128,7 @@ export const IPC = {
   historyList: "history:list",
   historyClear: "history:clear",
   probeEngines: "probe:engines",
+  appGetBinaryStatus: "app:getBinaryStatus",
   // main → renderer 事件
   evDownloadProgress: "download:progress",
   evDownloadDone: "download:done",
@@ -188,7 +197,7 @@ export interface EnqueueInput {
   /** 图集等成组下载共用 groupId */
   groupId?: string;
   /** 关联展示信息（写历史用，不存直链） */
-  meta?: { platform?: string; title?: string };
+  meta?: { platform?: string; title?: string; sourceUrl?: string };
 }
 export interface EnqueueOutcome {
   taskIds: string[];
@@ -217,6 +226,7 @@ export interface PersistedQueueTask {
   createdAt: number;
   platform?: string;
   title?: string;
+  sourceUrl?: string;
   status: DownloadStatus;
 }
 
@@ -237,6 +247,8 @@ export interface DownloadTaskView {
   error?: string;
   platform?: string;
   title?: string;
+  /** 用户输入的分享链接（透传给历史，非直链） */
+  sourceUrl?: string;
   createdAt: number;
 }
 
@@ -254,6 +266,10 @@ export interface AppSettings {
   cookies: Record<string, string>;
   /** 温和节流（毫秒，0=不限） */
   throttleMs: number;
+  /** 点 ✕ 关窗时最小化到托盘而非退出（下载中关窗不杀任务） */
+  minimizeToTray: boolean;
+  /** 明暗主题；system = 跟随系统（renderer matchMedia / 主进程 nativeTheme 语义） */
+  theme: "system" | "dark" | "light";
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -263,13 +279,21 @@ export const DEFAULT_SETTINGS: AppSettings = {
   onlineApiBase: "https://get.hotier.cc.cd",
   cookies: {},
   throttleMs: 0,
+  minimizeToTray: true,
+  theme: "system",
 };
 
 /** history:list */
 export interface HistoryEntry {
   id: string;
+  /** 图集等成组下载共用（聚合一行用） */
+  groupId?: string;
   platform?: string;
   title?: string;
+  /** 媒体类型（视频/图集/音频/文件） */
+  kind?: string;
+  /** 文件字节数（done 时的 received） */
+  bytes?: number;
   /** 落地文件路径列表 */
   files: string[];
   /** 分享来源链接（用户自己的输入，非直链） */
@@ -288,6 +312,36 @@ export interface EngineHealth {
   ok: boolean;
   detail?: string;
   durationMs?: number;
+}
+
+// ————————————————————————————————————————————————
+// 随包二进制（yt-dlp / ffmpeg）完整性汇报
+// ————————————————————————————————————————————————
+
+/**
+ * 单个二进制的运行时状态。
+ *
+ * `integrity` 是「降级可见」的关键字段：`degraded` 表示**没有**完整性基线
+ * （dev 自备 / 旧包未带 manifest），此时只定位不校验 —— 不假装有防护。
+ * 设置页应把它如实展示，而不是只显示「可用」。
+ */
+export interface BinaryStatusView {
+  name: "yt-dlp" | "ffmpeg";
+  available: boolean;
+  origin?: "user" | "extracted" | "packaged";
+  path?: string;
+  integrity: "verified" | "degraded" | "rejected" | "missing";
+  /** 期望 SHA-256（有基线时） */
+  expected?: string;
+}
+
+/** app:getBinaryStatus 返回 */
+export interface BinaryStatusReport {
+  /** 本次进程是否带完整性基线（= 随包 manifest.json 被读到） */
+  manifestLoaded: boolean;
+  /** extraResources 落点（prod）/ MG_BIN_DIR（dev）；null = 无随包目录 */
+  packagedDir: string | null;
+  binaries: BinaryStatusView[];
 }
 
 // ————————————————————————————————————————————————
@@ -323,6 +377,8 @@ export interface MgBridge {
     pickDownloadDir(): Promise<InvokeResult<string | null>>;
     showInFolder(path: string): Promise<InvokeResult<{ ok: boolean }>>;
     onUpdateAvailable(cb: (info: { version: string }) => void): () => void;
+    /** 随包二进制完整性状态（降级可见：degraded/rejected 要能被用户看到） */
+    getBinaryStatus(): Promise<InvokeResult<BinaryStatusReport>>;
   };
 }
 

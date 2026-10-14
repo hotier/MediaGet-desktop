@@ -43,6 +43,8 @@ export interface StoreShape {
 
 export class JsonStore {
   private dirtyTimer: NodeJS.Timeout | null = null;
+  /** 待落盘的队列快照（节流窗口内最后一次写赢） */
+  private pendingQueue: PersistedQueueTask[] | null = null;
   private configCache: Pick<StoreShape, "settings" | "kernel"> | null = null;
 
   constructor(private dir: string) {
@@ -149,23 +151,44 @@ export class JsonStore {
     this.writeJson(this.path("queue"), tasks);
   }
 
+  /**
+   * 节流落盘：窗口内只写一次，但**写的是最后一次快照**。
+   *
+   * 为什么必须留 pending（曾经的真实缺陷）：早先的实现是
+   * `if (this.dirtyTimer) return;` 直接丢弃窗口内的后续调用 —— 于是落盘的是
+   * 窗口**开始**时的快照，而进度事件高频发生在窗口**结束**前，重启后队列显示的
+   * 是 2 秒前的旧进度。更糟的是 `flush()` 只清定时器不落盘，退出路径上
+   * before-quit 的最终快照会被前一个待触发定时器一起丢掉，
+   * 直接违反 P2 验收「重启后队列/历史完整」。
+   */
   saveQueueThrottled(tasks: PersistedQueueTask[]): void {
+    this.pendingQueue = tasks;
     if (this.dirtyTimer) return;
     this.dirtyTimer = setTimeout(() => {
       this.dirtyTimer = null;
-      try {
-        this.saveQueue(tasks);
-      } catch {
-        /* 队列快照写失败不影响下载本身 */
-      }
+      this.flushQueue();
     }, 2000);
     if (typeof this.dirtyTimer.unref === "function") this.dirtyTimer.unref();
   }
 
+  /** 立即落盘待写快照（幂等：无 pending 则什么都不做） */
+  private flushQueue(): void {
+    const pending = this.pendingQueue;
+    this.pendingQueue = null;
+    if (!pending) return;
+    try {
+      this.saveQueue(pending);
+    } catch {
+      /* 队列快照写失败不影响下载本身 */
+    }
+  }
+
+  /** 退出前调用：取消定时器并**同步**落盘最后一次快照，避免丢最后一次写入 */
   flush(): void {
     if (this.dirtyTimer) {
       clearTimeout(this.dirtyTimer);
       this.dirtyTimer = null;
     }
+    this.flushQueue();
   }
 }

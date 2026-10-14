@@ -3,7 +3,7 @@
 「即刻解析」桌面客户端（Windows 首发）：基于 [mediaGet](https://github.com/hotier/mediaGet) 的视频解析能力，在本机完成**解析 + 下载**闭环。
 
 - 仓库定位：桌面客户端工程（Electron）。**解析内核不在本仓**——单一代码源留在 `mediaGet` 仓 `src/lib/**`，本仓通过 workspace 引用（见下文「内核耦合」）。
-- 状态：**P1 骨架已落地**（main/preload/renderer + core-adapter + IPC 契约 + 下载管理器 + 线上回落 + 边界 CI）。上游 P0 抽取未完成前：识别/黑名单/归一化/快手解析走本地真内核（import `mediaGet/src/lib/**`），其余平台解析经线上回落通道（「失败回落」决策）；无网络环境自动落 mock，结果来源（local/online/mock）在结果卡如实标注。
+- 状态：**P1 骨架已落地**（main/preload/renderer + core-adapter + IPC 契约 + 下载管理器 + 线上回落 + 边界 CI），解析面已**桌面化一致**：上游内核整体收敛为 `packages/parse-core` 统一入口（`unifiedParseLocal` + `localParserKeys`），黑名单/平台识别/全部 21 平台解析器/快手兜底/直链验证/source+id 模式**全部本地执行**（见「内核耦合」）。本仓不再自维护平台解析器表，只引用这一个核心。线上 `/api/parse` 降级为**逃生通道**（上游改版风暴、用户主动开启时才用），不再承担主解析；无网络且回落关闭时落 mock，结果来源（local/online/mock）在结果卡如实标注。
 - 开发前置：两仓并列检出（`../mediaGet` 与 `../mediaGet-desktop` 同级），tsconfig/tsup/vitest 已按 `@ → ../mediaGet/src` 配好路径别名（消费方式 A·物理链接）。
 
 ## 为什么要桌面版
@@ -41,7 +41,8 @@
 ```
 mediaGet-desktop/
 ├─ docs/
-│  └─ ARCHITECTURE.md      # 本文档的详版（目录职责 / IPC 契约 / 数据流）
+│  ├─ ARCHITECTURE.md      # 本文档的详版（目录职责 / IPC 契约 / 数据流）
+│  └─ UIUX-HANDOFF.md      # UI/UX 施工交接单（设计蓝图索引 / 合并策略 / 铁律 / 验收门）
 ├─ electron/
 │  ├─ main/                # 主进程
 │  │  ├─ index.ts          # 应用生命周期 / 窗口
@@ -78,7 +79,11 @@ mediaGet-desktop/
 
 消费方式（**已定稿，完整论证与同步流水线见 [docs/ARCHITECTURE.md §8](docs/ARCHITECTURE.md)**）：内核发布为 `@mediaget/parse-core` **版本化工件**，首发载体是 mediaGet GitHub Release 附带的 tarball（零注册表运维，semver 语义完整，CI `npm ci` 直连可用）。物理链接 `../mediaGet` 仅作本地联调临时桥，**提交态必须是版本化工件**。
 
-P0 工件尚未发布前，本仓 engine 用临时物理链接（识别/黑名单/归一化/快手解析真跑本地内核）+ 其余平台线上回落 + mock 兜底顶替；工件首发后的切换清单见 `electron/main/engine.ts` 头注释（4 步，一次 PR 完成）。
+P0 工件尚未发布前，本仓 engine 用临时物理链接顶替：`await import("@/lib/unifiedCore")` 拿到 parse-core 统一入口，**全部平台解析在本地执行**；线上回落只在用户显式开启、且本地异常/核心未覆盖时作为逃生通道，两者皆不可用时落 mock。工件首发后的切换清单见 `electron/main/engine.ts` 头注释（4 步，一次 PR 完成）。
+
+**P0 进度（2026-10-14）**：mediaGet 侧步骤 1 **已全量落地**——解析内核依赖闭包（15 个 `src/lib` 模块 + `types/api` + `config/video-platforms` + `utils/filename`）迁入上游仓 `packages/parse-core/`（包名 `@mediaget/parse-core`，`src/index.ts` 为 exports 白名单入口），web 侧原路径改 re-export 薄壳、行为零变化（上游 1082 测试全绿 + `tsc --noEmit` 过）；余下 15 个平台的 route 内联解析逻辑逐字搬入 `packages/parse-core/src/lib/<platform>Core.js`，并新增 `parser-registry.js`（21 键覆盖识别面全平台）与 `unified-core.js`（`createUnifiedParser` / `unifiedParseLocal`）——web 的 `unified-parser.js` 退化为注入「kuaishou 纯函数 + platformRoutes 动态路由」的薄包装（保留中间件缓存/限流语义），桌面只引用核心的 `unifiedParseLocal` + `localParserKeys`，不再自维护平台解析器表。联机走线冒烟：21 个平台链接全部 `via=local`（B 站/YouTube 拿到真实标题与直链，抖音/西瓜/皮皮虾等返回各自平台的服务端错误文案）。本仓物理链接穿过薄壳照常消费（`@/lib/*` 路径不变），`tests/kernel-sync.test.ts` 守卫镜像与上游真源字段集合一致。剩余：上游步骤 2（CI tag → Release tarball 发布）、本仓步骤 3（切 `@mediaget/parse-core` 工件依赖，删 kernelAlias/并列检出）。
+
+**UI/UX 施工进度（2026-10-14，按 [docs/UIUX-HANDOFF.md](docs/UIUX-HANDOFF.md) 排序）**：更新横幅文案已修正为与 electron-updater 实际行为一致；P0 三层 Design Token 基座落地（`renderer/src/styles.css` 单文件，暗色默认 + light 覆盖）；P3/批量图集下载页按 `groupId` 聚合 + 折叠；P5 托盘 + 关窗最小化（`minimizeToTray` 设置项，下载中关窗不杀任务）；P4 结果卡补全（画质选择器消费 `qualities`/`videos[].qualities`、图集缩略网格 + 模态预览、`stat`/`avatar`/`music`/频道计数元数据行含 `statsUnreliable` 警告、`embedOnly` 浏览器打开、`fallbackReason` 折叠、缓存命中 chip、失败态重试、直链 5 分钟时效提示——零 IPC 变更）；P2 明暗主题接线（小契约 `AppSettings.theme`，`renderer/src/lib/theme.ts` 解析 system/dark/light 落 `data-theme`，设置页「外观」卡）；布局改左右分栏（侧栏导航带 `⌃1–4` 快捷键角标）；品牌图标全站统一（复用上游 `public/logos` 21 枚 SVG 至 `renderer/public/logos`，`PlatformIcon` 单点出口，解析墙/结果卡/下载/历史/设置体检五处同源）；交互升级（粘贴 600ms 自动解析 + 实时识别提示条、平台墙点选注入 `platformHint`、Ctrl+1–4/Ctrl+,/Ctrl+D/Esc L1 快捷键、解析中骨架屏 + spinner、三页空态引导、卡片/按钮质感打磨）。**Air 风格迁移已落地（2026-10-14，规范见 [docs/UIUX-DESIGN.md §7](docs/UIUX-DESIGN.md)）**：Tailwind v4 CSS-first 接入（`@theme inline` 桥接三层 Token）；高对比黑白灰基座 + 四区悬浮玻璃布局（侧栏 220 / 顶栏 60 全局粘贴入口 Ctrl+K / 主内容 16px 间距 / 底部任务控制条 80——App 层订阅 `onProgress/onDone/onError` 跨页存活，封面模糊背景 400ms 交叉淡入 + 下载中 20s 呼吸缩放）；动态魔法色（`renderer/src/lib/accent.ts`：缩略图 32×32 主色提取、HSL 亮度钳位、`@property --accent-color` 400ms 过渡、`--accent-ink` 按亮度翻转，零 IPC 变更）。剩余：P6 完整自动更新 UI、真实 tray 图标资产。
 
 ## 本地适配层职责（core-adapter）
 
@@ -98,6 +103,7 @@ P0 工件尚未发布前，本仓 engine 用临时物理链接（识别/黑名�
 - **失败回落**：本地解析失败可选回落线上 API（站点有 24h 结果缓存兜底），兼顾住宅 IP 高成功率与最坏情况。
 - **直链时效**：解析结果到下载启动的窗口以秒计——UI 上「下载」按钮直接触发主进程流式落盘，不做「先展示直链让用户点」的二跳。
 - **更新**：`electron-updater` + GitHub Releases；无签名证书阶段接受 SmartScreen 提示，后续补签。
+- **依赖基线（2026-10-14 修订）**：runtime 依赖从"零新增"放宽为**仅允许已评审的 headless 原语与图标包**——白名单：`@radix-ui/react-dialog` / `@radix-ui/react-select` / `@radix-ui/react-switch` / `@radix-ui/react-toast` / `lucide-react`（一次提完、lockfile 单 commit、CI 验证）。禁止：Tailwind / shadcn / framer-motion / tanstack 全家桶等绑架设计系统或样式范式的包。理由：模态/combobox/toast 的自研无障碍成本（1–2 天/件且易错）大于 headless 原语的供应链成本；Electron 安装包体积下 ~30KB 组件无感。样式仍走 [docs/UIUX-DESIGN.md](docs/UIUX-DESIGN.md) §5.2 的三层 CSS Token。
 
 ## 里程碑
 
