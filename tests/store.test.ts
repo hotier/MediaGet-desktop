@@ -125,7 +125,9 @@ describe("历史：追加序与上限", () => {
     expect(legacy[0]?.author).toBeUndefined();
   });
 
-  it("超过 500 条截断（HISTORY_MAX）", () => {
+  // 505 次 appendHistory = 505 次整文件原子写（写量随历史增长，O(n²)）：本机实测 3.7s，
+  // CI runner 上超 vitest 默认 5s —— 这是慢，不是坏，给到 30s 档。
+  it("超过 500 条截断（HISTORY_MAX）", { timeout: 30_000 }, () => {
     const s = new JsonStore(dir);
     for (let i = 0; i < 505; i++) s.appendHistory(entry(`h${i}`));
     expect(s.loadHistory()).toHaveLength(500);
