@@ -12,6 +12,9 @@ import {
   type AppSettings,
   type AuthorSnapshot,
   type BinaryStatusReport,
+  type CacheClearResult,
+  type CacheItemKey,
+  type CacheStatus,
   type DownloadItem,
   type DownloadTaskView,
   type EngineHealth,
@@ -222,7 +225,8 @@ function detectPlatform(text: string): string | null {
   return null;
 }
 
-const URL_RE = /https?:\/\/\S+/;
+// 与内核 extractUrlFromShareText 同字符类：在中文标点/全角空格处截断（预览的识别 kind 才与真核一致）
+const URL_RE = /https?:\/\/[^\s\u3000\u00A0，。！？、；：（）【】《》"'“”‘’<>]+/i;
 
 // ————————————————————————————————————————————————
 // 下载队列模拟
@@ -442,23 +446,48 @@ function seedQueue(): void {
 }
 
 // ————————————————————————————————————————————————
-// 更新状态机（假源：让 P6 的横幅与设置页卡片在浏览器里也能评审）
+// 更新状态机（假源：让 P6 的流式下载弹窗与设置页卡片在浏览器里也能评审）
 // ————————————————————————————————————————————————
 
 let updatePhase: UpdateState["phase"] = "idle";
 let updatePercent = 0;
+let updateSpeed: number | undefined;
+let updateDownloaded = false; // 该版本是否已下完：下完后再次检测/下载不重演进度
 let updateTimer: ReturnType<typeof setInterval> | null = null;
 const updateCbs = new Set<(s: UpdateState) => void>();
 
+const FAKE_CHANGELOG = [
+  "v0.2.0 更新说明",
+  "",
+  "新增",
+  "· 队列页重做：九列单行布局，主线程聚合行，状态徽标即动作按钮",
+  "· 解析结果卡支持多清晰度预选与默认清晰度策略",
+  "",
+  "优化",
+  "· 下载器流式落盘，单任务失败隔离，不再影响同组其他任务",
+  "· 断点保留（keepPartials）与失败重试次数可在设置中调整",
+  "",
+  "修复",
+  "· 修正快手等平台解析通道回归",
+  "· 修复历史页作者列头像缺失",
+].join("\n");
+
 function updateSnapshot(err?: string): UpdateState {
   const total = 78 * MB;
+  const showProgress =
+    updatePhase === "downloading" || updatePhase === "downloaded" || updatePhase === "paused";
+  const hasNew =
+    updatePhase !== "idle" && updatePhase !== "up-to-date" && updatePhase !== "unsupported";
   return {
     phase: updatePhase,
     currentVersion: "0.1.0",
-    availableVersion: updatePhase === "idle" || updatePhase === "up-to-date" ? undefined : "0.2.0",
-    percent: updatePhase === "downloading" || updatePhase === "downloaded" ? updatePercent : undefined,
-    transferredBytes: updatePhase === "downloaded" ? total : Math.round((total * updatePercent) / 100),
+    availableVersion: hasNew ? "0.2.0" : undefined,
+    percent: showProgress ? updatePercent : undefined,
+    transferredBytes:
+      updatePhase === "downloaded" ? total : Math.round((total * updatePercent) / 100),
     totalBytes: updatePhase === "available" ? undefined : total,
+    bytesPerSecond: updatePhase === "downloading" ? updateSpeed : undefined,
+    releaseNotes: hasNew ? FAKE_CHANGELOG : undefined,
     error: err,
     canCheck: true,
   };
@@ -469,13 +498,87 @@ function pushUpdate(err?: string): void {
   for (const cb of updateCbs) cb(s);
 }
 
+/** 起一段进度流：从当前 updatePercent 继续推进，跑满 100% 落 downloaded。 */
+function startUpdateTick(): void {
+  if (updateTimer) return;
+  updateSpeed = Math.round(3.6 * MB);
+  updateTimer = setInterval(() => {
+    updatePercent = Math.min(100, updatePercent + 9);
+    if (updatePercent >= 100) {
+      updatePhase = "downloaded";
+      updateDownloaded = true;
+      updateSpeed = undefined;
+      if (updateTimer) clearInterval(updateTimer);
+      updateTimer = null;
+    }
+    pushUpdate();
+  }, 420);
+}
+
 // ————————————————————————————————————————————————
+
+/** 预览用静态字体子集（真实枚举在主进程 font-list）；混排中英、按 zh 序近似排好 */
+const MOCK_FONTS: string[] = [
+  "Arial",
+  "Cambria",
+  "Consolas",
+  "Courier New",
+  "Georgia",
+  "Microsoft JhengHei",
+  "Microsoft Sans Serif",
+  "Microsoft YaHei UI",
+  "Segoe UI",
+  "Segoe UI Variable Text",
+  "Tahoma",
+  "Times New Roman",
+  "Verdana",
+  "等线",
+  "仿宋",
+  "黑体",
+  "华文彩云",
+  "华文行楷",
+  "楷体",
+  "宋体",
+  "微软雅黑",
+  "新宋体",
+  "幼圆",
+];
 
 let settings: AppSettings = {
   ...DEFAULT_SETTINGS,
   downloadDir: "D:\\Downloads",
   cookies: { BILIBILI_COOKIE: "***", IG_COOKIE: "***" },
 };
+
+// ————————————————————————————————————————————————
+// 本机占用夹具（真扫描在主进程 cache.ts）：够设置页演「查看 → 清理 → 归零」
+// ————————————————————————————————————————————————
+
+const CACHE_LABEL_ORDER: CacheItemKey[] = ["net", "update", "partials", "junk", "logs", "records"];
+/** 与主进程同一把尺：update（更新包由更新流程自管）与 records（用户数据不是缓存）不可清 */
+const CACHE_CLEARABLE = new Set<CacheItemKey>(["net", "partials", "junk", "logs"]);
+
+const mockCacheBytes: Record<CacheItemKey, number> = {
+  net: 84 * MB,
+  update: 78 * MB,
+  partials: 6 * MB + 400 * KB,
+  junk: 2 * KB,
+  logs: 340 * KB,
+  records: 96 * KB,
+};
+
+function mockCacheStatus(): CacheStatus {
+  const items = CACHE_LABEL_ORDER.map((key) => ({
+    key,
+    bytes: Math.round(mockCacheBytes[key]),
+    clearable: CACHE_CLEARABLE.has(key),
+  }));
+  return {
+    items,
+    totalBytes: items.reduce((n, i) => n + i.bytes, 0),
+    clearableBytes: items.reduce((n, i) => n + (i.clearable ? i.bytes : 0), 0),
+  };
+}
 
 const mockBridge: MgBridge = {
   getMeta: async () =>
@@ -500,6 +603,14 @@ const mockBridge: MgBridge = {
         result: { code: 500, msg: "平台风控拦截：需要登录 Cookie 才能拿到清晰度列表", failType: "bot-gated" },
         via: "local",
         durationMs: 420,
+      });
+    }
+    // 无链接的输入在内核侧就是 400（中文文案），预览也如实报错而不是兜底造一个 douyin 夹具
+    if (!text.match(URL_RE)) {
+      return ok<ParseRunOutcome>({
+        result: { code: 400, msg: "未能从分享文案中提取到有效链接，请确认文案中包含视频分享链接" },
+        via: "local",
+        durationMs: 18,
       });
     }
     const key = (platformHint && FIXTURES[platformHint] ? platformHint : null) ?? detectPlatform(t) ?? "douyin";
@@ -574,7 +685,14 @@ const mockBridge: MgBridge = {
   settings: {
     get: async () => ok(structuredClone(settings)),
     set: async (patch) => {
-      settings = { ...settings, ...patch };
+      // 与主进程 settingsSet 同语义：cookies 按 key 合并（""=清除，"***"=掩码回传不修改），不是整表替换
+      const cookies = { ...settings.cookies };
+      for (const [k, v] of Object.entries(patch.cookies ?? {})) {
+        if (v === "***") continue;
+        if (v === "") delete cookies[k];
+        else cookies[k] = v;
+      }
+      settings = { ...settings, ...patch, cookies };
       return ok(structuredClone(settings));
     },
   },
@@ -593,9 +711,10 @@ const mockBridge: MgBridge = {
   },
 
   probe: {
+    // 全量平台（与真核 probe:engines 一致返回 engine.platforms()）：Cookie 列要覆到 instagram/qqmusic 等尾部平台
     engines: async () =>
       ok<EngineHealth[]>(
-        PLATFORMS.slice(0, 12).map((p, i) => ({
+        PLATFORMS.map((p, i) => ({
           platform: p.key,
           name: p.name,
           ok: i % 4 !== 3,
@@ -608,39 +727,95 @@ const mockBridge: MgBridge = {
   app: {
     pickDownloadDir: async () => ok("D:\\Downloads"),
     showInFolder: async () => ok({ ok: true }),
+    // 预览里不模拟剪贴板轮询（真实行为只能在 Electron 里验）：订阅合法但永不触发
+    onClipboardLink: () => () => {},
+    // 镜像 dev 真实态：fetch-binaries 已落 resources/bin + manifest，dev 默认目录即该处 → 双 verified
     getBinaryStatus: async () =>
       ok<BinaryStatusReport>({
-        manifestLoaded: false,
-        packagedDir: null,
+        manifestLoaded: true,
+        packagedDir: "resources\\bin",
         binaries: [
-          { name: "yt-dlp", available: true, origin: "user", path: "D:\\bin\\yt-dlp.exe", integrity: "degraded" },
-          { name: "ffmpeg", available: false, integrity: "missing" },
+          { name: "yt-dlp", available: true, origin: "extracted", path: "userData\\bin\\yt-dlp.exe", integrity: "verified" },
+          { name: "ffmpeg", available: true, origin: "extracted", path: "userData\\bin\\ffmpeg.exe", integrity: "verified" },
         ],
       }),
+    // 预览里字体枚举走静态子集（真实 font-list 只在 Electron 主进程跑），带小延迟以演「读取本机字体…」加载态
+    listFonts: async () => {
+      await delay(500);
+      return ok<string[]>([...MOCK_FONTS]);
+    },
+    cacheStatus: async () => {
+      await delay(220); // 真扫描要走磁盘，预览也演个短加载态
+      return ok<CacheStatus>(mockCacheStatus());
+    },
+    clearCache: async (keys) => {
+      await delay(320);
+      const before = mockCacheStatus();
+      const skipped = keys.filter((k) => !CACHE_CLEARABLE.has(k));
+      for (const k of keys) if (CACHE_CLEARABLE.has(k)) mockCacheBytes[k] = 0;
+      const report = mockCacheStatus();
+      return ok<CacheClearResult>({ freed: before.totalBytes - report.totalBytes, skipped, report });
+    },
+    openLogDir: async () => ok({ ok: true }),
+    log: async () => ok({ ok: true }),
     update: {
       state: async () => ok(updateSnapshot()),
       check: async () => {
         updatePhase = "checking";
         pushUpdate();
         await delay(700);
-        updatePhase = "available";
+        // 同版本已下好 → 直接回「已下载完成」，不退回 available 诱导重复下载
+        updatePhase = updateDownloaded ? "downloaded" : "available";
         pushUpdate();
         return ok(updateSnapshot());
       },
       download: async () => {
-        updatePhase = "downloading";
+        if (updateDownloaded || updatePhase === "downloaded") {
+          updatePhase = "downloaded";
+          updatePercent = 100;
+          pushUpdate();
+          return ok(updateSnapshot());
+        }
+        if (updatePhase !== "downloading") {
+          updatePhase = "downloading";
+          updatePercent = 0;
+          pushUpdate();
+        }
+        startUpdateTick();
+        return ok(updateSnapshot());
+      },
+      pause: async () => {
+        if (updateTimer) {
+          clearInterval(updateTimer);
+          updateTimer = null;
+        }
+        updateSpeed = undefined;
+        if (updatePhase === "downloading") {
+          updatePhase = "paused";
+          pushUpdate();
+        }
+        return ok(updateSnapshot());
+      },
+      resume: async () => {
+        if (updatePhase === "paused") {
+          updatePhase = "downloading";
+          updatePercent = 0; // 无断点续传：恢复即从头重下
+          pushUpdate();
+          startUpdateTick();
+        }
+        return ok(updateSnapshot());
+      },
+      cancel: async () => {
+        if (updateTimer) {
+          clearInterval(updateTimer);
+          updateTimer = null;
+        }
+        updateSpeed = undefined;
         updatePercent = 0;
-        pushUpdate();
-        if (!updateTimer) {
-          updateTimer = setInterval(() => {
-            updatePercent = Math.min(100, updatePercent + 9);
-            if (updatePercent >= 100) {
-              updatePhase = "downloaded";
-              if (updateTimer) clearInterval(updateTimer);
-              updateTimer = null;
-            }
-            pushUpdate();
-          }, 420);
+        updateDownloaded = false; // 放弃下载：清除「已下完」标记，允许重新起流
+        if (updatePhase === "downloading" || updatePhase === "paused") {
+          updatePhase = "available";
+          pushUpdate();
         }
         return ok(updateSnapshot());
       },

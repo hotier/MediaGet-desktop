@@ -14,6 +14,10 @@ export const shell = {
   openExternal(_url: string): Promise<void> {
     return Promise.resolve();
   },
+  /** 打开目录（app:openLogDir）：空串 = 成功，与 Electron 同语义 */
+  openPath(_path: string): Promise<string> {
+    return Promise.resolve("");
+  },
 };
 
 /**

@@ -25,6 +25,8 @@ function makeDownloader(dir: string, fetchImpl: typeof fetch, maxConcurrent = 3)
   const dl = new Downloader({
     getDownloadDir: () => dir,
     getMaxConcurrent: () => maxConcurrent,
+    getRetryTimes: () => 2, // 与旧内置 MAX_ATTEMPTS=3 等价的总尝试数
+    getKeepPartials: () => false,
     defaultUserAgent: "UA-TEST",
     fetchImpl,
     events: {

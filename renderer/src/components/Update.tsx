@@ -1,15 +1,26 @@
 /**
- * 自动更新 UI（P6）：同一份 UpdateState 渲染成两种形态 ——
- * 顶部横幅（需要用户动手时才出现）与设置页状态卡（含主动检查）。
+ * 自动更新 UI（P6）：更新信息只在设置→关于的「手动检测更新」行动作组里操作。
+ * 「下载更新」起流并弹出**流式下载弹窗**——主体是本次版本的 changelog，进度条右侧显百分比，
+ * 下方显下载速度与已下/总大小；底部按钮「暂停 / 取消」（暂停时「继续下载 / 取消」，完成时「立即重启」）。
+ * 右上角 X 仅关弹窗、不停下载；关掉后重开「查看进度」仍见实时进度（下载在主进程后台跑）。
+ * 结果阶段以右上角 toast 播报（撤掉了首页/队列/历史的「发现新版本」横幅）。
  */
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../lib/bridge";
 import type { UpdateState } from "../../../types/ipc";
 import { Button } from "./ui/button";
 import { Progress } from "./ui/progress";
-import { Alert, AlertDescription } from "./ui/alert";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "./ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "./ui/dialog";
 
-type Action = "check" | "download" | "install";
+type Action = "check" | "download" | "pause" | "resume" | "cancel" | "install";
 
 /**
  * 动作后一律以主进程回传的快照为准：状态机是唯一真源，
@@ -19,10 +30,28 @@ async function act(action: Action, onState: (s: UpdateState) => void): Promise<v
   try {
     if (action === "check") onState(await api.app.update.check());
     else if (action === "download") onState(await api.app.update.download());
+    else if (action === "pause") onState(await api.app.update.pause());
+    else if (action === "resume") onState(await api.app.update.resume());
+    else if (action === "cancel") onState(await api.app.update.cancel());
     else await api.app.update.install(); // 成功即退出重启，代码不会再走到下面
   } catch {
     /* check/download 的失败已在主进程收敛为 error 阶段并经事件送达，此处无需二次处理 */
   }
+}
+
+function mb(bytes?: number): string {
+  if (bytes === undefined) return "";
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function speedText(s: UpdateState): string {
+  if (s.phase !== "downloading" || s.bytesPerSecond === undefined) return "—";
+  return `${mb(s.bytesPerSecond)}/s`;
+}
+
+function sizeText(s: UpdateState): string {
+  if (s.totalBytes === undefined) return "—";
+  return `${mb(s.transferredBytes)} / ${mb(s.totalBytes)}`;
 }
 
 function phrase(s: UpdateState): string {
@@ -38,8 +67,12 @@ function phrase(s: UpdateState): string {
       return `发现新版本${next}（当前 v${s.currentVersion}）`;
     case "downloading":
       return `正在下载${next}… ${s.percent ?? 0}%`;
+    case "paused":
+      return `下载已暂停（${s.percent ?? 0}%），恢复会重新下载`;
     case "downloaded":
-      return `${next} 已下载完成，退出应用时自动安装`;
+      return s.availableVersion
+        ? `v${s.availableVersion} 已下载完成，点「立即重启」安装`
+        : "更新已下载完成，点「立即重启」安装";
     case "error":
       return `更新失败：${s.error ?? "未知错误"}`;
     case "unsupported":
@@ -49,45 +82,24 @@ function phrase(s: UpdateState): string {
   }
 }
 
-const BANNER_PHASES: UpdateState["phase"][] = ["available", "downloading", "downloaded", "error"];
-
-export function UpdateBanner({
-  state,
-  onState,
-}: {
-  state: UpdateState;
-  onState: (s: UpdateState) => void;
-}): React.ReactElement | null {
-  if (!BANNER_PHASES.includes(state.phase)) return null;
-  const failed = state.phase === "error";
-  return (
-    <Alert variant={failed ? "destructive" : "default"} className="mb-3">
-      <div className="col-start-2 flex flex-wrap items-center justify-between gap-3">
-        <AlertDescription className="text-current">{phrase(state)}</AlertDescription>
-        <span className="flex items-center gap-2">
-          {state.phase === "available" && (
-            <Button size="sm" onClick={() => void act("download", onState)}>
-              下载更新
-            </Button>
-          )}
-          {state.phase === "downloaded" && (
-            <Button size="sm" onClick={() => void act("install", onState)}>
-              立即重启
-            </Button>
-          )}
-          {failed && state.canCheck && (
-            <Button size="sm" variant="ghost" onClick={() => void act("check", onState)}>
-              重试
-            </Button>
-          )}
-        </span>
-      </div>
-      {state.phase === "downloading" && <Progress value={state.percent ?? 0} className="col-start-2 mt-2" />}
-    </Alert>
-  );
+function dialogTitle(s: UpdateState): string {
+  const v = s.availableVersion ? ` v${s.availableVersion}` : "";
+  switch (s.phase) {
+    case "downloading":
+      return `正在下载更新${v}`;
+    case "paused":
+      return "下载已暂停";
+    case "downloaded":
+      return "更新已下载完成";
+    default:
+      return `更新${v}`;
+  }
 }
 
-export function UpdateCard({
+/** 只在结果阶段弹 toast：进行中类信息已有流式下载弹窗承载 */
+const TOAST_PHASES: UpdateState["phase"][] = ["up-to-date", "available", "downloaded", "error"];
+
+export function UpdateActions({
   state,
   onState,
 }: {
@@ -95,38 +107,141 @@ export function UpdateCard({
   onState: (s: UpdateState) => void;
 }): React.ReactElement {
   const busy = state.phase === "checking" || state.phase === "downloading";
+  const [dlOpen, setDlOpen] = useState(false);
+  const [toast, setToast] = useState<{ id: number; text: string } | null>(null);
+  const prevPhase = useRef(state.phase);
+  useEffect(() => {
+    if (state.phase !== prevPhase.current) {
+      prevPhase.current = state.phase;
+      if (TOAST_PHASES.includes(state.phase)) {
+        setToast({ id: Date.now(), text: phrase(state) });
+      }
+    }
+  }, [state]);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // 起流并打开弹窗；右上角 X 只 setDlOpen(false)，下载在主进程继续
+  function startDownload(): void {
+    setDlOpen(true);
+    void act("download", onState);
+  }
+
+  const pct = state.phase === "downloaded" ? 100 : state.percent ?? 0;
+  const version = state.availableVersion ? ` v${state.availableVersion}` : "";
+  const active = state.phase === "downloading" || state.phase === "paused" || state.phase === "downloaded";
+
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-sm">更新</CardTitle>
-        <CardDescription>
-          经 GitHub Releases 通道检查；下载与安装都在应用内进行，安装只在退出或点「立即重启」时发生。
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="flex flex-col gap-3 pb-5">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <span className="text-sm">{phrase(state)}</span>
-          <span className="flex items-center gap-2">
-            {state.canCheck && (
-              <Button size="sm" variant="outline" disabled={busy} onClick={() => void act("check", onState)}>
-                {busy ? "进行中…" : "检查更新"}
-              </Button>
+    <div className="flex flex-col items-end gap-2">
+      <span className="flex flex-wrap items-center justify-end gap-2 pt-1.5">
+        {state.canCheck && (
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void act("check", onState)}>
+            {state.phase === "checking" ? "检查中…" : "检查更新"}
+          </Button>
+        )}
+        {state.phase === "available" && (
+          <Button size="sm" onClick={startDownload}>
+            下载更新
+          </Button>
+        )}
+        {(state.phase === "downloading" || state.phase === "paused") && (
+          <Button size="sm" variant="outline" onClick={() => setDlOpen(true)}>
+            {state.phase === "paused" ? "已暂停 · 查看" : "查看进度"}
+          </Button>
+        )}
+        {state.phase === "downloaded" && (
+          <Button size="sm" onClick={() => void act("install", onState)}>
+            立即重启
+          </Button>
+        )}
+      </span>
+      <Dialog open={dlOpen} onOpenChange={(v) => !v && setDlOpen(false)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{dialogTitle(state)}</DialogTitle>
+            <DialogDescription>
+              {`新版本${version}（当前 v${state.currentVersion}）`}
+              {state.totalBytes ? ` · 更新包约 ${mb(state.totalBytes)}` : ""}
+              {" · 经 GitHub Releases 通道"}
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* 主体：本次版本的 changelog */}
+          <div className="max-h-56 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-3 text-xs leading-relaxed text-foreground">
+            {state.releaseNotes?.trim() || "（该版本暂无更新说明）"}
+          </div>
+
+          {active && (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2">
+                <Progress value={pct} className="flex-1" />
+                <span className="w-10 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
+                  {pct}%
+                </span>
+              </div>
+              <div className="flex items-center justify-between text-xs text-muted-foreground tabular-nums">
+                <span>速度 {speedText(state)}</span>
+                <span>{sizeText(state)}</span>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter>
+            {state.phase === "downloading" && (
+              <>
+                <Button variant="outline" onClick={() => void act("pause", onState)}>
+                  暂停
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    void act("cancel", onState);
+                    setDlOpen(false); // 取消即回落 available，收掉弹窗回到「下载更新」
+                  }}
+                >
+                  取消
+                </Button>
+              </>
             )}
-            {state.phase === "available" && (
-              <Button size="sm" onClick={() => void act("download", onState)}>
-                下载更新
-              </Button>
+            {state.phase === "paused" && (
+              <>
+                <Button variant="outline" onClick={() => void act("resume", onState)}>
+                  继续下载
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    void act("cancel", onState);
+                    setDlOpen(false);
+                  }}
+                >
+                  取消
+                </Button>
+              </>
             )}
             {state.phase === "downloaded" && (
-              <Button size="sm" onClick={() => void act("install", onState)}>
-                立即重启
-              </Button>
+              <Button onClick={() => void act("install", onState)}>立即重启</Button>
             )}
-          </span>
-        </div>
-        {state.phase === "downloading" && <Progress value={state.percent ?? 0} />}
-        <p className="text-xs tabular-nums text-muted-foreground">当前版本 v{state.currentVersion}</p>
-      </CardContent>
-    </Card>
+          </DialogFooter>
+          {state.phase === "downloading" && (
+            <p className="text-xs text-muted-foreground">右上角 X 仅关闭弹窗，下载会在后台继续。</p>
+          )}
+        </DialogContent>
+      </Dialog>
+      {toast &&
+        createPortal(
+          <div
+            key={toast.id}
+            role="status"
+            className="fixed top-4 right-4 z-50 max-w-[24rem] rounded-md border border-border bg-popover px-3 py-2 text-sm text-popover-foreground shadow-md"
+          >
+            {toast.text}
+          </div>,
+          document.body,
+        )}
+    </div>
   );
 }

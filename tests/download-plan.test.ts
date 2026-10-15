@@ -48,6 +48,47 @@ describe("buildQualityPlan", () => {
       { label: "仅音频", url: "https://cdn/a.mp3", suffix: "", audio: true },
     ]);
   });
+
+  it("highest/lowest 策略按 tier 极值移动默认选中，音频档不参与", () => {
+    const data: ParseData = {
+      title: "示例视频",
+      url: "https://cdn/720.mp4",
+      qualities: [
+        { quality: 1080, label: "1080P", url: "https://cdn/1080.mp4" },
+        { quality: 720, label: "720P", url: "https://cdn/720.mp4" },
+        { quality: 480, label: "480P", url: "https://cdn/480.mp4" },
+      ],
+      audioUrl: "https://cdn/a.mp3",
+    };
+    expect(buildQualityPlan(data, "highest").primaryIndex).toBe(0);
+    expect(buildQualityPlan(data, "lowest").primaryIndex).toBe(2);
+    // main 仍指向内核主直链那档
+    expect(buildQualityPlan(data, "main").primaryIndex).toBe(1);
+  });
+
+  it("单档或无 tier 时策略不改变默认选中", () => {
+    const single: ParseData = {
+      url: "https://cdn/a.mp4",
+      qualities: [{ quality: 1080, label: "1080P", url: "https://cdn/1080.mp4" }],
+    };
+    expect(buildQualityPlan(single, "highest").primaryIndex).toBe(0);
+    const noTier: ParseData = { url: "https://cdn/a.mp4" };
+    expect(buildQualityPlan(noTier, "lowest").primaryIndex).toBe(0);
+  });
+
+  it("主直链不在 qualities 里时，highest 选中最高档而非补位的默认档", () => {
+    const data: ParseData = {
+      url: "https://cdn/unknown.mp4",
+      qualityLabel: "标清",
+      qualities: [
+        { quality: 480, label: "480P", url: "https://cdn/480.mp4" },
+        { quality: 1080, label: "1080P", url: "https://cdn/1080.mp4" },
+      ],
+    };
+    const plan = buildQualityPlan(data, "highest");
+    expect(plan.primaryIndex).toBe(2);
+    expect(plan.options[2].label).toBe("1080P");
+  });
 });
 
 describe("buildPlan", () => {

@@ -7,15 +7,16 @@
  *  3. 守卫：无更新源不能检查，未下载完不能安装。
  */
 import { describe, expect, it, vi } from "vitest";
+import { CancellationError, CancellationToken } from "builder-util-runtime";
 import { createUpdater, type UpdaterSource } from "../electron/main/updater";
 import type { UpdateState } from "../types/ipc";
 
 class FakeSource implements UpdaterSource {
   autoDownload = true;
-  autoInstallOnAppQuit = false;
+  autoInstallOnAppQuit = true;
   quitAndInstall = vi.fn();
   checkForUpdates = vi.fn(async () => undefined);
-  downloadUpdate = vi.fn(async () => undefined);
+  downloadUpdate = vi.fn<UpdaterSource["downloadUpdate"]>(async () => undefined);
   private listeners: Record<string, ((p: unknown) => void)[]> = {};
 
   on(event: string, cb: (payload: unknown) => void): void {
@@ -37,6 +38,15 @@ function harness() {
   return { updater, source, seen, latest: () => updater.snapshot() };
 }
 
+/** 让 downloadUpdate 真正理会取消令牌：cancel 即以 CancellationError reject（贴近 electron-updater）。 */
+function tokenAwareDownload(source: FakeSource): void {
+  source.downloadUpdate = vi.fn((token?: CancellationToken) =>
+    new Promise<unknown>((_resolve, reject) => {
+      token?.on("cancel", () => reject(new CancellationError()));
+    })
+  );
+}
+
 describe("createUpdater 初始态", () => {
   it("未挂更新源 = unsupported，且 check/download 不外呼", async () => {
     const { updater, source, latest } = harness();
@@ -47,13 +57,13 @@ describe("createUpdater 初始态", () => {
     expect(source.downloadUpdate).not.toHaveBeenCalled();
   });
 
-  it("挂上更新源：可检查，且不自动下载", () => {
+  it("挂上更新源：可检查，且不自动下载、不随退出自动安装", () => {
     const { updater, source, latest } = harness();
     updater.attach(source);
     expect(latest().phase).toBe("idle");
     expect(latest().canCheck).toBe(true);
     expect(source.autoDownload).toBe(false);
-    expect(source.autoInstallOnAppQuit).toBe(true);
+    expect(source.autoInstallOnAppQuit).toBe(false);
   });
 
   it("attach 只认第一次（重复挂不产生第二组事件监听）", () => {
@@ -62,6 +72,22 @@ describe("createUpdater 初始态", () => {
     updater.attach(new FakeSource());
     source.fire("update-available", { version: "0.2.0" });
     expect(latest().availableVersion).toBe("0.2.0");
+  });
+
+  it("setPolicy：attach 前记账、attach 后热更；安装固定手动确认", () => {
+    const { updater } = harness();
+    updater.setPolicy({ autoDownload: true });
+    // attach 前设置的策略要在挂载时一次性铺到 source 上
+    const s2 = new FakeSource();
+    updater.attach(s2);
+    expect(s2.autoDownload).toBe(true);
+    expect(s2.autoInstallOnAppQuit).toBe(false);
+    // 已挂载后改策略立即回写（设置保存即生效，不等重启）
+    updater.setPolicy({ autoDownload: false });
+    expect(s2.autoDownload).toBe(false);
+    // setup 包做不了无感静默安装：autoInstallOnAppQuit 恒为 false，安装只走「立即重启」
+    updater.setPolicy({});
+    expect(s2.autoInstallOnAppQuit).toBe(false);
   });
 });
 
@@ -107,6 +133,163 @@ describe("阶段迁移", () => {
     expect(latest().percent).toBe(0);
     source.fire("download-progress", {});
     expect(latest().percent).toBe(0);
+  });
+});
+
+describe("暂停与续下（流式下载弹窗依赖）", () => {
+  it("downloading → pause：cancel 令牌停传输迁到 paused，取消 rejection 不覆写成 error", async () => {
+    const { updater, source, latest } = harness();
+    updater.attach(source);
+    source.fire("update-available", { version: "0.2.0" });
+    tokenAwareDownload(source);
+    const p = updater.download();
+    expect(latest().phase).toBe("downloading");
+    const token = source.downloadUpdate.mock.calls[0]?.[0] as CancellationToken;
+    expect(token).toBeInstanceOf(CancellationToken);
+    expect(token.cancelled).toBe(false);
+    updater.pause();
+    expect(latest().phase).toBe("paused");
+    expect(token.cancelled).toBe(true);
+    // run() 守卫：识别 paused 主动取消，不把 CancellationError 收敛成 error 阶段
+    const after = await p;
+    expect(after.phase).toBe("paused");
+    expect(latest().phase).toBe("paused");
+  });
+
+  it("paused → resume：重新起流从头下载（electron-updater 无断点续传）", async () => {
+    const { updater, source, latest } = harness();
+    updater.attach(source);
+    source.fire("update-available", { version: "0.2.0" });
+    tokenAwareDownload(source);
+    void updater.download();
+    updater.pause();
+    expect(latest().phase).toBe("paused");
+    void updater.resume();
+    expect(latest().phase).toBe("downloading");
+    expect(latest().percent).toBe(0);
+    expect(source.downloadUpdate).toHaveBeenCalledTimes(2);
+  });
+
+  it("暂停后迟到的进度事件不会把状态冲回 downloading", () => {
+    const { updater, source, latest } = harness();
+    updater.attach(source);
+    source.fire("update-available", { version: "0.2.0" });
+    void updater.download();
+    updater.pause();
+    expect(latest().phase).toBe("paused");
+    source.fire("download-progress", { percent: 60 });
+    expect(latest().phase).toBe("paused");
+  });
+
+  it("源播报 update-cancelled：downloading 兜底迁到 paused", () => {
+    const { updater, source, latest } = harness();
+    updater.attach(source);
+    source.fire("update-available", { version: "0.2.0" });
+    void updater.download();
+    expect(latest().phase).toBe("downloading");
+    source.fire("update-cancelled");
+    expect(latest().phase).toBe("paused");
+  });
+
+  it("cancel：中断传输回落 available 并清进度，取消 rejection 不覆写成 error", async () => {
+    const { updater, source, latest } = harness();
+    updater.attach(source);
+    source.fire("update-available", { version: "0.2.0" });
+    tokenAwareDownload(source);
+    const p = updater.download();
+    expect(latest().phase).toBe("downloading");
+    const token = source.downloadUpdate.mock.calls[0]?.[0] as CancellationToken;
+    const s = updater.cancel();
+    expect(s.phase).toBe("available");
+    expect(latest().percent).toBeUndefined();
+    expect(latest().availableVersion).toBe("0.2.0"); // 版本/说明保留以便重新下载
+    expect(token.cancelled).toBe(true);
+    const after = await p;
+    expect(after.phase).toBe("available");
+    // 取消后残留进度事件（令牌已 cancel）不得把状态冲回 downloading
+    source.fire("download-progress", { percent: 55 });
+    expect(latest().phase).toBe("available");
+  });
+
+  it("cancel 也可从 paused 触发；非 downloading/paused 时无效", () => {
+    const { updater, source, latest } = harness();
+    updater.attach(source);
+    expect(updater.cancel().phase).toBe("idle"); // 未挂动作前 idle，取消无效
+    source.fire("update-available", { version: "0.2.0" });
+    expect(updater.cancel().phase).toBe("available"); // available 无进行中下载，取消无效
+    void updater.download();
+    updater.pause();
+    expect(latest().phase).toBe("paused");
+    expect(updater.cancel().phase).toBe("available"); // paused 可取消
+  });
+});
+
+describe("changelog 与下载速度采集", () => {
+  it("update-available 的 releaseNotes（数组）归一化为文本入快照", () => {
+    const { updater, source, latest } = harness();
+    updater.attach(source);
+    source.fire("update-available", {
+      version: "0.2.0",
+      releaseNotes: [{ version: "0.2.0", note: "新增 A" }, { version: "0.1.9", note: "修复 B" }],
+    });
+    expect(latest()).toMatchObject({ phase: "available", availableVersion: "0.2.0" });
+    expect(latest().releaseNotes).toBe("新增 A\n\n修复 B");
+  });
+
+  it("releaseNotes 为字符串时原样入快照；缺省则 undefined", () => {
+    const { updater, source, latest } = harness();
+    updater.attach(source);
+    source.fire("update-available", { version: "0.2.0", releaseNotes: "单行说明" });
+    expect(latest().releaseNotes).toBe("单行说明");
+    source.fire("update-available", { version: "0.3.0" });
+    expect(latest().releaseNotes).toBeUndefined();
+  });
+
+  it("download-progress 采集 bytesPerSecond 落到 speed，进度事件建立 downloading", () => {
+    const { updater, source, latest } = harness();
+    updater.attach(source);
+    source.fire("update-available", { version: "0.2.0" });
+    void updater.download();
+    source.fire("download-progress", { percent: 40, transferred: 400, total: 1000, bytesPerSecond: 3_600_000 });
+    expect(latest()).toMatchObject({ phase: "downloading", percent: 40, bytesPerSecond: 3_600_000 });
+  });
+});
+
+describe("下载完成后不重复下载（再次检测/下载幂等）", () => {
+  it("已 downloaded 后同版本 update-available 直接回 downloaded，不退回 available", () => {
+    const { updater, source, latest } = harness();
+    updater.attach(source);
+    source.fire("update-available", { version: "0.2.0" });
+    void updater.download();
+    source.fire("update-downloaded", { version: "0.2.0" });
+    expect(latest().phase).toBe("downloaded");
+    // 再次检测：同一版本发布回来 → 应保持「已下载完成」而非 available
+    source.fire("update-available", { version: "0.2.0", releaseNotes: "again" });
+    expect(latest().phase).toBe("downloaded");
+    expect(latest().percent).toBe(100);
+  });
+
+  it("downloaded 后点下载不再起新流（downloadUpdate 不被二次调用）", () => {
+    const { updater, source, latest } = harness();
+    updater.attach(source);
+    source.fire("update-available", { version: "0.2.0" });
+    void updater.download();
+    source.fire("update-downloaded", { version: "0.2.0" });
+    expect(source.downloadUpdate).toHaveBeenCalledTimes(1);
+    void updater.download(); // 已下载完 → 直接返回可安装态
+    expect(source.downloadUpdate).toHaveBeenCalledTimes(1);
+    expect(latest().phase).toBe("downloaded");
+  });
+
+  it("更高版本照常走 available（不被幂等误吞）", () => {
+    const { updater, source, latest } = harness();
+    updater.attach(source);
+    source.fire("update-available", { version: "0.2.0" });
+    void updater.download();
+    source.fire("update-downloaded", { version: "0.2.0" });
+    source.fire("update-available", { version: "0.3.0" }); // 版本不同
+    expect(latest().phase).toBe("available");
+    expect(latest().availableVersion).toBe("0.3.0");
   });
 });
 

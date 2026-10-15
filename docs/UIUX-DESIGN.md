@@ -310,9 +310,9 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 | 层级 | 内容 | 关键决策 |
 | --- | --- | --- |
 | L1 输入 | 粘贴框 + 识别提示 + 解析按钮 | 识别提示**从框下方 `.hint` 移入框内顶部**（现状在框下，与按钮同行 `justify-content:space-between`，视线要横跨 600px 才看得到）。提示带**状态色左边条**：识别成功 `--accent`、未识别 `--warning` |
-| L1 输入 | 「20 个平台 ▾」下拉 | `meta.platforms` 有完整的 `key/name/nameEn/supportsIdParse`（`types/ipc-contract.ts:207` 的 `AppMetaSchema`），**但现状只用了 `.length`**（`ParsePage.tsx:116`）—— 数据已在，只差渲染。点击 chip 填 `platformHint`（`ParseInput.platformHint` 契约已存在） |
+| L1 输入 | ~~「20 个平台 ▾」下拉~~（2026-10-15 业主撤销：不做平台墙，一律自动识别，见 §8.4） | `meta.platforms` 有完整的 `key/name/nameEn/supportsIdParse`（`types/ipc-contract.ts:207` 的 `AppMetaSchema`），**但现状只用了 `.length`**（`ParsePage.tsx:116`）—— 数据已在，只差渲染。点击 chip 填 `platformHint`（`ParseInput.platformHint` 契约已存在） |
 | L2 结果 | 结果卡 | 见下 |
-| L3 辅助 | 最近解析 + 平台墙 | 填补首屏下半部的空白；数据源 `history:list`（已有）+ `meta.platforms`（已有） |
+| L3 辅助 | ~~最近解析 + 平台墙~~ → 落定为「最近下载」列表（2026-10-15 平台墙移除，见 §8.4） | 数据源 `history:list`（已有） |
 
 **结果卡（`ResultCard.tsx`）改造要点**
 
@@ -722,7 +722,7 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 | 13 | **中** | 焦点环被主动移除且无替代：`textarea:focus{outline:none}`；其余控件无 `:focus-visible` | `styles.css:120-123` | §3.5 |
 | 14 | **中** | `act()` 空 catch 静默吞所有错误（无法区分状态竞争与真实失败），尽管 `BridgeError.code` 已可用 | `DownloadsPage.tsx:21-28` | §3.1 错误三层 |
 | 15 | **中** | toast 复用内容流里的 `.banner` → 出现即布局跳动；与"信息横幅"视觉同形 | `ParsePage.tsx:96,111` | §3.1 Toast |
-| 16 | **中** | `meta.platforms`（含 `name/nameEn/supportsIdParse`）只用于显示数量；支持清单不可发现，`platformHint` 契约字段闲置 | `ParsePage.tsx:116` | §2.1 平台墙/下拉 |
+| 16 | **中** | `meta.platforms`（含 `name/nameEn/supportsIdParse`）只用于显示数量；支持清单不可发现，`platformHint` 契约字段闲置 | `ParsePage.tsx:116` | ~~§2.1 平台墙/下拉~~ → 2026-10-15 业主撤销：不做平台墙（见 §8.4）；`meta.platforms` 保留供历史页/结果卡显示名 |
 | 17 | **中** | 速度/字节/百分比无 `tabular-nums` → 数字宽度跳动 | `DownloadsPage.tsx:64-74` | §1.4.1 |
 | 18 | **中** | 表格 5 列 + `.prog{min-width:160px}` 在 `minWidth:820` 下挤压无降级策略 | `styles.css:294-299` + `index.ts:200` | §2.0 响应式策略 |
 | 19 | **中** | `Field` 的 `<label>` 无 `htmlFor`；textarea 只有 placeholder 无标签 | `SettingsPage.tsx:186-193`、`ParsePage.tsx:77-86` | §3.5 |
@@ -842,7 +842,7 @@ button:disabled{color:var(--text-disabled);border-color:var(--line);opacity:1} /
 | 本地内核 | via=`local` | `kernelMode`（app 级）与 `via`（请求级）**不同层级** |
 | 骨架演示 | via=`mock` | `MG_KERNEL_MODE` |
 | 随包组件完整性 | binary integrity | `BinaryStatusView.integrity`（4 态）|
-| 解析通道体检 | engines probe | `probe:engines` / `EngineHealth.detail`（3 种真相）|
+| 解析引擎 | engines probe | `probe:engines` / `EngineHealth.detail`（3 种真相）|
 
 ---
 
@@ -933,12 +933,86 @@ shadcn 的语义名与本仓角色**不能望文生义**，映射钉死如下：
 - 高程恢复为两级：卡片 `shadow-sm` + 浮层 `shadow-pop`（`--sh-pop`），描边仍在（Windows 上纯阴影不稳）。
 - 反馈允许 `hover:` 底色与轻微缩放/位移，过渡统一 `duration-150/200`；`prefers-reduced-motion` 全局压缩照旧。
 - 模态遮罩用 `--overlay` + `backdrop-blur-sm`（玻璃只作为遮罩与浮层的轻度处理，界面主体仍是实心面板）。
+  例外（业主指令 2026-10-15）：**作品信息底部浮层**（历史页点行）**完全没有遮罩、非模态**（`Sheet modal={false}`）——
+  弹出时上方列表照常可见可点，不压暗。位置与内容两处同页指令（同日追加）：
+  卡片左右沿**与上方表格卡片对齐**（`inset-x-4` + `ms-(--w-side)` = 侧栏宽 + `main` 的 p-4，不再是「左缘贴侧栏右缘」）；
+  **不显示「平台」信息行**，平台识别改由**品牌 SVG 图标水印**承担（业主指令 2026-10-15 六轮定稿：右上角 → 更小 + 斜 45° + 只露一半 →
+  「以卡片右上角为核心展示三角区」→「展示 80% 的图标面积」→「倾斜角度反了」）。落地 = `PlatformIcon` 用 `size-28`（112px，非行内 15px 档）**`-rotate-45`（逆时针）**，
+  `absolute top-11 right-11 translate-x-1/2 -translate-y-1/2`：位移把中心钉到盒的角点，`top-11/right-11`（44px）再沿 45° 对角往卡内挪 ——
+  菱形对角半径 h = 112×√2/2 = 79.2px，上、右两条裁切线各切掉 `(h−44)²/(2h²)` = 9.9%，合计 19.75% → **卡内可见 80.2%**
+  （实测中心距卡角 45px，裁切线在 1px 描边内侧故按 44 计；露出的是菱形上顶点与右顶点两段尖角。正方形 ±45° 的外轮廓是同一枚菱形，
+  所以改倾向只翻转图标本身，上面这套面积几何照旧成立，实测倾向前后 `dTop`/`dRight` 都是 45、可见 80.25% 不变）。
+  角点本身已落在菱形外（44+44 > h），但关闭 ✕（距角 16–32px）仍在这片淡印之上 —— `✕` 画在 `-z-10` 水印之上、水印 `pointer-events-none`，不挡点。
+  水印强度实测口径：小红书 logo 均色 `rgb(255,46,77)`、非透明覆盖 73%，12% alpha 下与浅档卡底 `#fafbfc` 亮度比 **1.18**、
+  与暗档卡底 `rgb(30,40,56)` 亮度比 **1.10**（R 通道 30→57，靠色相仍可辨）；正文对底对比度 16:1，层级不会反转。
+  第二个例外（业主指令 2026-10-15「这个弹窗不用做背景遮罩」）：**首页「批量导入说明」弹窗**同样**无遮罩、非模态**
+  （`Dialog modal={false}` + `DialogContent showOverlay={false}`，`showOverlay` 默认 true 只影响点名层）——
+  页面照常可见可点（实测 `body`/`main` 维持 `pointer-events:auto`、`main` 无 `aria-hidden`、`elementFromPoint` 命中背后
+  textarea 与导航按钮），点页面外部即关闭。
+  第三个例外（业主指令 2026-10-15「作者卡片的呼出不做背景遮罩，包含 2 个入口」）：**历史页作者卡片**（表格作者列 +
+  作品信息浮层的作者行，同一层 `Dialog`）同样 `modal={false}` + `showOverlay={false}`。
+  **一层点击只关一层**：作者卡片叠在作品信息之上，它内部的每次按下对 `Sheet` 而言都是 Radix 的「外部交互」
+  （`DismissableLayer` 先跑 `onInteractOutside` 再看 `defaultPrevented` 才决定 `onDismiss`），
+  所以 `SheetContent` 在 `authorShown` 为真时 `preventDefault()` —— 实测关卡片（✕ / Esc / 点卡片外）后
+  `sheet` 仍 `data-state=open`，而卡片没开时点页面照样关浮层（回归不坏）。
+  进出对称（同轮指令「收起也应该有向下收起的动画」）：用法处加 `slide-in-from-bottom-8` +
+  `data-[state=closed]:slide-out-to-bottom-8`（±2rem）；
+  tw-animate-css 的 `enter/exit` 关键帧写 `transform`，与居中用的 `translate` 属性（`-translate-x/y-1/2`）是两个属性，
+  叠加不冲突 —— 实测 `translate: -50% -50%` 与 `transform: translate3d(0,32px,0) scale(.95)` 同时成立，中心不偏。
+  收起动画看得见的前提是**内容不能被先抽空**：可见态与数据态分两个 state（`authorShown` 关掉、`authorRow` 留着），
+  否则整段退场里浮层已是空壳。
+  但「内容留着 + 动画挂着」仍不等于看得见（同轮追问「收起为什么直接消失的」）。基类退场是 `ease` 曲线、200ms、
+  位移只有 32px，淡出被**前置**：用 WAAPI `pause()+currentTime` 取样实测旧曲线 opacity = **0.59@50ms / 0.20@100ms /
+  0.04@150ms** —— 卡片在肉眼开始分辨位移之前已经半透明，读起来就是「直接消失」。
+  修法：`data-[state=open]:ease-out data-[state=closed]:ease-in data-[state=closed]:duration-250`
+  （进入快收尾、退场起步慢，退场拉长到 250ms）。实测新曲线 `cubic-bezier(0.4,0,1,1)` 0.25s：
+  opacity/位移 = 1/0 → **0.903/3.1px@62ms → 0.675/10.4px@125ms → 0.373/20.1px@187ms** → 0.013/31.6px@248ms，
+  前半段保住八成不透明度、位移看得见；进入 `cubic-bezier(0,0,0.2,1)` 0.2s。
+  其余对话框（含图片预览）遮罩照旧。
 - 控件默认高度回到 Tailwind/shadcn 尺度（`h-9` 36px、`sm` 32px），放弃此前 28px 的极限紧凑密度。
+- **表格与浮层只有一个字号档，字体族只有一种**（业主指令 2026-10-15 三次修订「把字号作为可配置项，可以在设置-外观中配置，默认字号是 13px」；
+  它推翻了「统一 14px」那一版，也推翻了更早的 12/14 两档方案）：
+  这一档就是 `--fs-content`（`设置 → 外观 → 界面字号`，候选 12/13/14/15，默认 13），
+  Tailwind 的 `text-sm` = 该值、`text-xs` = -1px、`text-base` = +1px（`@theme inline` 里派生，改一处即全站实时生效）。
+  表头、主信息列、元数据列、徽标与行内按钮、浮层字段标签与值、路径与链接、空状态说明**全部走正文档**；
+  同一张表里「作品」列比「作者」列大一号就是不统一；层级只靠**字重 + 色彩**（§1.4.2 的取舍）：
+  主信息 `font-medium` + 前景，子行文件名常规 + 前景，元数据与表头 `text-muted-foreground`，
+  徽标/按钮 500，浮层标签 muted、值前景。
+  落地方式：`<table>` 基线写 `text-sm`，`TableCell`/`TableHead` 同档，页面与浮层里的内容 span **不再声明字号**；
+  只有继承不到基线的组件（`Badge` 与 `Button size="sm"` 的变体默认 `text-xs`）在用法处显式 `text-sm` 覆盖。
+  **列宽跟着这一档缩放**：定宽列一律写成 `calc(1.5rem + Nem)`（1.5rem = td 的左右内边距，与字号无关；N em = 最坏内容宽），
+  表格底线 `min-w` 同样用 em —— 换档时列变宽而不是截字，几何无需按档位重排两遍。
+  数字列一律 `tabular-nums`；字体族：表格、卡片、浮层一律 `--font-ui`，
+  `font-mono` 只保留给设置页的命令与代码片段（§1.4.1 系统栈不变）。
+  首页结果卡与左侧导航栏的 11–12px chip/计数仍写死 `text-xs`/`text-[11px]`，**尚未跟到正文档**（本轮只覆盖业主点名的四面 + 设置页）。
+- **首页不设平台墙**（业主指令 2026-10-15）：输入卡下沿的「N 个平台 ▾」计数按钮与平台 chip 墙整体删除，
+  解析一律自动识别（粘贴 600ms → 框内识别提示 → 自动解析）；页脚行只剩右对齐的主按钮「解析」。
+  `ParseInput.platformHint` 契约保留（内核侧仍作识别失败兜底），渲染层不再有注入点 —— §2.1 的
+  「20 个平台 ▾」行与 §5.1 现状 #16 就此作废。
+- **支持批量解析**（业主指令 2026-10-15「需要支持批量解析的情况」）：一次粘贴多条链接/整段混合文案，
+  逐条解析、结果卡按输入序逐张落位。**编排在渲染层，零 IPC 契约变更**（`parse:run` 仍是单条）：
+  文本按空白拆 token → 含 `http` 的 token 逐条 `identify`（边界提取交给内核，渲染层不重复正则）→
+  按识别出的 URL 去重 → 逐条**串行** `api.parse`（不并发，节流与诚实失败语义不变）→ 单条失败只失败该卡
+  （失败卡 + 重试，不阻塞后续条目）。自动路径（600ms 防抖）与手动「解析」按钮同一条流；全部 token 未识别时
+  自动路径只提示「未识别到支持的平台链接」，手动路径把原文交给内核如实报错（「未能提取链接」）。
+  单条时保持原骨架形态；多条时占位行显示「解析中… / 排队中… 第 N/M 条」；识别提示聚合为
+  「识别到 N 条链接：抖音、哔哩哔哩 ×2」（同平台计数合并）。`Ctrl+D` 全局下载键在多卡下即逐卡入队（= 全部下载）。
+  **文件导入**（业主指令 2026-10-15「可以通过表单上传的方式批量处理吗」）：输入卡页脚左侧「导入文件」按钮
+  走浏览器原生 file input（`.txt/.md/.csv`，零 IPC）+ `File.text()` 读出文本，一行一条即可；
+  截断上限 100 条 / 1MB，超出部分**诚实告知不做静默丢件**（toast「文件含 N 条链接，本次仅解析前 100 条」）；
+  无链接文件只 toast「文件中未发现有效链接」不落卡；读入后与粘贴完全同一条流（textarea 回填 token 清单可复核）。
+  「导入文件」旁的 info 图标**开弹窗**（业主定稿 2026-10-15：说明要承载「保存模板」动作，hover tooltip 放不下）：
+  点开「批量导入说明」= 三条格式说明（支持类型 / 一行一条 / 100 条·1 MB 上限）+「保存 txt 模板」「保存 csv 模板」
+  两枚按钮（业主指令 2026-10-15「放 txt 和 csv 2 个模板的下载按钮」）各落一份 UTF-8 BOM 模板，
+  两份内容同一份说明文本、文件名 批量导入模板.txt / .csv（csv 供表格工具逐行填写；Blob + `a[download]`，零 IPC；Electron 里走系统「另存为」）。
+  该弹窗无遮罩、非模态（业主点名，见上「模态遮罩」第二例外），页面照常可见可点。
+  模板全篇不含「http」字样——未编辑直接导入走「无链接文件」分支，不会被示例链接误解析出假任务。
+  设置页 info tooltip（`HintInfo`，现驻 `ui/tooltip.tsx`）形态不变：纯说明一瞥仍用 tooltip，带动作的说明用弹窗。
 - 平台图标 `PlatformIcon` 与 lucide 图标分工不变（§1.7），`strokeWidth={1.5}` 保持。
 
 ### 8.5 验收与验证边界
 
-- 验收门：`typecheck` / `lint` / `test` 全绿（19 文件 283 例，`boundaries.test.ts` 按源文件数生成用例，故删掉未使用的 `ui/tabs.tsx` 后少 2 例；`style-discipline` 由 6 例减为 3 例）；`vite build` renderer **448.85 kB / gzip 145.26 kB**（迁移前 272.64 / 86.42，代价来自 Radix + cva + tailwind-merge），CSS 40.86 kB / gzip 8.62 kB；产物内 zod 命中 **0 次**（铁律 3 保持）。
+- 验收门：`typecheck` / `lint` / `test` 全绿（23 文件 354 例；`boundaries.test.ts` 按源文件数生成用例——删 renderer 源文件少 2 例；`.qoder-credits/` 是 Qoder 会话画布工件目录，已从该 walk 排除，防用例数随 IDE 活动漂移；`style-discipline` 3 例）；`vite build` renderer **448.85 kB / gzip 145.26 kB**（迁移前 272.64 / 86.42，代价来自 Radix + cva + tailwind-merge），CSS 40.86 kB / gzip 8.62 kB；产物内 zod 命中 **0 次**（铁律 3 保持）。
 - 真实浏览器逐屏核对（dev-only mock 桥 + Vite 5433）：五页结构、明暗双主题、Select 5 项展开、Dialog 遮罩与 12px 圆角、Tooltip 焦点触发、Switch 拇指位移 20px、Checkbox 排除后按钮文案与清单摘要联动、魔法色经 `primary` 驱动主按钮与进度填充。
 - **未做的验证要说清**：本机 in-app Browser 无可见表面，截图不可用，因此以上是 computed-style / 几何 / 结构层面的核对，不是像素级观感评审；Electron 真窗口与打包态未复核（见 HANDOFF 铁律 5 与 README 验收门）。
 

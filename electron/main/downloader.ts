@@ -49,6 +49,10 @@ export interface DownloaderOptions {
   getDownloadDir: () => string;
   /** 并发上限实时取值（设置页改完即生效） */
   getMaxConcurrent: () => number;
+  /** 失败自动重试次数实时取值（0–3） */
+  getRetryTimes: () => number;
+  /** 取消任务是否保留 .part 断点 */
+  getKeepPartials: () => boolean;
   /** 默认 UA（主进程出网统一带浏览器 UA，照抄内核 UA 治理，不私自加码） */
   defaultUserAgent: string;
   events: DownloaderEvents;
@@ -64,7 +68,6 @@ interface InternalTask extends DownloadTaskView {
   filePath?: string;
 }
 
-const MAX_ATTEMPTS = 3;
 const PROGRESS_THROTTLE_MS = 200;
 const RETRY_BASE_DELAY_MS = 1000;
 
@@ -114,6 +117,14 @@ export function resolveConflictPath(dir: string, filename: string): string {
 /** 断点文件身份 meta：part + ".meta"，内容 = 当时下载的 URL */
 function metaPathFor(part: string): string {
   return part + ".meta";
+}
+
+/**
+ * 「占位中」状态：目标路径归它、随时可能继续往里写字节。
+ * 同名冲突避让与缓存清理避让共用这一把尺 —— done/canceled 已定局，不再占位。
+ */
+function isClaimingStatus(status: DownloadStatus): boolean {
+  return status === "queued" || status === "downloading" || status === "paused" || status === "error";
 }
 
 function readPartUrl(part: string): string | null {
@@ -241,16 +252,27 @@ export class Downloader {
 
   private isTargetClaimed(target: string): boolean {
     for (const t of this.tasks.values()) {
-      if (
-        (t.status === "queued" || t.status === "downloading" || t.status === "paused" || t.status === "error") &&
-        this.targetPath(t) === target
-      ) {
+      if (isClaimingStatus(t.status) && this.targetPath(t) === target) {
         return true;
       }
     }
     // 重启恢复前旧实例的占位不在内存：claimedTargets 只在进程内有效（可接受——
     // 同一目标两个活下载在 restore 语义里互斥于 status，恢复即重排）
     return false;
+  }
+
+  /**
+   * 活任务占用的断点文件（`.part` 及其 `.meta`）。
+   * 存在的理由：设置页「清理缓存」只挑没人认领的半成品，判据必须与 isTargetClaimed
+   * 同源，否则清一次缓存就把进行中的下载打断、把续传身份抹掉。
+   */
+  livePartPaths(): string[] {
+    const out: string[] = [];
+    for (const t of this.tasks.values()) {
+      if (!isClaimingStatus(t.status)) continue;
+      out.push(this.partPath(t));
+    }
+    return out;
   }
 
   cancel(taskId: string): boolean {
@@ -261,8 +283,8 @@ export class Downloader {
     if (t.signal) {
       // 流关闭后的 .part 清理由 runOne 的收尾统一做（Windows 句柄未关不能删）
       t.signal.abort();
-    } else {
-      this.dropPart(t); // 未开始：无句柄，直接清
+    } else if (!this.opts.getKeepPartials()) {
+      this.dropPart(t); // 未开始：无句柄，直接清（保留断点策略开启时不动）
     }
     this.opts.events.progress(toView(t));
     this.persist();
@@ -486,7 +508,7 @@ export class Downloader {
         if (live === "canceled" || live === "paused") {
           await Downloader.closeStream(activeStream); // flush 已收字节
           stream = null;
-          if (live === "canceled") this.removePartFiles(part);
+          if (live === "canceled" && !this.opts.getKeepPartials()) this.removePartFiles(part);
           return;
         }
         // 背压：write 返回 false 时等 drain，避免大文件灌满内存
@@ -535,7 +557,7 @@ export class Downloader {
         stream = null;
       }
       if (live === "canceled") {
-        this.removePartFiles(part);
+        if (!this.opts.getKeepPartials()) this.removePartFiles(part);
         return;
       }
       if (live === "paused") {
@@ -544,12 +566,13 @@ export class Downloader {
         return;
       }
       t.attempts++;
-      if (t.attempts < MAX_ATTEMPTS) {
+      const maxAttempts = Math.min(4, Math.max(1, this.opts.getRetryTimes() + 1));
+      if (t.attempts < maxAttempts) {
         // 指数退避重试
         await sleep(RETRY_BASE_DELAY_MS * 2 ** (t.attempts - 1));
         const live2 = st();
         if (live2 === "canceled") {
-          this.removePartFiles(part);
+          if (!this.opts.getKeepPartials()) this.removePartFiles(part);
           return;
         }
         if (live2 === "paused") return;

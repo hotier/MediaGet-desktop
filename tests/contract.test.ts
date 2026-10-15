@@ -18,6 +18,7 @@ import {
   DEFAULT_SETTINGS,
   IPC,
   type AppSettings,
+  type CacheStatus,
   type DownloadTaskView,
   type InvokeResult,
   type UpdateState,
@@ -47,6 +48,20 @@ const TASK_VIEW: DownloadTaskView = {
  * 这里只需要一个「类型即契约」的稳定快照（字面量由 UpdateState 约束）。
  */
 const UPDATE_SNAPSHOT: UpdateState = { phase: "idle", currentVersion: "0.0.0-test", canCheck: false };
+
+/** 占用快照的假形状：cacheStatus 出参与 cacheClear 内嵌 report 共用一份 */
+const CACHE_REPORT: CacheStatus = {
+  items: [
+    { key: "net", bytes: 2048, clearable: true },
+    { key: "update", bytes: 0, clearable: false },
+    { key: "partials", bytes: 1024, clearable: true },
+    { key: "junk", bytes: 0, clearable: true },
+    { key: "logs", bytes: 4096, clearable: true },
+    { key: "records", bytes: 512, clearable: false },
+  ],
+  totalBytes: 7680,
+  clearableBytes: 7168,
+};
 
 interface StubOpts {
   validateOutputs?: boolean;
@@ -137,10 +152,32 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
         },
       ],
     }),
+    getFonts: async () => ["Arial", "微软雅黑"],
+    /**
+     * 日志/缓存两个服务在契约测试里只要「形状真」：轮转、按天清理、避让活断点
+     * 这些行为归 logger.test.ts / cache.test.ts 管，这里守的是通道登记与信封。
+     */
+    logger: {
+      error: () => {},
+      warn: () => {},
+      info: () => {},
+      write: () => {},
+      dir: () => "C:/Users/test/AppData/Roaming/即刻解析/logs",
+      sizeBytes: () => 4096,
+      clear: () => 4096,
+      pruneExpired: () => 0,
+    },
+    cache: {
+      status: async () => CACHE_REPORT,
+      clear: async () => ({ freed: 1024, skipped: [], report: CACHE_REPORT }),
+    },
     updater: {
       snapshot: () => UPDATE_SNAPSHOT,
       check: async () => UPDATE_SNAPSHOT,
       download: async () => UPDATE_SNAPSHOT,
+      pause: () => UPDATE_SNAPSHOT,
+      resume: async () => UPDATE_SNAPSHOT,
+      cancel: () => UPDATE_SNAPSHOT,
       install: () => undefined,
     },
     validateOutputs: opts.validateOutputs ?? true,
@@ -160,6 +197,9 @@ const BAD_INPUT: Record<string, unknown> = {
   [IPC.settingsSet]: { evilField: 1 },
   [IPC.historyList]: { limit: 0 },
   [IPC.appShowInFolder]: 1234,
+  [IPC.appCacheClear]: { keys: ["not-a-cache"] },
+  // off 是「不落盘」的门槛档，不是一条可写入的日志
+  [IPC.appLog]: { level: "off", message: "x" },
 };
 
 /** 每个通道的一份合法调用（无入参通道传 undefined） */
@@ -179,6 +219,8 @@ const GOOD_INPUT: Record<string, unknown> = {
   [IPC.downloadResume]: { taskId: "t-1" },
   [IPC.settingsSet]: { throttleMs: 100 },
   [IPC.appShowInFolder]: "C:/Downloads/a.mp4",
+  [IPC.appCacheClear]: { keys: ["net", "logs"] },
+  [IPC.appLog]: { level: "error", message: "渲染层炸了一处" },
 };
 
 /** CONTRACT 的键是字面量通道名，测试里按 string 索引需要这一层 widening */

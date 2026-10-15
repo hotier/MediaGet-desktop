@@ -6,9 +6,9 @@
 本地开发想让 TikTok（yt-dlp 链路）跑起来：
 
 ```powershell
-# 1. 把二进制放到 resources/bin/（.gitignore 已排除 *.exe）
-# 2. dev 启动时指向该目录
-$env:MG_BIN_DIR = "$PWD\resources\bin"
+# 1. 下载并校验二进制到 resources/bin/（.gitignore 已排除 *.exe）
+node scripts/fetch-binaries.cjs
+# 2. 直接启动 —— dev 默认就把 resources/bin 当随包目录（MG_BIN_DIR 可覆盖）
 npm run dev
 ```
 

@@ -8,7 +8,8 @@ import type { Plugin } from "esbuild";
  * - main：bundle 打包。解析内核经物理链接（方案 A）参与打包：本仓与内核文件里的
  *   `@/xxx` import 都解析到 `../mediaGet/src/xxx`（esbuild 插件实现：tsup Options
  *   无 alias 字段，esbuild.alias 又不支持 `@/` 前缀通配）。
- *   `electron` / `electron-updater` / Node 内置保持 external。
+ *   `electron` / `electron-updater` / `builder-util-runtime`（更新下载取消令牌须与
+ *   electron-updater 同一模块实例）/ Node 内置保持 external。
  * - preload：contextIsolation 下单独产物，输出 cjs 供 `webPreferences.preload`
  *   直接引用（沙箱 world 只保证 require("electron") 可用）。
  */
@@ -40,7 +41,7 @@ export default defineConfig([
     platform: "node",
     target: "node22",
     sourcemap: true,
-    external: ["electron", "electron-updater"],
+    external: ["electron", "electron-updater", "builder-util-runtime", "font-list", "undici"],
     esbuildPlugins: [kernelAlias()],
   },
   {

@@ -16,10 +16,12 @@ import { PLATFORM_INFO } from "@/lib/platforms";
 import { sanitizeFilename } from "@/utils/filename";
 import {
   describeIssues,
+  CacheClearInputSchema,
   EnqueueInputSchema,
   FolderPathSchema,
   HistoryFilterSchema,
   IdentifyInputSchema,
+  LogWriteInputSchema,
   ParseInputSchema,
   SettingsPatchSchema,
   TaskIdInputSchema,
@@ -31,6 +33,7 @@ import {
   type AppMeta,
   type AppSettings,
   type BinaryStatusReport,
+  type CacheStatus,
   type EngineHealth,
   type EnqueueOutcome,
   type HistoryEntry,
@@ -41,6 +44,8 @@ import type { createEngine } from "./engine";
 import type { Downloader } from "./downloader";
 import type { JsonStore } from "./store";
 import type { Updater } from "./updater";
+import type { CacheProbe } from "./cache";
+import type { AppLogger } from "./logger";
 import type { IpcMainLike } from "./ipc-env";
 
 type Engine = ReturnType<typeof createEngine>;
@@ -87,6 +92,19 @@ export interface IpcRegistryDeps {
    * 把状态暴露给 UI 才谈得上「降级可见」。
    */
   getBinaryStatus?: () => BinaryStatusReport;
+  /**
+   * 本机字体枚举（index.ts 注入 = fonts.listInstalledFonts，进程内缓存）。
+   * 缺省（未注入 / 非 win / 枚举失败）→ 返回空数组，UI 回落「系统默认」占位不报错。
+   */
+  getFonts?: () => Promise<string[]>;
+  /**
+   * 文件日志（index.ts 注入 = createLogger）。存在的理由：渲染层的异常在主进程
+   * 视角是看不见的，给它一条「写到同一个日志文件」的路，才谈得上「日志」两处合一；
+   * 「打开日志目录」也经这里取目录，避免第二处路径真源。
+   */
+  logger: AppLogger;
+  /** 本机占用统计与清理（index.ts 注入 = createCacheProbe） */
+  cache: CacheProbe;
   /**
    * 自动更新状态机（index.ts 注入 = createUpdater）。
    * update:check/download 内部吞错并把结果收敛进快照，因此恒返回成功信封；
@@ -210,7 +228,24 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     if (patch.onlineApiBase !== undefined) next.settings.onlineApiBase = patch.onlineApiBase;
     if (patch.throttleMs !== undefined) next.settings.throttleMs = patch.throttleMs;
     if (patch.minimizeToTray !== undefined) next.settings.minimizeToTray = patch.minimizeToTray;
+    if (patch.launchAtLogin !== undefined) next.settings.launchAtLogin = patch.launchAtLogin;
+    if (patch.proxyMode !== undefined) next.settings.proxyMode = patch.proxyMode;
+    if (patch.proxyUrl !== undefined) next.settings.proxyUrl = patch.proxyUrl;
     if (patch.theme !== undefined) next.settings.theme = patch.theme;
+    if (patch.themeStyle !== undefined) next.settings.themeStyle = patch.themeStyle;
+    if (patch.fontSizePx !== undefined) next.settings.fontSizePx = patch.fontSizePx;
+    if (patch.fontFamily !== undefined) next.settings.fontFamily = patch.fontFamily;
+    if (patch.openFolderOnDone !== undefined) next.settings.openFolderOnDone = patch.openFolderOnDone;
+    if (patch.retryTimes !== undefined) next.settings.retryTimes = patch.retryTimes;
+    if (patch.defaultQuality !== undefined) next.settings.defaultQuality = patch.defaultQuality;
+    if (patch.keepPartials !== undefined) next.settings.keepPartials = patch.keepPartials;
+    if (patch.notifyOnDone !== undefined) next.settings.notifyOnDone = patch.notifyOnDone;
+    if (patch.notifyOnError !== undefined) next.settings.notifyOnError = patch.notifyOnError;
+    if (patch.clipboardWatch !== undefined) next.settings.clipboardWatch = patch.clipboardWatch;
+    if (patch.logLevel !== undefined) next.settings.logLevel = patch.logLevel;
+    if (patch.logRetentionDays !== undefined) next.settings.logRetentionDays = patch.logRetentionDays;
+    if (patch.updateOnStartup !== undefined) next.settings.updateOnStartup = patch.updateOnStartup;
+    if (patch.updateAutoDownload !== undefined) next.settings.updateAutoDownload = patch.updateAutoDownload;
     if (patch.cookies) {
       const entries = Object.entries(patch.cookies) as [string, string][];
       for (const [k, v] of entries) {
@@ -269,10 +304,13 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     );
   });
 
-  // —— update:*（P6：快照 + 三个动作，状态迁移全在主进程状态机）——
+  // —— update:*（P6：快照 + 状态机动作，状态迁移全在主进程）——
   wrap<unknown, UpdateState>(IPC.updateGetState, null, () => updater.snapshot());
   wrap<unknown, Promise<UpdateState>>(IPC.updateCheck, null, () => updater.check());
   wrap<unknown, Promise<UpdateState>>(IPC.updateDownload, null, () => updater.download());
+  wrap<unknown, UpdateState>(IPC.updatePause, null, () => updater.pause());
+  wrap<unknown, Promise<UpdateState>>(IPC.updateResume, null, () => updater.resume());
+  wrap<unknown, UpdateState>(IPC.updateCancel, null, () => updater.cancel());
   wrap<unknown, { ok: boolean }>(IPC.updateInstall, null, () => {
     updater.install();
     return { ok: true };
@@ -289,6 +327,27 @@ export function registerIpc(deps: IpcRegistryDeps): void {
   });
   wrap(IPC.appShowInFolder, FolderPathSchema, (path) => {
     shell.showItemInFolder(path);
+    return { ok: true };
+  });
+
+  // —— app:listFonts（设置→外观→界面字体 可搜索下拉的数据源；主进程 font-list 枚举 + 缓存）——
+  wrap<null, Promise<string[]>>(IPC.appListFonts, null, () => deps.getFonts?.() ?? Promise.resolve([]));
+
+  // —— app:cacheStatus / app:cacheClear（设置→通用→本地缓存）——
+  // 扫描按需进行（只在打开该卡片/点清理时跑），且清理只回一份新快照，UI 不再补发 status。
+  wrap<unknown, Promise<CacheStatus>>(IPC.appCacheStatus, null, () => deps.cache.status());
+  wrap(IPC.appCacheClear, CacheClearInputSchema, ({ keys }) => deps.cache.clear(keys));
+
+  // —— app:openLogDir（日志目录就在 userData/logs，路径真源只有 logger 一处）——
+  wrap<unknown, Promise<{ ok: boolean }>>(IPC.appOpenLogDir, null, async () => {
+    // openPath 返回空串 = 成功，非空 = 失败原因（不抛异常，故自己转成 ok）
+    const error = await shell.openPath(deps.logger.dir());
+    return { ok: !error };
+  });
+
+  // —— app:log（渲染层异常转发：window.onerror / unhandledrejection 落到同一个文件）——
+  wrap(IPC.appLog, LogWriteInputSchema, ({ level, message }) => {
+    deps.logger.write(level, `[renderer] ${message}`);
     return { ok: true };
   });
 }

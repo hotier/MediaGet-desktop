@@ -16,6 +16,8 @@ export interface QualityOption {
   suffix: string;
   /** 音频项：并入下载而非替代主视频 */
   audio?: boolean;
+  /** 内核画质档位数值（越大越清晰）；音频/默认项无数值 */
+  tier?: number;
 }
 
 /** 计划里的一项 */
@@ -52,18 +54,36 @@ export interface QualityPlan {
  *
  * 内核常把主直链同时写成 `data.url` 和 `qualities[i].url`：这一档只出现一次，
  * 且默认选中它 —— 出现两个同名芯片等于把「你现在拿到的是哪一档」说糊了。
+ *
+ * strategy 只移动默认选中项（用户仍可手选覆盖）：main=内核主直链档，
+ * highest/lowest=按内核 tier 数值取极值；单档或无 tier 时维持 main。
  */
-export function buildQualityPlan(data?: ParseData): QualityPlan {
+export type QualityStrategy = "main" | "highest" | "lowest";
+
+export function buildQualityPlan(data?: ParseData, strategy: QualityStrategy = "main"): QualityPlan {
   if (!data) return { options: [], primaryIndex: 0 };
   const options: QualityOption[] = (data.qualities ?? []).map((q) => ({
     label: qualityLabel(q),
     url: q.url,
     suffix: `-${qualityLabel(q)}`,
+    tier: q.quality,
   }));
-  const primaryIndex = data.url ? options.findIndex((o) => o.url === data.url) : -1;
+  let primaryIndex = data.url ? options.findIndex((o) => o.url === data.url) : -1;
   if (data.url && primaryIndex < 0) options.unshift(defaultOption(data));
   if (data.audioUrl) options.push({ label: "仅音频", url: data.audioUrl, suffix: "", audio: true });
-  return { options, primaryIndex: primaryIndex < 0 ? 0 : primaryIndex };
+  if (primaryIndex < 0) primaryIndex = 0;
+  if (strategy !== "main") {
+    const video = options
+      .map((o, i) => ({ o, i }))
+      .filter(({ o }) => !o.audio && o.tier !== undefined);
+    if (video.length > 1) {
+      const best = video.reduce((a, b) =>
+        strategy === "highest" ? (b.o.tier! > a.o.tier! ? b : a) : b.o.tier! < a.o.tier! ? b : a
+      );
+      primaryIndex = best.i;
+    }
+  }
+  return { options, primaryIndex };
 }
 
 /** 兼容只关心芯片文案的调用点 */

@@ -23,7 +23,15 @@ function walk(dir: string, pred: (p: string) => boolean): string[] {
   }
   for (const e of entries) {
     const p = join(dir, e);
-    if (e === "node_modules" || e === "dist-electron" || e === "dist-renderer" || e === "release")
+    // .qoder-credits 是 Qoder 应用写入本仓的会话画布产物（IDE 工件，非项目源码）——
+    // 不排除的话，用例数会随 IDE 活动漂移，且边界规则会误扫这些文件
+    if (
+      e === "node_modules" ||
+      e === "dist-electron" ||
+      e === "dist-renderer" ||
+      e === "release" ||
+      e === ".qoder-credits"
+    )
       continue;
     const st = statSync(p);
     if (st.isDirectory()) out.push(...walk(p, pred));

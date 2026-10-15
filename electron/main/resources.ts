@@ -2,7 +2,7 @@
  * yt-dlp / ffmpeg 资源定位 + SHA-256 完整性校验
  * （docs/ARCHITECTURE.md §2 resources.ts, §7）
  *
- * - dev：MG_BIN_DIR 环境变量指定本地目录
+ * - dev：默认仓库 resources/bin（MG_BIN_DIR 可覆盖）
  * - prod 首启：从打包 extraResources（`process.resourcesPath/bin`）校验 SHA-256
  *   后释放到 `userData/bin/`
  * - 支持用户自备路径覆盖（设置 kernel.YTDLP_BIN / FFMPEG_BIN 指向本地文件）
@@ -34,7 +34,7 @@ export type BinName = "yt-dlp" | "ffmpeg";
 export interface ResourcesDeps {
   /** userData 根目录 */
   userDataDir: string;
-  /** extraResources 落点（prod：process.resourcesPath/bin；dev：MG_BIN_DIR 或 null） */
+  /** extraResources 落点（prod：process.resourcesPath/bin；dev：默认仓库 resources/bin，MG_BIN_DIR 可覆盖） */
   packagedDir: string | null;
   /** 用户自备路径（kernel 配置 YTDLP_BIN / FFMPEG_BIN） */
   readKernelConfig: (key: string) => string | undefined;
@@ -48,6 +48,12 @@ export interface ResourcesDeps {
    * 性能约定可以被确定性地断言，而不是靠计时猜测。
    */
   hashFile?: (path: string) => string;
+  /**
+   * 降级留痕的去向（默认 console.warn；主进程注入文件日志）。
+   * 存在的理由：「无基线」「哈希不符」都是只在启动那一刻发生一次的事，
+   * 没有终端的打包版若不落盘就等于没发生 —— 降级必须可回看。
+   */
+  warn?: (message: string) => void;
 }
 
 export interface ResolvedBin {
@@ -94,6 +100,7 @@ export function sha256File(path: string): string {
 export function createResources(deps: ResourcesDeps) {
   const binDir = join(deps.userDataDir, "bin");
   const hashFile = deps.hashFile ?? sha256File;
+  const warn = deps.warn ?? ((message: string): void => console.warn(message));
 
   /**
    * 校验结果记忆化：key = `${name}\u0000${path}\u0000${size}\u0000${mtimeMs}`。
@@ -156,7 +163,7 @@ export function createResources(deps: ResourcesDeps) {
     if (!expected) {
       // 无清单 = 无完整性基线（dev 自备二进制 / 旧包）。降级但留痕，
       // 不要静默假装校验过。
-      console.warn(`[resources] ${name} 无 SHA-256 基线，跳过完整性校验（降级）`);
+      warn(`[resources] ${name} 无 SHA-256 基线，跳过完整性校验（降级）`);
       return true;
     }
     const key = cacheKey(name, path);
@@ -169,12 +176,10 @@ export function createResources(deps: ResourcesDeps) {
       const actual = hashFile(path);
       ok = actual === expected;
       if (!ok) {
-        console.warn(
-          `[resources] ${name} SHA-256 不匹配，拒绝使用: ${actual} ≠ ${expected}`
-        );
+        warn(`[resources] ${name} SHA-256 不匹配，拒绝使用: ${actual} ≠ ${expected}`);
       }
     } catch (e) {
-      console.warn(
+      warn(
         `[resources] ${name} 哈希计算失败，拒绝使用: ${e instanceof Error ? e.message : String(e)}`
       );
       ok = false;
@@ -241,7 +246,10 @@ export function createResources(deps: ResourcesDeps) {
  * 清单内容形如 `{ "yt-dlp": "<sha256>", "ffmpeg": "<sha256>" }`，只信任其中
  * 64 位十六进制字符串的条目，其余（手改、截断、注入）一律丢弃。
  */
-export function readManifest(dir: string | null): Partial<Record<BinName, string>> | null {
+export function readManifest(
+  dir: string | null,
+  warn: (message: string) => void = (message) => console.warn(message)
+): Partial<Record<BinName, string>> | null {
   if (!dir) return null;
   const file = join(dir, "manifest.json");
   if (!existsSync(file)) return null;
@@ -254,7 +262,7 @@ export function readManifest(dir: string | null): Partial<Record<BinName, string
     }
     return Object.keys(out).length > 0 ? out : null;
   } catch (e) {
-    console.warn(
+    warn(
       `[resources] manifest.json 解析失败（按无清单处理）: ${e instanceof Error ? e.message : String(e)}`
     );
     return null;

@@ -189,12 +189,51 @@ export const AppSettingsSchema = z.object({
   throttleMs: z.number(),
   /** 点 ✕ 关窗时最小化到托盘而非退出 */
   minimizeToTray: z.boolean(),
+  /** 开机自启动（随系统登录拉起；打包版写入系统登录项，dev 仅存偏好） */
+  launchAtLogin: z.boolean(),
+  /** 网络代理：system=跟随系统（默认）/ off=直连 / manual=用 proxyUrl，作用于解析、下载与更新检查 */
+  proxyMode: z.enum(["system", "off", "manual"]),
+  /** 手动代理地址（manual 模式用；缺 scheme 按 http:// 补，如 127.0.0.1:7897） */
+  proxyUrl: STR,
   /** 明暗主题；system = 跟随系统 */
   theme: z.enum(["system", "dark", "light"]),
+  /** 主题风格：一套风格 = 一整套色带（底色/线条/焦点色…），与明暗正交 */
+  themeStyle: z.enum(["azure", "indigo", "teal", "slate", "violet"]),
+  /** 界面正文字号（像素）；其余文字档按它 ±1px 推导 */
+  fontSizePx: z.number().int().min(11).max(18),
+  /** 界面字体族：值为已安装字体的 family 名（由 app:listFonts 枚举）；"system" = 哨兵，吃基座默认栈。改内联 --font-ui 应用，非枚举 */
+  fontFamily: STR.min(1).max(64),
+  /** 下载完成自动在资源管理器定位到文件（默认关：并发下载会连环弹窗） */
+  openFolderOnDone: z.boolean(),
+  /** 失败自动重试次数（0–3；指数退避 1s/2s/4s…） */
+  retryTimes: z.number().int().min(0).max(3),
+  /** 清晰度预选默认策略：main=内核推荐直链 / highest=最高画质 / lowest=最低画质省流量 */
+  defaultQuality: z.enum(["main", "highest", "lowest"]),
+  /** 取消任务保留 .part 断点（下次同链接入队可续）；关=取消即删腾磁盘 */
+  keepPartials: z.boolean(),
+  /** 系统通知：整组文件下载结束后弹一次 Windows 通知（按组聚合，图集不逐张弹） */
+  notifyOnDone: z.boolean(),
+  /** 系统通知：整组重试用尽仍失败时弹通知（附失败原因） */
+  notifyOnError: z.boolean(),
+  /** 剪贴板监听：复制到的分享链接自动填入首页输入框（纯本地识别，文本不出本机） */
+  clipboardWatch: z.boolean(),
+  /** 文件日志门槛（userData/logs/app.log）：off=一行不落，排查问题时再开 */
+  logLevel: z.enum(["off", "error", "warn", "info"]),
+  /** 日志保留天数（1–90）：每次启动删除更久的轮转文件 */
+  logRetentionDays: z.number().int().min(1).max(90),
+  /** 更新策略：启动时自动检测更新（仅打包态有发布通道） */
+  updateOnStartup: z.boolean(),
+  /** 更新策略：检测到新版本后自动下载（静默下载）；关=横幅手动确认，不偷家庭带宽 */
+  updateAutoDownload: z.boolean(),
+  // 安装策略固定为「手动重启安装」：setup 包做不了无感静默安装，`autoInstallOnAppQuit` 恒 false，
+  // 安装只由关于页流式下载弹窗的「立即重启」触发，不作为开关暴露
 });
 
 /** 部分字段 set —— strict：未知键直接拒，避免把拼错的键当成「已保存」 */
 export const SettingsPatchSchema = AppSettingsSchema.partial().strict();
+
+/** app:listFonts 出参：本机已安装字体的 family 名数组（font-list 枚举，已去引号/去重/排序） */
+export const FontListSchema = z.array(STR.max(64));
 
 export const HistoryFilterSchema = z.object({
   platform: STR.max(40).optional(),
@@ -347,6 +386,8 @@ export const UpdateStateSchema = z.object({
     "up-to-date",
     "available",
     "downloading",
+    /** 用户主动暂停：令牌已 cancel，传输停止；update:resume 从头重新起流（electron-updater 无断点续传） */
+    "paused",
     "downloaded",
     "error",
     /** 本机没有更新源：dev 启动、或打包未配 publish。UI 隐藏检查入口 */
@@ -359,6 +400,13 @@ export const UpdateStateSchema = z.object({
   percent: z.number().optional(),
   transferredBytes: z.number().optional(),
   totalBytes: z.number().optional(),
+  /** 下载速度（字节/秒，取自 electron-updater 的 bytesPerSecond；仅 downloading 有值） */
+  bytesPerSecond: z.number().optional(),
+  /**
+   * 新版本更新说明（changelog）。GitHub Releases 通道取自 releaseNotes，
+   * 归一化为纯文本（多条 note 以空行连接）；无说明时缺省。
+   */
+  releaseNotes: STR.max(20000).optional(),
   /** error 阶段的说明（原始错误文本，不翻译，便于排查） */
   error: STR.optional(),
   canCheck: z.boolean(),
@@ -369,6 +417,50 @@ export const PickDirResultSchema = z.union([STR, z.null()]);
 
 /** app:showInFolder 入参：本机绝对路径（renderer 不可信输入，长度封顶即可） */
 export const FolderPathSchema = z.string().max(1000);
+
+// ————————————————————————————————————————————————
+// 本地缓存 / 日志（设置→通用）
+// ————————————————————————————————————————————————
+
+/**
+ * 单项占用。`key` 是枚举而不是自由串：UI 的中文名与图标由键在渲染层映射，
+ * 主进程只出数字 —— 文案不出 renderer，避免「主进程写 UI 话术」的第二真源。
+ * `clearable=false` 的项（本机记录：历史/队列/配置）只报占用，清理永远不碰它们。
+ */
+export const CacheItemSchema = z.object({
+  key: z.enum(["net", "update", "partials", "junk", "logs", "records"]),
+  bytes: z.number().int().min(0),
+  clearable: z.boolean(),
+});
+
+export const CacheStatusSchema = z.object({
+  items: z.array(CacheItemSchema),
+  totalBytes: z.number().int().min(0),
+  /** 一键清理能吃掉的量（= clearable 项之和）；UI 用它决定按钮是否可点 */
+  clearableBytes: z.number().int().min(0),
+});
+
+/** app:cacheClear 入参：只点名要清的项（空数组无意义，min 1） */
+export const CacheClearInputSchema = z.object({
+  keys: z.array(CacheItemSchema.shape.key).min(1).max(6),
+});
+
+/**
+ * 清理结果。`skipped` 是「点了但没清」的键（唯一现役理由：更新包已下载完待重启安装，
+ * 清掉等于让用户重下一份）—— 不静默吞掉，UI 必须如实说。
+ */
+export const CacheClearResultSchema = z.object({
+  freed: z.number().int().min(0),
+  skipped: z.array(CacheItemSchema.shape.key),
+  /** 清理后的重新扫描快照（UI 直接换血，不用再发一次 status） */
+  report: CacheStatusSchema,
+});
+
+/** app:log 入参：渲染层转发的异常（单行、长度封顶，禁止把整段响应体灌进来） */
+export const LogWriteInputSchema = z.object({
+  level: z.enum(["error", "warn", "info"]),
+  message: STR.min(1).max(2000),
+});
 
 // ————————————————————————————————————————————————
 // 通道注册表：新增通道只在这里登记 in/out，main 的集中校验与守门测试同时生效
@@ -403,9 +495,17 @@ export const CONTRACT = {
   [IPC.appGetBinaryStatus]: invoke(null, BinaryStatusReportSchema),
   [IPC.appPickDownloadDir]: invoke(null, PickDirResultSchema),
   [IPC.appShowInFolder]: invoke(FolderPathSchema, OkFlagSchema),
+  [IPC.appListFonts]: invoke(null, FontListSchema),
+  [IPC.appCacheStatus]: invoke(null, CacheStatusSchema),
+  [IPC.appCacheClear]: invoke(CacheClearInputSchema, CacheClearResultSchema),
+  [IPC.appOpenLogDir]: invoke(null, OkFlagSchema),
+  [IPC.appLog]: invoke(LogWriteInputSchema, OkFlagSchema),
   [IPC.updateGetState]: invoke(null, UpdateStateSchema),
   [IPC.updateCheck]: invoke(null, UpdateStateSchema),
   [IPC.updateDownload]: invoke(null, UpdateStateSchema),
+  [IPC.updatePause]: invoke(null, UpdateStateSchema),
+  [IPC.updateResume]: invoke(null, UpdateStateSchema),
+  [IPC.updateCancel]: invoke(null, UpdateStateSchema),
   [IPC.updateInstall]: invoke(null, OkFlagSchema),
 } as const satisfies Record<string, InvokeContract>;
 
@@ -415,6 +515,8 @@ export const EVENTS = {
   [IPC.evDownloadDone]: DownloadTaskViewSchema,
   [IPC.evDownloadError]: DownloadTaskViewSchema,
   [IPC.evUpdateState]: UpdateStateSchema,
+  /** 剪贴板监听命中分享链接（main 端已过内核 identify：platform 非空、url 有值） */
+  [IPC.evClipboardLink]: IdentifyOutcomeSchema,
 } as const satisfies Record<string, z.ZodTypeAny>;
 
 export type InvokeChannel = keyof typeof CONTRACT;

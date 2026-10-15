@@ -43,6 +43,8 @@
 | `electron/main/resources.ts` | yt-dlp/ffmpeg 定位：dev 用本地路径，prod 首启从 `resources/` 释放到 `userData/bin/` 并校验哈希 | — |
 | `electron/main/fallback.ts` | 线上 API 回落：按开关把请求转发 `https://get.hotier.cc.cd/api/parse`，超时与错误归类 | 自造解析 |
 | `electron/main/updater.ts` | 自动更新状态机：把 electron-updater 事件收敛成单个 `UpdateState` 快照（阶段 + 进度 + 错误），守卫「无源不检查、未下载完不安装」 | 窗口操作、下载队列 |
+| `electron/main/notify.ts` | 下载通知聚合器：文件粒度的 done/error 按组收敛成一次系统通知（组内无排队/下载中任务时才播报，图集不逐张弹） | `Notification` 本体（由 index.ts 装配注入） |
+| `electron/main/clipboard.ts` | 剪贴板监听：开关开启时轮询剪贴板 → 内核 `identify` 纯本地识别 → 命中分享链接投 `app:clipboardLink`（文本不落盘、不出本机） | — |
 | `electron/main/store.ts` | `userData` 配置/历史读写（JSON 文件 + 原子写；不用 SQLite 除非历史量大） | 敏感凭据明文（见 §6） |
 | `electron/preload/index.ts` | `contextBridge.exposeInMainWorld('mg', {...})` 白名单 | 通配转发（禁止 `ipcRenderer` 原样暴露） |
 | `renderer/src/lib/bridge.ts` | 对 `window.mg` 的类型化封装 + React hooks | 直接拼 IPC channel 名 |
@@ -73,7 +75,9 @@
 | `download:enqueue` | `{ items: DownloadItem[], groupId? }` | `{ taskId }` | `DownloadItem = { url, filename, referer?, headers?, kind }` |
 | `download:progress` | —（事件流） | `{ taskId, received, total, speed, status }` | `webContents.send` 推送，节流 ~200ms |
 | `download:cancel` / `pause` / `resume` | `{ taskId }` | `{ ok }` | 续传依赖 `.part` + `Range: bytes=` |
-| `settings:get` / `settings:set` | 部分字段 | 全量生效配置 | Cookie/下载目录/并发/回落开关 |
+| `settings:get` / `settings:set` | 部分字段 | 全量生效配置 | Cookie/下载目录/并发/回落开关/日志级别与保留天数 |
+| `app:cacheStatus` / `app:cacheClear` | — / `{ keys }` | `{ items[], totalBytes, clearableBytes }` / `{ freed, skipped, report }` | 只清具名临时文件（网络缓存/孤儿断点/残留/日志）；更新包与本机记录只报占用，活任务的 `.part` 避让 |
+| `app:openLogDir` / `app:log` | — / `{ level, message }` | `{ ok }` | 渲染层未捕获异常经 `app:log` 落进同一份文件日志（上限 50 条/次会话） |
 | `history:list` / `history:clear` | `{ filter? }` | `HistoryEntry[]` | 只存平台/标题/作者快照/时间/落地路径，**不存媒体直链**（时效与隐私）；作者主页与头像是公开页面，2026-10-14 业主批准入档 |
 | `probe:engines` | — | `EngineHealth[]` | 本地版体检：逐平台跑固定样例，替代线上 `/api/engines` |
 | `update:state` | — | `UpdateState` | 当前更新快照（renderer 挂载时先取一次，补上窗口未建期间丢掉的事件） |
@@ -82,7 +86,7 @@
 
 ### 事件（main → renderer）
 
-`download:progress`、`download:done`、`download:error`、`app:updateState`。
+`download:progress`、`download:done`、`download:error`、`app:updateState`、`app:clipboardLink`（剪贴板监听命中：`IdentifyOutcome` 形状，`platform` 非空且 `url` 有值）。
 
 （`engine:status` 曾是契约里的预留位，全仓无发送/订阅，2026-10-14 单一真源改造时删除；P4 远程开关落地时再随 `CONTRACT`/`EVENTS` 一并登记。）
 
@@ -114,6 +118,7 @@
 4. `webSecurity` 不关闭；`nodeIntegration: false`；`contextIsolation: true`；renderer 不加载远程内容。
 5. 不解析 `blockedPlatforms.ts` 黑名单里的平台（微信视频号、付费/DRM 内容），沿用内核判定。
 6. 不做反检测加码：UA/请求头治理以内核既有实现为限。
+7. 文件日志（`userData/logs/app.log`）与 config 同处 userData，受同一红线约束：**不写 Cookie 值、不写媒体直链**，下载失败只投「文件名 + 原因」；渲染层转发的异常文本截到 2000 字符、单会话上限 50 条，避免堆栈把盘刷满。
 
 ## 7. 构建与发布
 

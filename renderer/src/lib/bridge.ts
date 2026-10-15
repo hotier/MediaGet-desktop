@@ -8,6 +8,9 @@ import type {
   AppMeta,
   AppSettings,
   BinaryStatusReport,
+  CacheClearResult,
+  CacheItemKey,
+  CacheStatus,
   DownloadTaskView,
   EnqueueInput,
   EnqueueOutcome,
@@ -16,6 +19,7 @@ import type {
   HistoryFilter,
   IdentifyOutcome,
   InvokeResult,
+  LogSeverity,
   MgBridge,
   ParseInput,
   ParseRunOutcome,
@@ -83,10 +87,26 @@ export const api = {
     pickDownloadDir: () => unwrap<string | null>(bridge().app.pickDownloadDir()),
     showInFolder: (path: string) => unwrap(bridge().app.showInFolder(path)),
     getBinaryStatus: () => unwrap<BinaryStatusReport>(bridge().app.getBinaryStatus()),
+    listFonts: () => unwrap<string[]>(bridge().app.listFonts()),
+    cacheStatus: () => unwrap<CacheStatus>(bridge().app.cacheStatus()),
+    clearCache: (keys: CacheItemKey[]) => unwrap<CacheClearResult>(bridge().app.clearCache(keys)),
+    openLogDir: () => unwrap(bridge().app.openLogDir()),
+    /** 转发失败不该再生出一条转发（上报通道自身故障时无处可报）：静默吞掉 */
+    log: async (level: LogSeverity, message: string) => {
+      try {
+        await bridge().app.log(level, message);
+      } catch {
+        /* 见上 */
+      }
+    },
+    onClipboardLink: (cb: (o: IdentifyOutcome) => void) => bridge().app.onClipboardLink(cb),
     update: {
       state: () => unwrap<UpdateState>(bridge().app.update.state()),
       check: () => unwrap<UpdateState>(bridge().app.update.check()),
       download: () => unwrap<UpdateState>(bridge().app.update.download()),
+      pause: () => unwrap<UpdateState>(bridge().app.update.pause()),
+      resume: () => unwrap<UpdateState>(bridge().app.update.resume()),
+      cancel: () => unwrap<UpdateState>(bridge().app.update.cancel()),
       install: () => unwrap(bridge().app.update.install()),
       onState: (cb: (s: UpdateState) => void) => bridge().app.update.onState(cb),
     },

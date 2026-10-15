@@ -20,6 +20,9 @@ import type {
   AuthorSnapshotSchema,
   BinaryStatusReportSchema,
   BinaryStatusViewSchema,
+  CacheClearResultSchema,
+  CacheItemSchema,
+  CacheStatusSchema,
   DownloadItemSchema,
   DownloadTaskViewSchema,
   EngineHealthSchema,
@@ -67,6 +70,17 @@ export type InvokeErr = {
 export type InvokeResult<T> = InvokeOk<T> | InvokeErr;
 
 // ————————————————————————————————————————————————
+// 架构版本：跨进程契约的演进号（设置→关于 展示）。
+// 通道集合增删或载荷形状不兼容变更时递增；纯新增可选字段不升。
+// v2：新增 app:listFonts 通道；fontFamily 由枚举改为自由字体名（旧枚举值仍为合法字符串，
+//     但不保证本机存在 → 回落，故按不兼容载荷形状变更升版）。
+// v3：新增 app:cacheStatus / app:cacheClear / app:openLogDir / app:log 四条通道
+//     （设置字段 logLevel、logRetentionDays 是纯新增可选键，不额外构成不兼容）。
+// ————————————————————————————————————————————————
+
+export const CONTRACT_VERSION = 3;
+
+// ————————————————————————————————————————————————
 // channel 常量（preload/main/renderer 三方共用字面量，禁止散落拼写）
 // ————————————————————————————————————————————————
 
@@ -87,15 +101,24 @@ export const IPC = {
   appGetBinaryStatus: "app:getBinaryStatus",
   appPickDownloadDir: "app:pickDownloadDir",
   appShowInFolder: "app:showInFolder",
+  appListFonts: "app:listFonts",
+  appCacheStatus: "app:cacheStatus",
+  appCacheClear: "app:cacheClear",
+  appOpenLogDir: "app:openLogDir",
+  appLog: "app:log",
   updateGetState: "update:state",
   updateCheck: "update:check",
   updateDownload: "update:download",
+  updatePause: "update:pause",
+  updateResume: "update:resume",
+  updateCancel: "update:cancel",
   updateInstall: "update:install",
   // main → renderer 事件
   evDownloadProgress: "download:progress",
   evDownloadDone: "download:done",
   evDownloadError: "download:error",
   evUpdateState: "app:updateState",
+  evClipboardLink: "app:clipboardLink",
 } as const;
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC];
@@ -135,6 +158,12 @@ export type DownloadTaskView = z.infer<typeof DownloadTaskViewSchema>;
 /** settings:get / settings:set —— 部分字段 set，返回全量生效配置 */
 export type AppSettings = z.infer<typeof AppSettingsSchema>;
 
+/** 文件日志级别（写 userData/logs/app.log 的门槛）；off = 一行都不落 */
+export type LogLevel = AppSettings["logLevel"];
+
+/** 日志写入等级（渲染层转发用）：off 不是「写一条」而是「不写」，故不在候选里 */
+export type LogSeverity = Exclude<LogLevel, "off">;
+
 export const DEFAULT_SETTINGS: AppSettings = {
   downloadDir: "",
   maxConcurrent: 3,
@@ -143,7 +172,24 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cookies: {},
   throttleMs: 0,
   minimizeToTray: true,
+  launchAtLogin: false,
+  proxyMode: "system",
+  proxyUrl: "",
   theme: "system",
+  themeStyle: "azure",
+  fontSizePx: 13,
+  fontFamily: "system",
+  openFolderOnDone: false,
+  retryTimes: 1,
+  defaultQuality: "main",
+  keepPartials: false,
+  notifyOnDone: true,
+  notifyOnError: true,
+  clipboardWatch: false,
+  logLevel: "info",
+  logRetentionDays: 7,
+  updateOnStartup: true,
+  updateAutoDownload: false,
 };
 
 /** history:list */
@@ -168,6 +214,22 @@ export type BinaryStatusView = z.infer<typeof BinaryStatusViewSchema>;
 
 /** app:getBinaryStatus 返回 */
 export type BinaryStatusReport = z.infer<typeof BinaryStatusReportSchema>;
+
+// ————————————————————————————————————————————————
+// 本地缓存 / 日志占用（设置→通用）
+// ————————————————————————————————————————————————
+
+/** 占用项键：net=内核 HTTP 缓存 / update=更新包缓存 / partials=断点文件 / junk=残档 / logs=日志 / records=本机记录 */
+export type CacheItemKey = z.infer<typeof CacheItemSchema>["key"];
+
+/** 单项占用（键 → 中文文案的映射在渲染层，主进程只出数字） */
+export type CacheItem = z.infer<typeof CacheItemSchema>;
+
+/** app:cacheStatus 返回：扫描当下的字节快照（按项拆分，renderer 只做展示与键→文案映射） */
+export type CacheStatus = z.infer<typeof CacheStatusSchema>;
+
+/** app:cacheClear 返回：释放字节数 + 被拒的项 + 清理后的快照 */
+export type CacheClearResult = z.infer<typeof CacheClearResultSchema>;
 
 // ————————————————————————————————————————————————
 // 自动更新（P6）—— 主进程状态机收敛成一个可渲染快照
@@ -212,11 +274,29 @@ export interface MgBridge {
     showInFolder(path: string): Promise<InvokeResult<{ ok: boolean }>>;
     /** 随包二进制完整性状态（降级可见：degraded/rejected 要能被用户看到） */
     getBinaryStatus(): Promise<InvokeResult<BinaryStatusReport>>;
+    /** 本机已安装字体 family 名（设置→外观→界面字体 可搜索下拉的数据源；主进程 font-list 枚举 + 缓存） */
+    listFonts(): Promise<InvokeResult<string[]>>;
+    /** 本地缓存/日志占用快照（扫描在用户点开「通用」时按需进行，不在启动时抢时间） */
+    cacheStatus(): Promise<InvokeResult<CacheStatus>>;
+    /** 只接受 clearable 的键；被拒的项（如已下载待安装的更新包）在 skipped 里如实返回 */
+    clearCache(keys: CacheItemKey[]): Promise<InvokeResult<CacheClearResult>>;
+    /** 在资源管理器打开日志目录（userData/logs） */
+    openLogDir(): Promise<InvokeResult<{ ok: boolean }>>;
+    /** 渲染层异常转发到文件日志（窗口崩溃外的另一条线索；级别不含 off） */
+    log(level: LogSeverity, message: string): Promise<InvokeResult<{ ok: boolean }>>;
+    /** 剪贴板监听命中分享链接（main 端已识别：url 有值时可直接填入输入面） */
+    onClipboardLink(cb: (o: IdentifyOutcome) => void): () => void;
     /** 自动更新（P6）：state 是快照，check/download 返回迁移后的快照 */
     update: {
       state(): Promise<InvokeResult<UpdateState>>;
       check(): Promise<InvokeResult<UpdateState>>;
       download(): Promise<InvokeResult<UpdateState>>;
+      /** 暂停进行中的更新包下载（cancel 传输令牌，进度冻结在弹窗显示值；恢复会从头重下）；返回迁移后快照 */
+      pause(): Promise<InvokeResult<UpdateState>>;
+      /** 继续下载：electron-updater 无断点续传，实为从头重下 */
+      resume(): Promise<InvokeResult<UpdateState>>;
+      /** 取消下载：cancel 令牌中断传输并清掉已下的 part，状态回落 available（可重新下载） */
+      cancel(): Promise<InvokeResult<UpdateState>>;
       install(): Promise<InvokeResult<{ ok: boolean }>>;
       onState(cb: (s: UpdateState) => void): () => void;
     };
