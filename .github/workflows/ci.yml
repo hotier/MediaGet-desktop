@@ -11,16 +11,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 临时桥（§8 定稿 = @mediaget/parse-core 版本化工件）：parse-core 未发布前，
-      # 以并列检出 + 路径别名跑通内核冒烟；工件首发后按 electron/main/engine.ts
-      # 切换清单删除本步骤，并把依赖换成版本号（不再需要源码并列检出）。
-      - name: Checkout kernel (mediaGet, transitional physical link)
-        uses: actions/checkout@v4
-        with:
-          repository: hotier/mediaGet
-          path: ../mediaGet
-          # 内核 commit 锁：发 Release 时在此固定 tag；main 冒烟暴露上游腐化
-
       - uses: pnpm/action-setup@v4
         with:
           version: 10
@@ -49,11 +39,6 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Checkout kernel (mediaGet, transitional physical link)
-        uses: actions/checkout@v4
-        with:
-          repository: hotier/mediaGet
-          path: ../mediaGet
       - uses: pnpm/action-setup@v4
         with:
           version: 10

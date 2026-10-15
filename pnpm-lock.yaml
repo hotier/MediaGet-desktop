@@ -11,6 +11,9 @@ importers:
 
   .:
     dependencies:
+      '@mediaget/parse-core':
+        specifier: ^0.1.2
+        version: 0.1.2
       '@radix-ui/react-checkbox':
         specifier: ^1.4.1
         version: 1.4.1(@types/react-dom@19.3.0(@types/react@19.3.0))(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)
@@ -702,6 +705,10 @@ packages:
   '@malept/flatpak-bundler@0.4.0':
     resolution: {integrity: sha512-9QOtNffcOF/c1seMCDnjckb3R9WHcG34tky+FHpNKKCW0wc/scYLwMtO+ptyGUfMW0/b/n4qRiALlaFHc9Oj7Q==}
     engines: {node: '>= 10.0.0'}
+
+  '@mediaget/parse-core@0.1.2':
+    resolution: {integrity: sha512-U0jFU3B5UDOQZ73l8PEpmCAtPH7NO8i0+Z7/IkyPPsn3cy01xAyJvd4zmhfcuku5bVAgETb1AWu9O/0s9hayVg==}
+    engines: {node: '>=22'}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     resolution: {integrity: sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ==}
@@ -3901,6 +3908,8 @@ snapshots:
       tmp-promise: 3.0.3
     transitivePeerDependencies:
       - supports-color
+
+  '@mediaget/parse-core@0.1.2': {}
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true

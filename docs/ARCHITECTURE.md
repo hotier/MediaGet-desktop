@@ -153,7 +153,7 @@ mediaGet（已有，web 仓）                     mediaGet-desktop（本仓）
 | --- | --- | --- |
 | 1 | 改 `packages/parse-core/src/**` | mediaGet 仓 |
 | 2 | CI：parse-core 单测 + web 全量测试（零行为变化铁律） | mediaGet 仓 CI |
-| 3 | `version patch/minor` + publish 到私有源 | mediaGet 仓 |
+| 3 | `version patch/minor` → 打 tag `parse-core-vX.Y.Z`，CI 发 npm + 附同版本 Release tarball | mediaGet 仓 CI |
 | 4 | 本仓改 `package.json` 版本号 → PR | 本仓 |
 | 5 | CI：parse-core 测试 + 3 平台真机解析 → 合并打包 | 本仓 CI |
 
@@ -161,28 +161,35 @@ mediaGet（已有，web 仓）                     mediaGet-desktop（本仓）
 
 版本号与 web 发布节奏**解耦**：parse-core 独立 semver，它不发版不挡住 web 上线；web 上线也不强制 parse-core 动。
 
-### 消费方式：私有 npm 源（已定稿，取代「二选一」）
+### 消费方式：npm 主渠道 + Release tarball 双通道（已定稿）
 
 | 候选方案 | 结论 | 理由 |
 | --- | --- | --- |
 | monorepo 物理链接（`file:../mediaGet`） | ❌ 仅本地 dev | CI 无 `../mediaGet`，`npm ci` 必挂 |
 | git submodule / subtree | ❌ | 拿到的是 commit 不是 semver，版本语义全丢，CI 需额外检出 |
 | 抽成独立第三仓 | ❌ | 内核与调用方跨仓，产生「内核已发版、web 未跟上」中间态 |
-| **私有 npm 源（tarball 版本化工件）** | ✅ | CI 可 `npm ci`；版本语义清晰；与 web 侧共用同一工件 |
+| **版本化工件：npm 注册表 + Release tarball 同源** | ✅ | CI 可 `npm ci`；版本语义清晰；与 web 侧共用同一工件；注册表版本不可覆盖，比 Release asset 更可审计 |
 
 - 本地联调可用 `file:` 链接临时指向 `../mediaGet/packages/parse-core`，**提交态必须是版本化工件**。
-- 包名建议 `@mediaget/parse-core`，`exports` 白名单只暴露解析入口与类型，把「禁 import route 层」从 grep 变成模块解析层面的物理不可能。
-- 桌面端构建时从私有源拉取；不发布到公网 npm（含零敏感资产考量，见 §6）。
+- 包名 `@mediaget/parse-core`，`exports` 白名单只暴露解析入口与类型，把「禁 import route 层」从 grep 变成模块解析层面的物理不可能。
+- **双通道同源机制**：上游 release workflow 先 `npm pack` 出 tarball，再用 `npm publish <该 tarball>` 上传**同一个文件本体**（不是重新 pack），随后比对 registry 副本 sha256 与本地 tarball，不一致即红叉。所以 `npm install @mediaget/parse-core` 与下载 Release 的 .tgz 拿到的是同一字节串，不存在「两个渠道版本漂移」。
+- 上游仓本身是 PUBLIC，tarball 一直挂在公开 Release 上人人可下，发布到注册表不新增暴露面。§6 红线 1（绝不打包服务端凭据）已核：工件内唯一的硬编码 Cookie 是 `xiguaCore.js:13` 的匿名页面指纹（`MONITOR_WEB_ID`/`ttcid`/`ixigua-a-s`/`BD_REF`，无 sessionid 类登录凭据），不属于全站共用风控资产，不构成发布阻断项。
 
-### 私有载体选型（P0 开工前定死）
+### 发布载体选型
 
 | 候选 | 成本 | 结论 |
 | --- | --- | --- |
-| **mediaGet GitHub Release 附带版本化 tarball**（`"parse-core": "https://github.com/hotier/mediaGet/releases/download/parse-core-vX.Y.Z/….tgz"`） | 零注册表运维；semver 语义完整；CI `npm ci` 直连可用；鉴权走公开 Release（包内无敏感资产） | ✅ **首发采用**：当前单人项目，此形态即"版本化工件"的最小实现 |
-| GitHub Packages npm | 免费但**拉取公开包也要 token**，协作者/CI 上手摩擦 | 备选 |
-| 自建 Verdaccio / 付费私有 scope | 多一道运维或账单 | 出现第二个消费者 / 需要 per-pkg 权限时升级 |
+| **npm 注册表（public scoped 包）** | 需注册 `mediaget` org + 一个 publish token 存仓 secret；workflow 加一步 `npm publish` | ✅ **主渠道**：不可覆盖的版本、生态默认安装路径、`npm audit`/deprecate/dist-tags 全可用 |
+| **mediaGet GitHub Release 附带版本化 tarball**（`https://github.com/hotier/mediaGet/releases/download/parse-core-vX.Y.Z/….tgz`） | 已由 `release-parse-core.yaml` 自动化，附 `.sha256` | ✅ **保留为第二通道**：离线/审计/非 npm 用户；与 npm 副本经 sha256 对拍保证字节一致 |
+| GitHub Packages npm | 免费但**拉取公开包也要 token**，协作者/CI 上手摩擦 | ❌ |
+| 自建 Verdaccio / 付费私有 scope | 多一道运维或账单 | ❌ 无按仓分权限的需求前不引入 |
 
-升级路径：tarball → 私有源只改 `package.json` 一行 resolution，工件内容不变。
+- 首发已完成：npm 侧 `mediaget` org 已建（`hotier` 为 owner），`@mediaget/parse-core@0.1.2` 由上游 CI 于 2026-10-15 16:49:28Z 发出，`latest` 已指 0.1.2；本仓 `package.json` 的依赖行已从 Release URL 换成 `"^0.1.2"`，import 侧零改动。`npm profile get` 显示 2FA = `auth-and-writes`，即任何 publish 与 `npm token create` 都要一次性验证码，**所以本地 CLI 直发不可行，发布只能走 CI**。凭据形态实测代价：前两枚 publish token 在 `Publish to npm` 步连续挂 `EOTP`（前面 7 步全绿，纯凭据问题），换第三类 token 后才通过——**哪一类 token 免 OTP 至今没有权威文档结论，别再按文档描述下断言**。
+- 新包发布后有 npm 扫描期：0.1.2 发出后约 4 分钟才在 registry 可查，期间 `versions` 里会出现 `0.0.0-stage` 占位（staged publishing）。因此**sha256 对拍步必须排在 Create GitHub Release 之后**，且用 10 分钟有界等待：查不到只出 warning（Release 不受阻），查到但字节不同才红叉。0.1.2 那版 Release 是失败 run 未走到 Release 步、事后用 registry 副本补建的（附件 sha1 与 CI publish 日志 `666aabf7…` 相符）。
+- 已知取舍：Release asset 可被同 tag 覆盖重传，注册表版本不可覆盖，故对拍校验只在 CI 发布当次成立；这也是把 npm 定为主渠道的核心理由。
+- **同源只可能发生在同一次 pack**：实测本地 `npm pack` 出的 0.1.1 与 Release 上的 0.1.1 字节不同（sha256 `454f5d24…` vs `6919324d…`），差的 33 字节恰好等于 `package.json` 的行数——Windows `core.autocrlf` 把工作区检出成 CRLF，CI 检出 LF，dist 三个文件大小逐项相同，说明构建本身可复现，漂移只来自 pack 时的行尾规范化。结论：**不允许跨机器补发同版本号**，`0.1.1` 保持 Release-only，npm 首发从 `0.1.2` 起由 CI 一次 pack 两处用。实测两个 registry 的 `versions` 只列出 `0.0.0-stage` 与 `0.1.2`，印证 0.1.1 从未上过注册表。
+- 本机 npm 全局 `registry` 已指回 `https://registry.npmjs.org`；`pnpm` 侧仍是 `registry.npmmirror.com`。实测 2026-10-16 两侧均能查到 `latest → 0.1.2`（镜像已同步），但新发版本存在镜像同步时延，装不到时先直接对 `registry.npmjs.org` 查版本号再判断是发布问题还是同步问题。
+- 未加 `--provenance`：发布的是已 pack 好的 tarball 本体，npm 对 tarball 发布的 attestation 支持未经实测验证；同源保证已由 sha256 对拍承担。要补 provenance 时先在 workflow_dispatch 上跑通再固化。
 
 ### parse-core 依赖闭包（P0 的真实工作量，别低估）
 
@@ -204,18 +211,17 @@ mediaGet（已有，web 仓）                     mediaGet-desktop（本仓）
 | [mediago](https://github.com/caorushizi/mediago)（9.3k★） | pnpm workspace：`apps/core`（Go 服务）+ `apps/ui` + `@mediago/electron` + `packages/core-sdk`（TS SDK，exports 仅 `.`）；Electron 经 `service-runner` 拉起 Core，UI 走 HTTP/SSE | Core 是独立进程而非被 import 的库；`core-sdk` 位置与 `parse-core` 完全对应 |
 | [mediago-core](https://github.com/caorushizi/mediago-core)（44★） | 内核独立库仓，Go 平台分包经 npm 分发（版本优先级 环境变量 VERSION > Git Tag > 'dev'） | 「跨语言内核用平台分包 + npm 分发」的先例 |
 
-### 换方案信号（满足其一即重新评估）
+### 何时重新评估载体
 
-- P0 内核抽取返工 > 2 轮；
-- 内核出现第三个消费者；
-- 桌面端成为主线（web 不再主更）；
-- 第二人加入，需要按仓分权限。
+- 出现外部消费者（npm 主渠道的价值这时才真正兑现）；
+- 需要按包粒度控权限 → 私有 scope / Verdaccio；
+- Release 通道无人使用 → 可只留 `.sha256` 供审计，撤 tarball 附件。
 
 ## 9. 其他耦合治理
 
 | 关注点 | 做法 |
 | --- | --- |
-| 内核版本 | 以私有源 semver 版本号声明依赖；`about` 页展示当前 parse-core 版本；dev 可临时 `file:` 链接 |
+| 内核版本 | 以 npm semver 版本号声明依赖（离线/审计场景可指 Release tarball URL）；`about` 页展示当前 parse-core 版本；dev 可临时 `file:` 链接 |
 | 抽取进度跟踪 | mediaGet 仓 `docs/DESKTOP-PLAN.md`（若存在）；P0 未完成前本仓只实现骨架 + mock 内核，避免等阻塞 |
 | 分叉防线 | 本仓不写平台解析；若某天必须临时补，标 `// DIVERGENCE:` 并在 issue 跟踪回流上游 |
 | 域名/平台清单 | 一律来自内核 `PLATFORM_INFO`，客户端不复制表 |

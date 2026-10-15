@@ -12,8 +12,7 @@
  */
 import { z } from "zod";
 import { shell } from "electron";
-import { PLATFORM_INFO } from "@/lib/platforms";
-import { sanitizeFilename } from "@/utils/filename";
+import { PLATFORM_INFO, sanitizeFilename } from "@mediaget/parse-core";
 import {
   describeIssues,
   CacheClearInputSchema,

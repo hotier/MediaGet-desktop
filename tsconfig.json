@@ -19,7 +19,6 @@
     "noEmit": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["../mediaGet/src/*"],
       "~/*": ["renderer/src/*"]
     },
     "types": ["node"]

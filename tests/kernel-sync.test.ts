@@ -1,19 +1,20 @@
 /**
- * 内核契约同步守卫（铁律 1「单一代码源」的物理链接期形态）：
- * types/ipc-contract.ts 的 ParseResultSchema/ParseDataSchema 等是 mediaGet
- * src/types/api.ts 的镜像，上游加/改/删字段而镜像没跟进时，engine.ts 的
- * `as unknown as ParseResult` 会静默吞掉漂移，用户侧表现为结果卡漏字段或渲染 undefined。
- * 本测试用字段名集合双向对比把漂移变成当天红叉。parse-core 版本化工件发布后，
- * 本守卫改比对工件的 .d.ts（见 engine.ts 切换清单）。
+ * 内核契约同步守卫（铁律 1「单一代码源」的工件期形态）：
+ * types/ipc-contract.ts 的 ParseResultSchema/ParseDataSchema 等是内核工件类型的镜像，
+ * 上游加/改/删字段而镜像没跟进时，engine.ts 的 `as unknown as ParseResult` 会静默吞掉
+ * 漂移，用户侧表现为结果卡漏字段或渲染 undefined。本测试用字段名集合双向对比把漂移变成当天红叉。
+ *
+ * 真源 = 已安装工件 `@mediaget/parse-core` 的 `dist/index.d.ts`（§8 双通道主渠道），
+ * 不再读并列检出 `../mediaGet`；因此本守卫在 CI 常驻，装不上依赖即红而不是跳过。
  *
  * 2026-10-14 单一真源改造后，镜像侧不再是 interface 文本而是 zod schema：
- * 直接读 `.shape`（运行时真源），上游侧仍是 TS 接口文本、只能正则抽取。
+ * 直接读 `.shape`（运行时真源），工件侧是 .d.ts 接口文本、只能正则抽取。
  *
  * 只比字段名与可选性，不比类型（镜像 platform?: string 有意宽于上游 VideoPlatformKey）。
  */
+import { createRequire } from "node:module";
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
@@ -23,31 +24,33 @@ import {
   ParsedVideoQualitySchema,
 } from "../types/ipc-contract";
 
-const ROOT = fileURLToPath(new URL("..", import.meta.url));
-// 上游 P0 迁移后真源在 packages/parse-core/src/types/api.ts（src/types/api.ts 只剩薄壳）；
-// 迁移前的旧检出回退读 src/types/api.ts。
-function resolveUpstreamTypes(): string | null {
-  for (const p of [
-    join(ROOT, "..", "mediaGet", "packages", "parse-core", "src", "types", "api.ts"),
-    join(ROOT, "..", "mediaGet", "src", "types", "api.ts"),
-  ]) {
-    if (existsSync(p)) {
-      const src = readFileSync(p, "utf8");
-      if (src.includes("export interface ParseData")) return p;
-    }
+const require = createRequire(import.meta.url);
+
+/** 已安装 parse-core 工件的类型入口（package.json exports['.'].types） */
+function resolveKernelTypes(): string | null {
+  let entry: string;
+  try {
+    entry = require.resolve("@mediaget/parse-core");
+  } catch {
+    return null;
   }
-  return null;
+  const pkgDir = dirname(dirname(entry)); // dist/index.cjs → 包根
+  const pkg = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
+  const typesRel: string | undefined = pkg.exports?.["."]?.types ?? pkg.types;
+  if (!typesRel) return null;
+  const p = join(pkgDir, typesRel);
+  return existsSync(p) ? p : null;
 }
-const UPSTREAM_TYPES = resolveUpstreamTypes() ?? join(ROOT, "..", "mediaGet", "src", "types", "api.ts");
+const KERNEL_TYPES = resolveKernelTypes();
 
 /** 剥离块/行注释：字段行前的 JSDoc 不应并入语句导致解析丢失 */
 function stripComments(src: string): string {
   return src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 }
 
-/** 取 `export interface X { ... }` 的花括号体（深度配平） */
+/** 取 `interface X { ... }`（工件 .d.ts 里不带 export，源码里带）的花括号体（深度配平） */
 function interfaceBody(src: string, name: string): string | null {
-  const m = new RegExp(`export interface ${name}\\s*\\{`).exec(src);
+  const m = new RegExp(`(?:export )?interface ${name}\\s*\\{`).exec(src);
   if (!m) return null;
   let depth = 1;
   let i = m.index + m[0].length;
@@ -101,7 +104,7 @@ function schemaFields(schema: z.ZodObject<z.ZodRawShape>): Map<string, boolean> 
   return fields;
 }
 
-/** 上游名 → 镜像 schema（顺序即下面的对账用例顺序） */
+/** 工件类型名 → 镜像 schema（顺序即下面的对账用例顺序） */
 const LOCAL_SCHEMAS: Record<string, z.ZodObject<z.ZodRawShape>> = {
   ParsedVideoQuality: ParsedVideoQualitySchema,
   ParsedVideoItem: ParsedVideoItemSchema,
@@ -116,32 +119,29 @@ const pairs = [
   ["ApiResponse", "ParseResult"],
 ] as const;
 
-const upstreamMissing = !existsSync(UPSTREAM_TYPES);
-
-describe("types/ipc-contract.ts 镜像与上游 src/types/api.ts 字段集合一致", () => {
-  // 物理链接期守卫：parse-core 工件化后并列检出删除，届时本套件整体跳过（不算假绿，
-  // 工件 .d.ts 比对由切换 PR 一并落地）。
-  it.skipIf(upstreamMissing)("上游检出在位（../mediaGet）", () => {
-    expect(existsSync(UPSTREAM_TYPES)).toBe(true);
+describe("types/ipc-contract.ts 镜像与 @mediaget/parse-core 的 .d.ts 字段集合一致", () => {
+  // 工件是 package.json 里的声明依赖，读不到类型入口说明安装坏了 —— 红，不跳过。
+  it("已安装工件在位（@mediaget/parse-core 类型入口）", () => {
+    expect(KERNEL_TYPES, `未找到 @mediaget/parse-core 的类型入口（pnpm install 未跑或 exports.types 变更？）`).not.toBeNull();
   });
 
-  for (const [upstreamName, localName] of pairs) {
-    it.skipIf(upstreamMissing)(`${upstreamName} → ${localName}`, () => {
-      const upstream = extractFields(readFileSync(UPSTREAM_TYPES, "utf8"), upstreamName);
+  for (const [kernelName, localName] of pairs) {
+    it(`${kernelName} → ${localName}`, () => {
+      const kernel = extractFields(readFileSync(KERNEL_TYPES!, "utf8"), kernelName);
       const local = schemaFields(LOCAL_SCHEMAS[localName]);
-      expect(upstream, `上游缺少 interface ${upstreamName}（上游重构？核对消费点后同步本测试）`).not.toBeNull();
+      expect(kernel, `工件缺少 interface ${kernelName}（内核重构改名？核对消费点后同步本测试）`).not.toBeNull();
 
-      const missing = [...upstream!.keys()].filter((f) => !local.has(f));
-      const extra = [...local.keys()].filter((f) => !upstream!.has(f));
-      // 上游新增而镜像缺 → 结果卡静默漏渲染；镜像多出 → 协议面漂移，必须跟上游对齐
-      expect(missing, `${localName} 落后于上游，缺字段`).toEqual([]);
-      expect(extra, `${localName} 有上游不存在的字段`).toEqual([]);
+      const missing = [...kernel!.keys()].filter((f) => !local.has(f));
+      const extra = [...local.keys()].filter((f) => !kernel!.has(f));
+      // 工件新增而镜像缺 → 结果卡静默漏渲染；镜像多出 → 协议面漂移，必须跟工件对齐
+      expect(missing, `${localName} 落后于工件，缺字段`).toEqual([]);
+      expect(extra, `${localName} 有工件不存在的字段`).toEqual([]);
 
-      for (const f of upstream!.keys()) {
+      for (const f of kernel!.keys()) {
         expect(
           local.get(f),
-          `${localName}.${f} 可选性与上游不一致（契约松紧变化须复核消费端）`
-        ).toBe(upstream!.get(f));
+          `${localName}.${f} 可选性与工件不一致（契约松紧变化须复核消费端）`
+        ).toBe(kernel!.get(f));
       }
     });
   }

@@ -12,18 +12,20 @@
  *   （上游改版风暴时的逃生通道，不再是主通道）。
  * - mock：离线开发/测试用假内核（MG_KERNEL_MODE=mock 或两者皆不可用时兜底）。
  *
- * 铁律 2（依赖边界）：本文件只 import `@/lib/**`，永不 import `@/app/api/**`。
- *
- * ⚠️ 临时桥（§8 定稿 = `@mediaget/parse-core` 版本化工件）：parse-core 尚未发布
- * npm 工件，当前经 `@ → ../mediaGet/src` 物理链接 + src/lib 薄壳消费
- * `@/lib/unifiedCore`（真源 packages/parse-core/src/lib/unified-core.js）。
- * 工件首发后：本文件 import 换成 `@mediaget/parse-core` 公开入口；tsup 删
- * kernelAlias、tsconfig/vitest 删 `@` 别名、CI 删「Checkout kernel」并列检出。
+ * 铁律 2（依赖边界）：本文件只 import `@mediaget/parse-core` 公开入口，永不跨界 web 侧 route。
  */
-import { identifyPlatform, getPlatformName, PLATFORM_INFO } from "@/lib/platforms";
-import { extractUrlFromShareText } from "@/lib/share-text";
-import { isBlockedText } from "@/lib/blockedPlatforms";
-import { normalizeResult } from "@/lib/normalize-result";
+import {
+  identifyPlatform,
+  getPlatformName,
+  PLATFORM_INFO,
+  extractUrlFromShareText,
+  isBlockedText,
+  normalizeResult,
+  unifiedParseLocal,
+  localParserKeys,
+  setKernelConfig,
+  PARSE_CORE_VERSION,
+} from "@mediaget/parse-core";
 import type { ParseResult } from "../../types/ipc";
 import { createResultCache } from "../../core-adapter/cache";
 import { createNoopAnalytics } from "../../core-adapter/analytics";
@@ -83,18 +85,21 @@ export type CoreEntry = {
   unifiedParseLocal: (
     input: string,
     options?: { source?: string; id?: string }
-  ) => Promise<Record<string, unknown>>;
+  ) => Promise<object>;
   localParserKeys: () => string[];
 };
 
 let coreEntry: Promise<CoreEntry> | null = null;
 function loadCore(): Promise<CoreEntry> {
   if (!coreEntry) {
-    coreEntry = import("@/lib/unifiedCore") as Promise<CoreEntry>;
+    // 直接返回上游导出的统一入口（已注入配置的 parse-core 工件）
+    coreEntry = Promise.resolve({ unifiedParseLocal, localParserKeys });
   }
   return coreEntry;
 }
 export function createEngine(deps: EngineDeps) {
+  console.log(`[engine] parse-core v${PARSE_CORE_VERSION} loaded`);
+
   const cache = createResultCache();
   const analytics = createNoopAnalytics();
   const config = createConfigSource({
@@ -102,6 +107,24 @@ export function createEngine(deps: EngineDeps) {
     allowEnv: process.env.NODE_ENV === "development",
   });
   const throttle = createThrottle({ getIntervalMs: deps.getThrottleMs });
+
+  // 注入运行时配置到 parse-core（覆盖模块级 env 读死）
+  setKernelConfig({
+    bilibiliUserAgent: config.get("bilibiliUserAgent"),
+    bilibiliCookie: config.get("bilibiliCookie"),
+    douyinCookie: config.get("douyinCookie"),
+    igCookie: config.get("igCookie"),
+    igTimeoutMs: Number(config.get("igTimeoutMs") || ""),
+    qqmusicCookie: config.get("qqmusicCookie"),
+    twitterFixerServices: config.get("twitterFixerServices"),
+    xhsCookie: config.get("xhsCookie"),
+    youtubeSourceTimeoutMs: Number(config.get("youtubeSourceTimeoutMs") || ""),
+    youtubeApiKey: config.get("youtubeApiKey"),
+    youtubeApiTimeoutMs: Number(config.get("youtubeApiTimeoutMs") || ""),
+    ytdlpBin: config.get("ytdlpBin"),
+    ytdlpTimeoutMs: Number(config.get("ytdlpTimeoutMs") || ""),
+  });
+
   const coreLoader = deps.coreLoader ?? loadCore;
 
   /** 平台清单（来自内核 PLATFORM_INFO，renderer 不复制） */
