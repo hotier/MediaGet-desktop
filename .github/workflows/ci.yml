@@ -56,8 +56,12 @@ jobs:
       # 「只定位不校验」。在打包前断言清单在位且与二进制自洽，让问题在构建期暴露。
       - name: Verify binaries + manifest before packaging
         run: node scripts/fetch-binaries.cjs --verify-only --require-all
+      # 只构建、不发布：package.json 的 build.publish 配了 GitHub provider，
+      # electron-builder 在 CI 里会默认尝试上传 Release，而本 job 没有 GH_TOKEN
+      # ——实测报 "GitHub Personal Access Token is not set"。发布是 tag 工作流的事，
+      # 所以这里不复用 `pnpm run build`（它会带上 auto-publish 语义），显式 never。
       - name: Build app + installer
-        run: pnpm run build
+        run: pnpm run build:app && pnpm exec electron-builder --win --publish never
       # 产物自检：安装包里必须真的带上 bin/ 与 manifest.json（extraResources 配错
       # 时构建仍会成功，但用户机器上两个二进制都不可用）。
       - name: Assert packaged resources landed in the installer
