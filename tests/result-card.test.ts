@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createElement } from "react";
 import { ResultCard } from "../renderer/src/components/ResultCard";
+import { TooltipProvider } from "../renderer/src/components/ui/tooltip";
 import type { ParseRunOutcome } from "../types/ipc";
 
 function outcome(data: ParseRunOutcome["result"]["data"], extra: Partial<ParseRunOutcome> = {}): ParseRunOutcome {
@@ -19,7 +20,9 @@ function outcome(data: ParseRunOutcome["result"]["data"], extra: Partial<ParseRu
 }
 
 const render = (o: ParseRunOutcome): string =>
-  renderToStaticMarkup(createElement(ResultCard, { outcome: o, meta: null, onQueued: () => {} }));
+  renderToStaticMarkup(
+    createElement(TooltipProvider, null, createElement(ResultCard, { outcome: o, meta: null, onQueued: () => {} }))
+  );
 
 describe("ResultCard 三层结构", () => {
   it("信息层：标题/平台/统计行按契约渲染", () => {

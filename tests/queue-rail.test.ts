@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueueRail } from "../renderer/src/components/QueueRail";
+import { TooltipProvider } from "../renderer/src/components/ui/tooltip";
 import type { DownloadTaskView } from "../types/ipc";
 
 function task(over: Partial<DownloadTaskView>): DownloadTaskView {
@@ -27,7 +28,7 @@ function task(over: Partial<DownloadTaskView>): DownloadTaskView {
 }
 
 const render = (tasks: DownloadTaskView[]): string =>
-  renderToStaticMarkup(createElement(QueueRail, { tasks, onShowAll: () => {} }));
+  renderToStaticMarkup(createElement(TooltipProvider, null, createElement(QueueRail, { tasks, onShowAll: () => {} })));
 
 describe("QueueRail", () => {
   it("下载中：文件名 + 百分比 + 进度条", () => {
@@ -57,7 +58,9 @@ describe("QueueRail", () => {
     const html = render([task({ status: "error", error: "HTTP 403" })]);
     expect(html).toContain("失败");
     expect(html).toContain('data-status="error"');
-    expect(html).toContain('title="HTTP 403"');
+    // 错误详情改由应用内 Tooltip 呈现（截断文字场景），不再挂 native title
+    expect(html).toContain('data-slot="tooltip-trigger"');
+    expect(html).not.toContain("title=");
   });
 
   it("超过 8 条折叠，计数仍显示全量", () => {

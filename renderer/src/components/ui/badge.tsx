@@ -14,6 +14,7 @@ const badgeVariants = cva(
         ok: "border-transparent bg-ok/15 text-ok",
         warn: "border-transparent bg-warn/20 text-warn",
         err: "border-transparent bg-err/15 text-err",
+        info: "border-transparent bg-info/15 text-info",
       },
     },
     defaultVariants: { variant: "default" },

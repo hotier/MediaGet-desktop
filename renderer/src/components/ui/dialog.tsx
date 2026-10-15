@@ -26,11 +26,16 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  showOverlay = true,
   ...props
-}: React.ComponentProps<typeof DialogPrimitive.Content> & { showCloseButton?: boolean }): React.ReactElement {
+}: React.ComponentProps<typeof DialogPrimitive.Content> & {
+  showCloseButton?: boolean;
+  /** 业主点名的浮层可去遮罩（配合 Root `modal={false}` 才不锁背景交互），默认保留遮罩 */
+  showOverlay?: boolean;
+}): React.ReactElement {
   return (
     <DialogPortal>
-      <DialogOverlay />
+      {showOverlay && <DialogOverlay />}
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(

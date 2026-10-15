@@ -10,6 +10,7 @@ import { fmtBytes } from "../lib/format";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { Progress } from "./ui/progress";
+import { TruncatedTooltip } from "./ui/tooltip";
 
 const STATE_LABEL: Record<DownloadTaskView["status"], string> = {
   queued: "排队",
@@ -36,11 +37,11 @@ export function QueueRail({
     <aside className="sticky top-0 flex w-(--w-rail) shrink-0 flex-col gap-3 rounded-lg border border-border bg-card p-4 shadow-sm" aria-label="下载队列">
       <div className="flex items-center justify-between">
         <h2 className="font-semibold text-sm">队列</h2>
-        {active.length > 0 && <span className="text-xs tabular-nums text-muted-foreground">{active.length}</span>}
+        {active.length > 0 && <span className="tabular-nums text-muted-foreground">{active.length}</span>}
       </div>
 
       {rows.length === 0 ? (
-        <p className="text-xs text-muted-foreground">暂无进行中的任务。解析成功后点「下载」，这里会实时滚动。</p>
+        <p className="text-muted-foreground">暂无进行中的任务。解析成功后点「下载」，这里会实时滚动。</p>
       ) : (
         rows.map((t) => {
           const pct = t.total > 0 ? Math.min(100, (t.received / t.total) * 100) : 0;
@@ -48,10 +49,10 @@ export function QueueRail({
           return (
             <div key={t.taskId} className="flex flex-col gap-1.5">
               <div className="flex items-center justify-between gap-2">
-                <span className="min-w-0 flex-1 truncate text-xs" title={t.error ?? t.filename}>
-                  {t.filename}
-                </span>
-                <Badge variant={variant} data-status={t.status} className="shrink-0 tabular-nums">
+                <TruncatedTooltip label={t.error ?? t.filename}>
+                  <span className="min-w-0 flex-1 truncate">{t.filename}</span>
+                </TruncatedTooltip>
+                <Badge variant={variant} data-status={t.status} className="shrink-0 text-sm tabular-nums">
                   {t.status === "downloading" && t.total > 0
                     ? `${pct.toFixed(0)}%`
                     : t.status === "downloading"
@@ -65,7 +66,7 @@ export function QueueRail({
         })
       )}
 
-      <Button variant="ghost" size="sm" className="mt-auto justify-start px-0 text-xs" onClick={onShowAll}>
+      <Button variant="ghost" size="sm" className="mt-auto justify-start px-0 text-sm" onClick={onShowAll}>
         打开完整队列
       </Button>
     </aside>

@@ -13,7 +13,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
 import { api } from "../lib/bridge";
-import { buildPlan, buildQualityPlan, summarize } from "../lib/download-plan";
+import { buildPlan, buildQualityPlan, type QualityStrategy, summarize } from "../lib/download-plan";
 import { fmtCount } from "../lib/format";
 import { buildAuthorSnapshot } from "../lib/work-info";
 import type { AppMeta, ParseRunOutcome } from "../../../types/ipc";
@@ -24,6 +24,7 @@ import { Card, CardContent } from "./ui/card";
 import { Checkbox } from "./ui/checkbox";
 import { Alert, AlertDescription } from "./ui/alert";
 import { Separator } from "./ui/separator";
+import { Tooltip, TooltipContent, TooltipTrigger, TruncatedTooltip } from "./ui/tooltip";
 import {
   Dialog,
   DialogContent,
@@ -65,6 +66,15 @@ export function ResultCard({
   const [previewIdx, setPreviewIdx] = useState<number | null>(null);
   const [reasonOpen, setReasonOpen] = useState(false);
 
+  // 清晰度预选策略（设置→下载）：随每次解析重读，组件复用不重挂载也能拿到最新值
+  const [qualityStrategy, setQualityStrategy] = useState<QualityStrategy>("main");
+  useEffect(() => {
+    void api.settings
+      .get()
+      .then((s) => setQualityStrategy(s.defaultQuality))
+      .catch(() => {});
+  }, [outcome]);
+
   // 解析成功后 15s 心跳计龄，超 TTL 按钮改为「重新解析并下载」
   const [resultAge, setResultAge] = useState(0);
   useEffect(() => {
@@ -84,11 +94,12 @@ export function ResultCard({
     setExcluded(new Set());
     setResultAge(0);
     // 短清单（≤3 项）摊开，长清单（图集/多 P）折叠 —— 结果卡不许吃掉整屏
-    const fresh = buildQualityPlan(data);
+    const fresh = buildQualityPlan(data, qualityStrategy);
     setPlanOpen(buildPlan(data, fresh.options[fresh.primaryIndex]).length <= PLAN_COLLAPSE_AT);
+    // 只随解析结果重置；策略读新值迟到由下方 memo 纠正
   }, [outcome, data]);
 
-  const qualityPlan = useMemo(() => buildQualityPlan(data), [data]);
+  const qualityPlan = useMemo(() => buildQualityPlan(data, qualityStrategy), [data, qualityStrategy]);
   const qualityOptions = qualityPlan.options;
   const activeIdx = Math.min(qualityIdx ?? qualityPlan.primaryIndex, Math.max(0, qualityOptions.length - 1));
   const plan = useMemo(
@@ -198,7 +209,9 @@ export function ResultCard({
               />
             )}
             <div className="flex min-w-0 flex-1 flex-col gap-2">
-              <h2 className="truncate font-semibold text-[15px]">{data?.title || data?.desc || "（无标题）"}</h2>
+              <TruncatedTooltip label={data?.title || data?.desc || "（无标题）"}>
+                <h2 className="truncate font-semibold text-[15px]">{data?.title || data?.desc || "（无标题）"}</h2>
+              </TruncatedTooltip>
               <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                 {platformName && (
                   <Badge variant="outline" className="gap-1.5 ps-1">
@@ -251,26 +264,33 @@ export function ResultCard({
           </div>
 
           {data?.desc && data.desc !== data.title && (
-            <p className="line-clamp-3 text-xs leading-relaxed text-muted-foreground">{data.desc}</p>
+            <TruncatedTooltip label={data.desc} contentClassName="max-w-96">
+              <p className="line-clamp-3 text-xs leading-relaxed text-muted-foreground">{data.desc}</p>
+            </TruncatedTooltip>
           )}
 
           {images.length > 0 && (
             <ul className="grid grid-cols-4 gap-2">
               {images.slice(0, 8).map((src, i) => (
                 <li key={i}>
-                  <button
-                    type="button"
-                    onClick={() => setPreviewIdx(i)}
-                    aria-label={`查看第 ${i + 1} 张图`}
-                    className="relative block aspect-square w-full overflow-hidden rounded-md border border-border outline-none transition-all hover:border-ring hover:shadow-sm focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                  >
-                    <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" className="size-full object-cover" />
-                    {i === 7 && images.length > 8 && (
-                      <span className="absolute inset-0 flex items-center justify-center bg-[var(--overlay)] text-sm font-medium text-popover-foreground">
-                        +{images.length - 8}
-                      </span>
-                    )}
-                  </button>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <button
+                        type="button"
+                        onClick={() => setPreviewIdx(i)}
+                        aria-label={`查看第 ${i + 1} 张图`}
+                        className="relative block aspect-square w-full overflow-hidden rounded-md border border-border outline-none transition-all hover:border-ring hover:shadow-sm focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                      >
+                        <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" className="size-full object-cover" />
+                        {i === 7 && images.length > 8 && (
+                          <span className="absolute inset-0 flex items-center justify-center bg-[var(--overlay)] text-sm font-medium text-popover-foreground">
+                            +{images.length - 8}
+                          </span>
+                        )}
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent>查看第 {i + 1} 张图</TooltipContent>
+                  </Tooltip>
                 </li>
               ))}
             </ul>
@@ -330,9 +350,9 @@ export function ResultCard({
                     />
                     <label htmlFor={p.id} className="flex min-w-0 flex-1 items-center gap-2">
                       <span className="shrink-0 text-xs text-muted-foreground">{p.label}</span>
-                      <span className="min-w-0 flex-1 truncate font-mono text-xs" title={p.filename}>
-                        {p.filename}
-                      </span>
+                      <TruncatedTooltip label={p.filename}>
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs">{p.filename}</span>
+                      </TruncatedTooltip>
                       {p.fallbackNote && <Badge variant="warn">{p.fallbackNote}</Badge>}
                     </label>
                   </li>

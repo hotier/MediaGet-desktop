@@ -1,19 +1,25 @@
 /* 即刻解析 · renderer 样式基座
  * 三层 Design Token（docs/UIUX-DESIGN.md §5.2）：层1 原始色板（唯一 hex 处）→
- * 层2 语义角色（主题切换只改这里）→ 组件只消费 Tailwind utility（@theme inline 桥接）。
+ * 层2 语义角色（主题/风格切换只改这里）→ 组件只消费 Tailwind utility（@theme inline 桥接）。
  * 基线（2026-10-14 业主指令「都放宽，按照 Motrix 的 UI 设计框架和理念，不要给自己设限」）：
  * shadcn/ui + Tailwind v4 + Radix 原语，组件样式写在 JSX 的 utility 里，本文件只留 Token、
  * 全局基线与少数无法 utility 化的规则（app-region 拖拽、滚动条、reduced-motion）。
  * 高程、过渡、hover 位移由组件主题决定，不再受审美禁令约束；色彩仍只有一个真源——
- * 层 1 色板 + 层 2 角色，动态魔法色 --accent-color 经 @theme 走 shadcn 的 primary。
- * 主题：:root 即暗色默认，[data-theme="light"] 覆盖；renderer/src/lib/theme.ts 落属性。 */
+ * 层 1 色板 + 层 2 角色。
+ * 主题（2026-10-15 蓝白指令）：两个正交维度。
+ *   - 明暗：:root=暗，[data-theme="light"] 覆盖（theme.ts 落属性）；
+ *   - 风格：[data-style] 五套（azure 默认无属性 / indigo / teal / slate / violet），
+ *     一套风格 = 一整套色带（底色/线条染向风格色，焦点色由风格决定）。
+ *   - 字体族：无 CSS 预设档——族名运行时来自本机 font-list 枚举，theme.ts 内联覆盖 :root --font-ui
+ *     （"system" 哨兵回落基座栈）；只换正文字体，与色带/字号正交（见层 2.5 注）。
+ * 首页不再按封面/平台抽色：--accent-color 由 [data-style] 静态解析，全站焦点色统一。 */
 
 @import "tailwindcss";
 @import "tw-animate-css"; /* shadcn v4 浮层的 data-[state=open] 动效（淡入/缩放/滑入） */
 
 /* Tailwind v4 CSS-first 主题：shadcn/ui 的语义名桥到本仓层 2 角色（inline = 运行时 var
  * 变更即时生效）。两套名字的关系要说清：
- *   shadcn `primary`   = 本 App 的动态魔法色（封面主色，走 --accent-solid）
+ *   shadcn `primary`   = 焦点主色（走 --accent-solid，由主题风格决定）
  *   shadcn `accent`    = 中性 hover 底（它的语义是「强调背景」不是「品牌色」）
  *   shadcn `muted`     = 次级表面 / `muted-foreground` = 次要文字
  * 组件里只写 utility，不再写 var()；层 1 仍是唯一 hex 处。 */
@@ -40,15 +46,17 @@
   /* 外壳与内容态自有的角色（shadcn 词表没有这两档） */
   --color-panel: var(--panel);
   --color-sunken: var(--surface-sunken);
+  --color-control: var(--control-bg); /* 输入框/下拉触发器/开关/复选框的填充底 */
   --color-disabled: var(--text-disabled);
   --color-faint: var(--text-placeholder);
   --color-hairline: var(--line-strong);
   --color-ok: var(--ok);
   --color-warn: var(--warn);
   --color-err: var(--err);
+  --color-info: var(--info);
   --color-progress: var(--progress-fill);
   --color-progress-track: var(--progress-track);
-  /* 圆角：随组件库尺度放宽（6/8/12），直角那是上一版工具风的自我设限 */
+  /* 圆角：随组件库尺度放宽（6/8/12） */
   --radius-sm: var(--r-sm);
   --radius-md: var(--r-md);
   --radius-lg: var(--r-lg);
@@ -56,6 +64,15 @@
   --shadow-pop: var(--sh-pop);
   --font-sans: var(--font-ui);
   --font-mono: var(--font-code);
+  /* 文字档由「界面字号」这一个变量派生（业主指令 2026-10-15：字号做成可配置项，默认 13px）。
+   * inline 让 utility 直接把 var(--fs-content) 写进规则，设置页改 :root 上的值即全站实时生效；
+   * 档位关系不变：正文档 text-sm = 配置值，较小档 text-xs = -1px，较大档 text-base = +1px。 */
+  --text-xs: calc(var(--fs-content) - 1px);
+  --text-xs--line-height: 1.45;
+  --text-sm: var(--fs-content);
+  --text-sm--line-height: 1.5;
+  --text-base: calc(var(--fs-content) + 1px);
+  --text-base--line-height: 1.5;
 }
 
 /* 不确定进度（总长未知的下载 / 等待中的解析）：一段亮条往复扫过轨道 */
@@ -73,7 +90,8 @@
 
 /* —— 层 1：原始色板（唯一允许 hex 字面量之处）——
  * 中性色带一点蓝调（纯灰在 Windows 上显脏）；发丝线用实色而非白 alpha：
- * 工具风的可信度来自「线条恒定」，透明线会随底下内容变色。 */
+ * 工具风的可信度来自「线条恒定」，透明线会随底下内容变色。
+ * 中性是「种子」：层 2 按 --wc-hue 把它们向当前风格色染一档，得到该风格的整条色带。 */
 :root {
   --wb-black: #0a0c0d; /* 输入区/代码底（比 app 更深一档） */
   --wb-bg: #0f1113;
@@ -89,25 +107,27 @@
   --wb-ink-muted: #9aa0a7;
   --wb-ink-faint: #757b83;
   --wb-ink-disabled: #5a6067;
-  --wb-accent-fallback: #aeb4bd; /* 魔法色缺省 = 冷灰：没有封面就没有颜色 */
-  --wb-on-accent-dark: #101214; /* 浅 accent 上的深字 */
-  --wb-on-accent-light: #f4f5f6; /* 深 accent 上的浅字 */
+  --wb-on-accent-dark: #101214; /* 亮 accent 上的深字（暗色档焦点按钮文字） */
+  --wb-on-accent-light: #f4f5f6; /* 深 accent 上的浅字（浅色档焦点按钮文字） */
   --wb-track: #30353b; /* 进度未下载段（实色，不用白 alpha） */
   --wb-ok: #3fb950;
   --wb-warn: #d8a02a;
   --wb-err: #e5534b;
+  --wb-info: #539bf5; /* 三态状态色的中性蓝：不随风格漂移（语义稳定优先） */
   --wb-tint-ok: #12261a;
   --wb-tint-warn: #262012;
   --wb-tint-err: #2b1516;
   --wb-shadow: #00000073; /* 唯一阴影色：只给浮层，卡片一律无阴影 */
   --wb-light-bg: #f5f6f7;
   --wb-light-panel: #eceef0;
-  --wb-light-surface: #fdfdfe; /* 非纯白 */
+  --wb-light-surface: #fafbfc; /* 非纯白；只比 --wb-light-bg 高一档（业主 2026-10-15：卡片底要和页底搭） */
   --wb-light-surface-2: #f2f4f5;
   --wb-light-surface-3: #e6e9ec;
   --wb-light-sunken: #e9ebee;
-  --wb-light-line: #dfe2e6;
+  /* 该值是混合输入：走 92% seed + 8% hue 后终值 ≈ #dfe4ee（业主 2026-10-15：卡片外框线减重，别当比 surface 深的「正常」发丝线种子改） */
+  --wb-light-line: #ededed;
   --wb-light-line-strong: #c9ced4;
+  --wb-light-line-control: #d8dde4; /* 控件描边：比 line-strong 浅一档（业主 2026-10-15 再浅一点） */
   --wb-light-line-hover: #aab1b9;
   --wb-light-veil: #1b1e21d9;
   --wb-light-ink: #1b1e21;
@@ -118,31 +138,88 @@
   --wb-light-ok: #1a7f37;
   --wb-light-warn: #9a6700;
   --wb-light-err: #c0392f;
+  --wb-light-info: #0969da;
   --wb-light-tint-ok: #e8f6ec;
   --wb-light-tint-warn: #fbf2df;
   --wb-light-tint-err: #fbeceb;
   --wb-light-shadow: #0000001f;
 }
 
-/* —— 层 2：语义角色（暗色默认；主题切换只改这里）—— */
+/* —— 层 1.5：主题风格（[data-style] 五套，hex 仍只活在层 1）——
+ * 一套风格 = 一整套色带：--accent-color 是焦点主色，--wc-hue 是把中性面染向该风格的种子色。
+ * 明暗（theme.ts 写 data-theme）与风格（写 data-style）正交：先给暗色档（无 data-theme 时生效），
+ * 再用 [data-theme="light"][data-style=…] 双属性选择器覆盖浅档（(0,2,0) 恒胜单属性，确定性解析）。
+ * 注：--accent-color 是 @property 注册色，走 var() 间接引用在本引擎回落 initial，故每格落字面色值。
+ * azure = 无属性默认态，与「dark=无属性」同构，首帧零内联也不花屏。--wc-dot-* 是设置页色点的稳定参照。 */
+:root {
+  --wc-dot-azure: #4b8dff;
+  --wc-dot-indigo: #818cf8;
+  --wc-dot-teal: #2dd4bf;
+  --wc-dot-slate: #94a3b8;
+  --wc-dot-violet: #a78bfa;
+}
+:root {
+  --accent-color: #4b8dff; /* 海蓝 · 暗档 */
+  --wc-hue: #3b82f6;
+}
+[data-style="indigo"] {
+  --accent-color: #818cf8;
+  --wc-hue: #6366f1;
+}
+[data-style="teal"] {
+  --accent-color: #2dd4bf;
+  --wc-hue: #14b8a6;
+}
+[data-style="slate"] {
+  --accent-color: #94a3b8;
+  --wc-hue: #64748b;
+}
+[data-style="violet"] {
+  --accent-color: #a78bfa;
+  --wc-hue: #8b5cf6;
+}
+/* 浅色档：仅覆盖 --accent-color（底色种子 --wc-hue 同色系，不随明暗变） */
+[data-theme="light"] {
+  --accent-color: #2563eb; /* 海蓝 · 浅档 */
+}
+[data-theme="light"][data-style="indigo"] {
+  --accent-color: #4f46e5;
+}
+[data-theme="light"][data-style="teal"] {
+  --accent-color: #0d9488;
+}
+[data-theme="light"][data-style="slate"] {
+  --accent-color: #475569;
+}
+[data-theme="light"][data-style="violet"] {
+  --accent-color: #7c3aed;
+}
+/* 不做 --accent-color/--wc-hue 的注册过渡：魔法色链路已拆除，风格切换是低频设置动作，
+ * 即时切换比 400ms 补色更稳（注册属性 + transition 在无头/后台视口里会卡在 initial 值）。 */
+
+/* —— 层 2：语义角色（暗色默认；主题/风格切换只改这里）——
+ * 暗档中性面（底/面板/表面/线条）向 --wc-hue 染一档 → 一套风格一整条色带；
+ * 浅档中性面不染色（业主 2026-10-15：蓝白主题下浅色背景就应该是白色），风格只换 accent。
+ * 文字保持近中性（可读性优先，不跟风格染色）；焦点主色走 --accent-color。 */
 :root,
 [data-theme="dark"] {
-  --bg: var(--wb-bg);
-  --panel: var(--wb-panel);
-  --surface: var(--wb-surface);
-  --surface-2: var(--wb-surface-2);
-  --surface-3: var(--wb-surface-3);
-  --surface-sunken: var(--wb-black);
+  --bg: color-mix(in srgb, var(--wb-bg) 88%, var(--wc-hue));
+  --panel: color-mix(in srgb, var(--wb-panel) 88%, var(--wc-hue));
+  --surface: color-mix(in srgb, var(--wb-surface) 89%, var(--wc-hue));
+  --surface-2: color-mix(in srgb, var(--wb-surface-2) 90%, var(--wc-hue));
+  --surface-3: color-mix(in srgb, var(--wb-surface-3) 90%, var(--wc-hue));
+  --surface-sunken: color-mix(in srgb, var(--wb-black) 92%, var(--wc-hue));
+  --control-bg: transparent; /* 控件填充底（输入框/下拉触发器/开关/复选）：无填充，只留描边（业主 2026-10-15） */
   --overlay: var(--wb-veil);
   --text: var(--wb-ink);
   --text-muted: var(--wb-ink-muted);
   --text-placeholder: var(--wb-ink-faint);
   --text-disabled: var(--wb-ink-disabled);
   --text-on-veil: var(--wb-on-accent-light); /* 恒深遮罩(overlay)上的浅字，两主题同值 */
-  --line: var(--wb-line);
-  --line-strong: var(--wb-line-strong);
-  --line-control: var(--wb-line-strong);
-  --line-control-hover: var(--wb-line-hover);
+  --line: color-mix(in srgb, var(--wb-line) 90%, var(--wc-hue));
+  --line-strong: color-mix(in srgb, var(--wb-line-strong) 90%, var(--wc-hue));
+  --line-control: var(--line-strong);
+  --line-control-hover: color-mix(in srgb, var(--wb-line-hover) 90%, var(--wc-hue));
   --line-focus: var(--accent-color);
   --line-invalid: var(--wb-err);
   --line-valid: var(--wb-ok);
@@ -151,11 +228,12 @@
   --accent-solid-active: color-mix(in srgb, var(--accent-color) 88%, black);
   --accent-text: var(--accent-color);
   --accent-soft: color-mix(in srgb, var(--accent-color) 16%, transparent);
-  --accent-ink: var(--wb-on-accent-dark); /* accent 上的按钮文字：JS 按亮度翻转（深 accent→浅字） */
+  --accent-ink: var(--wb-on-accent-dark); /* 暗色档焦点色偏亮 → 深字 */
   --ring: color-mix(in srgb, var(--accent-color) 55%, transparent); /* 聚焦环：2px 硬边，不做光晕 */
   --ok: var(--wb-ok);
   --warn: var(--wb-warn);
   --err: var(--wb-err);
+  --info: var(--wb-info);
   --on-destructive: var(--wb-on-accent-dark); /* 暗色主题的 err 偏亮，实心红底配深字 */
   --tint-ok: var(--wb-tint-ok);
   --tint-warn: var(--wb-tint-warn);
@@ -166,22 +244,25 @@
   --sh-pop: 0 8px 24px var(--wb-shadow); /* 唯一阴影：只给浮层（模态态/菜单），卡片一律无阴影 */
 }
 [data-theme="light"] {
+  /* 浅色档中性面不随风格蓝染（业主 2026-10-15：蓝白主题下浅色背景就应该是白色）；
+     风格只驱动 accent，色带染色仅保留在暗档。 */
   --bg: var(--wb-light-bg);
   --panel: var(--wb-light-panel);
   --surface: var(--wb-light-surface);
   --surface-2: var(--wb-light-surface-2);
   --surface-3: var(--wb-light-surface-3);
   --surface-sunken: var(--wb-light-sunken);
+  --control-bg: transparent; /* 浅档同暗档：控件零填充，不做灰底 */
   --overlay: var(--wb-light-veil);
   --text: var(--wb-light-ink);
   --text-muted: var(--wb-light-ink-muted);
   --text-placeholder: var(--wb-light-ink-faint);
   --text-disabled: var(--wb-light-ink-disabled);
   --text-on-veil: var(--wb-on-accent-light);
-  --line: var(--wb-light-line);
-  --line-strong: var(--wb-light-line-strong);
-  --line-control: var(--wb-light-line-strong);
-  --line-control-hover: var(--wb-light-line-hover);
+  --line: color-mix(in srgb, var(--wb-light-line) 92%, var(--wc-hue));
+  --line-strong: color-mix(in srgb, var(--wb-light-line-strong) 90%, var(--wc-hue));
+  --line-control: var(--wb-light-line-control);
+  --line-control-hover: color-mix(in srgb, var(--wb-light-line-hover) 90%, var(--wc-hue));
   --line-invalid: var(--wb-light-err);
   --line-valid: var(--wb-light-ok);
   --accent-solid-hover: color-mix(in srgb, var(--accent-color) 88%, black);
@@ -189,34 +270,20 @@
   --ok: var(--wb-light-ok);
   --warn: var(--wb-light-warn);
   --err: var(--wb-light-err);
+  --info: var(--wb-light-info);
   --on-destructive: var(--wb-on-accent-light); /* 浅色主题的 err 是深红，配浅字 */
   --tint-ok: var(--wb-light-tint-ok);
   --tint-warn: var(--wb-light-tint-warn);
   --tint-err: var(--wb-light-tint-err);
   --progress-track: var(--wb-light-track);
-  --accent-ink: var(--wb-light-ink);
+  --accent-ink: var(--wb-on-accent-light); /* 浅色档焦点色偏深 → 浅字 */
   --sh-pop: 0 8px 24px var(--wb-light-shadow);
 }
 
-/* 动态魔法色：JS（useAccent）写 documentElement 的 --accent-color；
- * 以下为缺省与过渡纪律（400ms，禁跳变）。 */
-:root {
-  --accent-color: var(--wb-accent-fallback);
-}
-@property --accent-color {
-  syntax: "<color>";
-  inherits: true;
-  initial-value: #aeb4bd; /* = --wb-accent-fallback（@property 只收静态值） */
-}
-/* 魔法色过渡只在变更点（:root）声明：子元素继承已插值的计算值，
- * 若写在 * 上会覆盖各组件自己的 transition 简写。 */
-:root {
-  transition: --accent-color 400ms cubic-bezier(0.4, 0, 0.2, 1);
-}
-
 /* —— 层 2.5：与主题无关的尺度（字号/间距/时长/层级交给 Tailwind 刻度）——
- * 中文下限 12px（雅黑 11px 起糊），组件里最小用 text-xs。 */
+ * 中文下限 12px（雅黑 11px 起糊），所以 --fs-content 的可调区间是 12–18。 */
 :root {
+  --fs-content: 13px; /* 界面正文档位；text-xs/sm/base 由它在 @theme inline 派生，设置→外观→界面字号 覆盖 */
   --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
     system-ui, sans-serif;
   --font-code: "Cascadia Mono", "Consolas", monospace; /* 桥给 Tailwind 的 font-mono（见 @theme inline） */
@@ -226,6 +293,10 @@
   --w-side: 208px; /* 外壳侧栏（utility 里以 w-(--w-side) 消费） */
   --w-rail: 300px; /* 解析页右栏队列轨 */
 }
+
+/* 界面字体族不再用 [data-font] 属性预登记：族名来自本机 font-list 枚举（不可枚举成 CSS 规则），
+ * 由 theme.ts setFontFamily 直接内联覆盖 :root 的 --font-ui（"system" 哨兵=清内联回落上面的基座栈）。
+ * 基座 --font-ui（层 2.5）= 系统默认档；--font-code 等宽档不受字体族设置影响（命令仍等宽）。 */
 
 * {
   box-sizing: border-box;
@@ -253,7 +324,7 @@ body,
 body {
   background: var(--bg);
   color: var(--text);
-  font: 0.875rem / 1.5 var(--font-ui);
+  font: var(--fs-content) / 1.5 var(--font-ui);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -269,7 +340,7 @@ body {
   }
 }
 
-/* 聚焦态宿主：容器（而非框内控件）承载高亮时，用与上面兜底同款的魔法色 outline。
+/* 聚焦态宿主：容器（而非框内控件）承载高亮时，用与上面兜底同款的焦点色 outline。
    只认直接子输入控件（:has），卡内按钮自己聚焦时仍走它自己的 ring，不叠第二层。
    框内控件收起 outline 与自带 ring —— 控件盒 ≠ 容器盒，两层高亮会叠出错位的第二框。 */
 .focus-host:has(> :is(input, textarea):focus-visible) {
