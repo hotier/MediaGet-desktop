@@ -6,7 +6,19 @@
  * 安全（§6.4）：nodeIntegration:false、contextIsolation:true、sandbox:true、
  * webSecurity 不关、renderer 只加载本地文件。
  */
-import { app, BrowserWindow, clipboard, ipcMain, Menu, nativeImage, Notification, session, shell, Tray } from "electron";
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  globalShortcut,
+  ipcMain,
+  Menu,
+  nativeImage,
+  Notification,
+  session,
+  shell,
+  Tray,
+} from "electron";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Agent, ProxyAgent, setGlobalDispatcher } from "undici";
@@ -74,6 +86,22 @@ const packagedBinDir = isDev
   : typeof process.resourcesPath === "string"
     ? join(process.resourcesPath, "bin")
     : null;
+
+/**
+ * 随包图标目录（scripts/make-icons.cjs 产出 → extraResources 落 `resources/icons`）。
+ * dev 直接吃仓库那份 ⇒ 改图标 = 重跑脚本 + 重启，不必重新打包。
+ */
+const iconDir = isDev
+  ? join(app.getAppPath(), "resources", "icons")
+  : typeof process.resourcesPath === "string"
+    ? join(process.resourcesPath, "icons")
+    : null;
+
+/** 读一张随包图标；目录未知或文件缺失都返回空图，由调用方回落（图标不该阻断启动） */
+function iconFromFile(name: string): Electron.NativeImage {
+  if (!iconDir) return nativeImage.createEmpty();
+  return nativeImage.createFromPath(join(iconDir, name));
+}
 
 /**
  * 完整性基线：随包 manifest.json（scripts/fetch-binaries.cjs 产出）。
@@ -188,13 +216,7 @@ const notifier = createDownloadNotifier({
   show: ({ title, body }) => {
     if (!Notification.isSupported()) return;
     const n = new Notification({ title, body });
-    n.on("click", () => {
-      if (!mainWindow || mainWindow.isDestroyed()) createWindow();
-      else {
-        mainWindow.show();
-        mainWindow.focus();
-      }
-    });
+    n.on("click", showMainWindow);
     n.show();
   },
 });
@@ -209,6 +231,24 @@ const clipboardWatcher = createClipboardWatcher({
   onLink: (link) => emit(IPC.evClipboardLink, link),
 });
 clipboardWatcher.setEnabled(store.loadConfig().settings.clipboardWatch);
+
+/** 全局唤起快捷键：任意界面按下 → 读剪贴板 → 本地识别 → 填首页输入框并唤起窗口 */
+const CLIPBOARD_HOTKEY = "CommandOrControl+Alt+V";
+
+/**
+ * 快捷键**不**挂在 `clipboardWatch` 上：那个开关管的是「静默轮询剪贴板」，而按下即用户
+ * 主动索取，语义不同，默认关着的开关不该顺手废掉一条显式入口。
+ * 注册失败（键位已被别的程序占了）只记一条日志 —— 这是增强，不该弹窗打扰。
+ * 必须在 app ready 之后调用（globalShortcut 的硬要求）。
+ * 唤起窗口但不抢导航：用户停在队列/设置页时，链接按既有语义挂在待填队列，回到首页即填。
+ */
+function registerClipboardHotkey(): void {
+  const ok = globalShortcut.register(CLIPBOARD_HOTKEY, () => {
+    showMainWindow();
+    clipboardWatcher.checkNow();
+  });
+  if (!ok) logger.warn(`[shortcut] ${CLIPBOARD_HOTKEY} 注册失败：键位可能已被其他程序占用`);
+}
 
 const downloader = new Downloader({
   getDownloadDir: () =>
@@ -404,7 +444,83 @@ registerIpc({
   validateOutputs: !app.isPackaged,
 });
 
+/** 唤起主窗口：托盘点击、通知点击、二次启动、全局快捷键共用同一条恢复路径 */
+function showMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+/** 真退出：先放行关窗拦截（关窗=最小化到托盘），再走 app.quit */
+function quitApp(): void {
+  isQuitting = true;
+  app.quit();
+}
+
+/**
+ * 中文应用菜单。Electron 自带的默认菜单是英文的，且塞着本应用没有语义的项（打印、
+ * 强制重载）。这里一律用 `role` 而不是自实现：撤销/复制/粘贴这些编辑动作由 Chromium
+ * 角色完成，自己拼 clipboard 调用只会和输入框的原生行为分叉。
+ * 顶栏默认隐藏（`autoHideMenuBar`），Alt 唤出；应用内动作归页面，菜单不复制一份。
+ * 重载与开发者工具只在 dev 出现 —— 打包版一次误触 Ctrl+R 就丢掉整页解析结果。
+ */
+function createAppMenu(): Menu {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: "文件",
+      submenu: [
+        { label: "隐藏到托盘", accelerator: "CmdOrCtrl+H", click: () => mainWindow?.hide() },
+        { type: "separator" },
+        { label: "退出", accelerator: "CmdOrCtrl+Q", click: quitApp },
+      ],
+    },
+    {
+      label: "编辑",
+      submenu: [
+        { role: "undo", label: "撤销" },
+        { role: "redo", label: "重做" },
+        { type: "separator" },
+        { role: "cut", label: "剪切" },
+        { role: "copy", label: "复制" },
+        { role: "paste", label: "粘贴" },
+        { role: "selectAll", label: "全选" },
+      ],
+    },
+    {
+      label: "视图",
+      submenu: [
+        ...(isDev
+          ? ([
+              { role: "reload", label: "重新加载" },
+              { role: "forceReload", label: "强制重新加载" },
+              { role: "toggleDevTools", label: "开发者工具" },
+              { type: "separator" },
+            ] as Electron.MenuItemConstructorOptions[])
+          : []),
+        { role: "resetZoom", label: "实际大小" },
+        { role: "zoomIn", label: "放大" },
+        { role: "zoomOut", label: "缩小" },
+        { type: "separator" },
+        { role: "togglefullscreen", label: "全屏" },
+      ],
+    },
+    {
+      label: "窗口",
+      submenu: [
+        { role: "minimize", label: "最小化" },
+        { role: "close", label: "关闭窗口" },
+      ],
+    },
+  ];
+  return Menu.buildFromTemplate(template);
+}
+
 function createWindow(): void {
+  const winIcon = iconFromFile("window.png");
   mainWindow = new BrowserWindow({
     width: 1080,
     height: 740,
@@ -413,6 +529,7 @@ function createWindow(): void {
     show: false,
     autoHideMenuBar: true,
     title: "即刻解析",
+    icon: winIcon.isEmpty() ? undefined : winIcon,
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       nodeIntegration: false,
@@ -457,40 +574,26 @@ function createWindow(): void {
   });
 }
 
-/** 托盘（关窗最小化的另一半）。无随包托盘图标时用纯色 16px 图占位，不阻塞功能。 */
+/** 托盘（关窗最小化的另一半）。图标缺失时用纯色 16px 图占位，不阻塞功能。 */
 function createTray(): void {
   if (tray) return;
-  const icon = nativeImage.createFromPath(join(__dirname, "../../resources/tray.png"));
-  const image = icon.isEmpty() ? nativeImage.createEmpty() : icon;
-  tray = new Tray(image.isEmpty() ? createFallbackTrayIcon() : image);
+  const icon = iconFromFile("tray.png");
+  const retina = iconFromFile("tray@2x.png");
+  if (!icon.isEmpty() && !retina.isEmpty()) {
+    // 150%/200% 缩放的托盘取 @2x 那一档；只给 16px 会被系统拉伸发糊
+    const { width, height } = icon.getSize();
+    icon.addRepresentation({ width: width * 2, height: height * 2, buffer: retina.toBitmap() });
+  }
+  tray = new Tray(icon.isEmpty() ? createFallbackTrayIcon() : icon);
   tray.setToolTip("即刻解析");
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      {
-        label: "显示主窗口",
-        click: () => {
-          if (!mainWindow || mainWindow.isDestroyed()) createWindow();
-          else {
-            mainWindow.show();
-            mainWindow.focus();
-          }
-        },
-      },
+      { label: "显示主窗口", click: showMainWindow },
       { type: "separator" },
-      {
-        label: "退出",
-        click: () => {
-          isQuitting = true;
-          app.quit();
-        },
-      },
+      { label: "退出", click: quitApp },
     ])
   );
-  tray.on("click", () => {
-    if (!mainWindow || mainWindow.isDestroyed()) createWindow();
-    else if (mainWindow.isVisible()) mainWindow.focus();
-    else mainWindow.show();
-  });
+  tray.on("click", showMainWindow);
 }
 
 function createFallbackTrayIcon(): Electron.NativeImage {
@@ -505,21 +608,17 @@ function createFallbackTrayIcon(): Electron.NativeImage {
   return nativeImage.createFromBitmap(buf, { width: size, height: size });
 }
 
-app.on("second-instance", () => {
-  if (mainWindow) {
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    if (!mainWindow.isVisible()) mainWindow.show();
-    mainWindow.focus();
-  }
-});
+app.on("second-instance", showMainWindow);
 
 app.whenReady().then(() => {
   // 桌面 UA/Referer 下载链路依赖主进程 fetch 的 UA；平台 Cookie 由内核按
   // core-adapter/config 注入，不经过 session cookie 库（隐私边界）。
   session.defaultSession.setPermissionRequestHandler((_wc, _p, cb) => cb(false));
 
+  Menu.setApplicationMenu(createAppMenu());
   createWindow();
   createTray();
+  registerClipboardHotkey();
 
   // 登录项与偏好对账（注册表被外部清理时随下次启动自愈）
   applyLoginItem(store.loadConfig().settings.launchAtLogin);
@@ -541,6 +640,10 @@ app.whenReady().then(() => {
 app.on("window-all-closed", () => {
   store.flush();
   if (process.platform !== "darwin") app.quit();
+});
+
+app.on("will-quit", () => {
+  globalShortcut.unregisterAll();
 });
 
 app.on("before-quit", () => {

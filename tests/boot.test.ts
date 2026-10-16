@@ -53,6 +53,8 @@ describe("main/index.ts 装配冒烟", () => {
     expect(listeners).toContain("second-instance");
     expect(listeners).toContain("window-all-closed");
     expect(listeners).toContain("before-quit");
+    // will-quit 是唯一的全局快捷键回收点：漏了它，退出后键位仍被占着
+    expect(listeners).toContain("will-quit");
   });
 
   it("app:getMeta 端到端（假 ipcMain 直调 handler）返回内核平台清单", async () => {

@@ -1,6 +1,7 @@
 /**
  * 剪贴板监听（electron/main/clipboard.ts）：
- * 开启前不轮询、开启瞬间认账已有内容、变化才识别、未识别/超长不投递。
+ * 开启前不轮询、开启瞬间认账已有内容、变化才识别、未识别/超长不投递；
+ * checkNow（全局快捷键）与轮询共用同一道识别闸门，只是不受开关与「变化」约束。
  * 假时钟驱动间隔（异步链用 advanceTimersByTimeAsync 冲）；readText / identify 注入，不碰 Electron。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -118,5 +119,49 @@ describe("剪贴板监听", () => {
     setClipboard(LINK);
     await vi.advanceTimersByTimeAsync(300);
     expect(links).toHaveLength(0);
+  });
+
+  it("checkNow：未开启也投、同一条连按两次投两次，且不污染轮询的「已见过」", async () => {
+    const { watcher, links, setClipboard } = harness();
+    setClipboard(LINK);
+    watcher.checkNow(); // 开关没开：快捷键按下去照样认
+    await vi.advanceTimersByTimeAsync(0);
+    expect(links).toHaveLength(1);
+    watcher.checkNow(); // 同一条再按一次：显式意图，投第二次
+    await vi.advanceTimersByTimeAsync(0);
+    expect(links).toHaveLength(2);
+
+    watcher.setEnabled(true); // 认账的正是刚 checkNow 读过的那一条 ⇒ 不补投
+    await vi.advanceTimersByTimeAsync(300);
+    expect(links).toHaveLength(2);
+    watcher.dispose();
+  });
+
+  it("checkNow 走同一条识别闸门：普通文字与超长文本都不投", async () => {
+    const { watcher, links, setClipboard } = harness();
+    setClipboard("只是普通文字");
+    watcher.checkNow();
+    await vi.advanceTimersByTimeAsync(0);
+    setClipboard(`x${LINK}${"y".repeat(4000)}`);
+    watcher.checkNow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(links).toHaveLength(0);
+    watcher.dispose();
+  });
+
+  it("identify 抛异常不冒泡（快捷键调用方是主进程，没有 try/catch 兜着）", async () => {
+    const links: IdentifyOutcome[] = [];
+    const watcher = createClipboardWatcher({
+      readText: () => LINK,
+      identify: () => {
+        throw new Error("内核炸了");
+      },
+      onLink: (l) => links.push(l),
+      intervalMs: 50,
+    });
+    watcher.checkNow();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(links).toHaveLength(0);
+    watcher.dispose();
   });
 });

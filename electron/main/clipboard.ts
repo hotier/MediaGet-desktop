@@ -86,15 +86,32 @@ export class ClipboardWatcher {
       this.polling = false;
       if (!this.enabled || text === this.lastSeen) return;
       this.lastSeen = text;
-      const trimmed = text.trim();
-      if (!trimmed || trimmed.length > MAX_TEXT) return;
-      try {
-        const r = this.deps.identify(trimmed);
-        if (r.platform && r.url) this.deps.onLink(r);
-      } catch {
-        /* 识别异常不能拖垮轮询 */
-      }
+      this.emitIfLink(text);
     });
+  }
+
+  /**
+   * 全局快捷键的手动触发（index.ts 的 Ctrl+Alt+V）：按下即用户意图，
+   * 所以不看 `enabled`、不等「变化」——同一条链接连按两次都会再投一次。
+   * 仍写 `lastSeen`：否则松手后的下一轮轮询会把同一条当成新复制补投。
+   */
+  checkNow(): void {
+    void this.readNow().then((text) => {
+      this.lastSeen = text;
+      this.emitIfLink(text);
+    });
+  }
+
+  /** 识别 → 命中才投递；异常一律吞掉（轮询与快捷键都不该被一次识别失败打断） */
+  private emitIfLink(text: string): void {
+    const trimmed = text.trim();
+    if (!trimmed || trimmed.length > MAX_TEXT) return;
+    try {
+      const r = this.deps.identify(trimmed);
+      if (r.platform && r.url) this.deps.onLink(r);
+    } catch {
+      /* 识别异常不能拖垮轮询 */
+    }
   }
 }
 
