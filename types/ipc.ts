@@ -41,6 +41,7 @@ import type {
   ParsedVideoItemSchema,
   ParsedVideoQualitySchema,
   PersistedQueueTaskSchema,
+  StatsSnapshotSchema,
   UpdateStateSchema,
 } from "./ipc-contract";
 
@@ -80,9 +81,12 @@ export type InvokeResult<T> = InvokeOk<T> | InvokeErr;
 //     （设置字段 logLevel、logRetentionDays 是纯新增可选键，不额外构成不兼容）。
 // v4：新增 download:clear 通道（队列卫生：把终态行移出队列与落盘档），并改判重启恢复
 //     语义 —— canceled 不再复活。落盘队列由此前的「只增不减」变成有上限、可清空。
+// v5：新增 stats:get 通道（统计页：生命周期计数器快照，来自 userData/stats.json）。
+//     同时 history 窗口 500 → 5000（`history:list` 的 limit 上界随之放宽，载荷形状不变）。
+//     升号的理由是**通道集合增了**，不是存档形状变了：旧 stats.json 读不进来时按空档起算。
 // ————————————————————————————————————————————————
 
-export const CONTRACT_VERSION = 4;
+export const CONTRACT_VERSION = 5;
 
 // ————————————————————————————————————————————————
 // channel 常量（preload/main/renderer 三方共用字面量，禁止散落拼写）
@@ -111,6 +115,7 @@ export const IPC = {
   appCacheClear: "app:cacheClear",
   appOpenLogDir: "app:openLogDir",
   appLog: "app:log",
+  statsGet: "stats:get",
   updateGetState: "update:state",
   updateCheck: "update:check",
   updateDownload: "update:download",
@@ -249,6 +254,9 @@ export type UpdatePhase = z.infer<typeof UpdateStateSchema>["phase"];
 /** update:state / update:check / update:download 返回，亦是 app:updateState 事件载荷 */
 export type UpdateState = z.infer<typeof UpdateStateSchema>;
 
+/** stats:get 出参：生命周期计数器快照（只有计数/字节/时长，无 url、无文件名） */
+export type StatsSnapshot = z.infer<typeof StatsSnapshotSchema>;
+
 // ————————————————————————————————————————————————
 // preload 暴露给 window.mg 的 API 面（contextBridge 白名单）
 // ————————————————————————————————————————————————
@@ -279,6 +287,10 @@ export interface MgBridge {
   };
   probe: {
     engines(): Promise<InvokeResult<EngineHealth[]>>;
+  };
+  /** 统计页数据源：生命周期计数器快照（主进程内存态，落盘走 stats.json 节流） */
+  stats: {
+    get(): Promise<InvokeResult<StatsSnapshot>>;
   };
   app: {
     pickDownloadDir(): Promise<InvokeResult<string | null>>;

@@ -42,6 +42,9 @@ const mg: MgBridge = {
   probe: {
     engines: () => invoke(IPC.probeEngines),
   },
+  stats: {
+    get: () => invoke(IPC.statsGet),
+  },
   app: {
     pickDownloadDir: () => invoke(IPC.appPickDownloadDir),
     showInFolder: (path) => invoke(IPC.appShowInFolder, path),

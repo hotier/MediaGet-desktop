@@ -1,5 +1,5 @@
 /**
- * JsonStore 测试：原子写 / 坏档自愈 / 配置缓存 / 脱敏导出 / 队列节流落盘 / 历史写合并。
+ * JsonStore 测试：原子写 / 坏档自愈 / 配置缓存 / 脱敏导出 / 队列节流落盘 / 历史写合并 / 计数档落盘。
  *
  * 队列那组是**回归测试**：早先 saveQueueThrottled 在节流窗口内直接 return，
  * 落盘的是窗口开始时的旧快照，且 flush() 只清定时器不落盘 —— 退出路径上
@@ -19,8 +19,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { JsonStore } from "../electron/main/store";
-import type { HistoryEntry, PersistedQueueTask } from "../types/ipc";
+import { HISTORY_MAX, JsonStore } from "../electron/main/store";
+import { emptyStats } from "../electron/main/stats";
+import type { HistoryEntry, PersistedQueueTask, StatsSnapshot } from "../types/ipc";
 
 let dir: string;
 
@@ -143,10 +144,13 @@ describe("历史：追加序与上限", () => {
     expect(legacy[0]?.author).toBeUndefined();
   });
 
-  it("超过 500 条截断（HISTORY_MAX）", () => {
+  it("超过 HISTORY_MAX 条截断，丢的是最旧的", () => {
     const s = new JsonStore(dir);
-    for (let i = 0; i < 505; i++) s.appendHistory(entry(`h${i}`));
-    expect(s.loadHistory()).toHaveLength(500);
+    for (let i = 0; i < HISTORY_MAX + 5; i++) s.appendHistory(entry(`h${i}`));
+    const list = s.loadHistory();
+    expect(list).toHaveLength(HISTORY_MAX);
+    expect(list[0].id).toBe(`h${HISTORY_MAX + 4}`); // 新在前
+    expect(list[list.length - 1].id).toBe("h5"); // h0..h4 已出局
   });
 
   it("clearHistory 真正落盘", () => {
@@ -163,10 +167,11 @@ describe("历史：追加序与上限", () => {
  * 历史写合并（性能改动的判据）。
  *
  * 改之前每次 appendHistory 都「读整档 + 前置 + 全量重写 + fsync」，本机实测
- * 500 条档位单次 4.4 ms，批量下载连环落盘就是在主进程上一颗一颗钉；
- * 505 次 append 的老用例更是因此要 3.7 s（曾经被迫给到 30s 超时）。
+ * 500 条档位单次 4.4 ms，批量下载连环落盘就是在主进程上一颗一颗钉。
  * 现在内存为准、窗口内只重写一次，代价是崩溃最多丢 1 秒内的追加 ——
  * 所以退出路径的 flush() 必须把这段补上，下面的用例钉的就是这两头。
+ * 顺带一提：上面那条截断用例一次 append 5005 条只花 0.4 s，靠的正是「窗口内不写盘」；
+ * 逐条落盘一旦回来它会变回几十秒，所以它同时也是这条性能改动的回归哨兵。
  */
 describe("历史落盘合并窗口", () => {
   const entry = (id: string): HistoryEntry => ({ id, files: [`/tmp/${id}.mp4`], createdAt: 1 });
@@ -289,5 +294,71 @@ describe("队列节流落盘（P2「重启后队列完整」回归）", () => {
     };
     s.saveQueue([t]);
     expect(s.loadQueue()[0]).toEqual(t);
+  });
+});
+
+/**
+ * 计数档落盘（userData/stats.json）。
+ *
+ * recorder 每次累加都投一次节流口，所以「窗口内只写一次、写的是当下这份」
+ * 是这里的核心判据 —— 与队列不同，它交回的一直是同一个对象引用，
+ * 定时器到点读到的天然是最后一次状态，不需要 pending 变量兜住快照。
+ * 另一头是「什么都没发生过就别建文件」：新用户只打开统计页不该多出一个 stats.json。
+ */
+describe("计数档落盘", () => {
+  const snapshot = (downloads: number): StatsSnapshot => ({
+    ...emptyStats(1),
+    totals: { ...emptyStats(1).totals, downloads },
+  });
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("窗口内几十次累加只重写一次，且写的是最后一次状态", () => {
+    const s = new JsonStore(dir);
+    for (let i = 1; i <= 30; i++) s.saveStatsThrottled(snapshot(i));
+    expect(existsSync(join(dir, "stats.json"))).toBe(false);
+    vi.advanceTimersByTime(1000);
+    const saved = JSON.parse(readFileSync(join(dir, "stats.json"), "utf8")) as StatsSnapshot;
+    expect(saved.totals.downloads).toBe(30);
+  });
+
+  it("flush() 同步补齐待写计数（退出路径不丢最后一段）", () => {
+    const s = new JsonStore(dir);
+    s.saveStatsThrottled(snapshot(3));
+    s.flush();
+    const saved = JSON.parse(readFileSync(join(dir, "stats.json"), "utf8")) as StatsSnapshot;
+    expect(saved.totals.downloads).toBe(3);
+    vi.advanceTimersByTime(5000); // 定时器已取消：不再重复写
+    expect(
+      (JSON.parse(readFileSync(join(dir, "stats.json"), "utf8")) as StatsSnapshot).totals.downloads
+    ).toBe(3);
+  });
+
+  it("没发生任何累加时不落盘：loadStats 读空 → flush() 不创建 stats.json", () => {
+    const s = new JsonStore(dir);
+    expect(s.loadStats()).toBeNull();
+    s.flush();
+    expect(existsSync(join(dir, "stats.json"))).toBe(false);
+  });
+
+  it("loadStats 往返整份快照，并把坏档让给上层从零起算（不阻断启动）", () => {
+    const s = new JsonStore(dir);
+    s.saveStatsThrottled(snapshot(9));
+    vi.advanceTimersByTime(1000);
+    const reopened = new JsonStore(dir);
+    expect(reopened.loadStats()?.totals.downloads).toBe(9);
+    writeFileSync(join(dir, "stats.json"), "{ 这不是 JSON");
+    expect(new JsonStore(dir).loadStats()).toBeNull();
+    expect(readdirSync(dir).some((n) => n.startsWith("stats.json.corrupt-"))).toBe(true);
+  });
+
+  it("落盘失败不抛，只留痕", () => {
+    const errors: string[] = [];
+    const s = new JsonStore(dir, (m) => errors.push(m));
+    s.saveStatsThrottled(snapshot(1));
+    mkdirSync(join(dir, "stats.json"), { recursive: true }); // 占名 → rename 必失败
+    vi.advanceTimersByTime(1000);
+    expect(errors.some((m) => m.includes("stats.json 落盘失败"))).toBe(true);
   });
 });

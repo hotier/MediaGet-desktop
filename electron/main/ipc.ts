@@ -38,11 +38,13 @@ import {
   type EnqueueOutcome,
   type HistoryEntry,
   type InvokeResult,
+  type StatsSnapshot,
   type UpdateState,
 } from "../../types/ipc";
 import type { createEngine } from "./engine";
 import type { Downloader } from "./downloader";
 import type { JsonStore } from "./store";
+import type { StatsRecorder } from "./stats";
 import type { Updater } from "./updater";
 import type { CacheProbe } from "./cache";
 import type { AppLogger } from "./logger";
@@ -105,6 +107,11 @@ export interface IpcRegistryDeps {
   logger: AppLogger;
   /** 本机占用统计与清理（index.ts 注入 = createCacheProbe） */
   cache: CacheProbe;
+  /**
+   * 生命周期计数器（index.ts 注入 = createStats）。统计页的真源：
+   * 解析在这里顺路记一笔 via/耗时，下载的 done/failure 由 index.ts 的事件口记。
+   */
+  stats: StatsRecorder;
   /**
    * 自动更新状态机（index.ts 注入 = createUpdater）。
    * update:check/download 内部吞错并把结果收敛进快照，因此恒返回成功信封；
@@ -169,12 +176,23 @@ export function registerIpc(deps: IpcRegistryDeps): void {
   wrap(IPC.parseIdentify, IdentifyInputSchema, ({ text }) => engine.identify(text));
 
   // —— parse:run（统一入口）——
-  wrap(IPC.parseRun, ParseInputSchema, async (parsed) =>
-    engine.parse(parsed.text, parsed.source, parsed.id, {
+  // 计数在这一层记，不在 engine 里记：engine 的返回点有九处（本地/线上/mock），
+  // 挂在出口一处收口才不会随着内部分支增加而漏计。
+  wrap(IPC.parseRun, ParseInputSchema, async (parsed) => {
+    const at = Date.now();
+    const outcome = await engine.parse(parsed.text, parsed.source, parsed.id, {
       platformHint: parsed.platformHint,
       forceOnline: parsed.forceOnline,
-    })
-  );
+    });
+    deps.stats.parse({
+      at,
+      platform: outcome.result.platform ?? parsed.platformHint ?? "",
+      via: outcome.via,
+      ok: outcome.result.code === 200,
+      durationMs: outcome.durationMs,
+    });
+    return outcome;
+  });
 
   // —— download:enqueue ——
   wrap(IPC.downloadEnqueue, EnqueueInputSchema, (input): EnqueueOutcome => {
@@ -192,9 +210,12 @@ export function registerIpc(deps: IpcRegistryDeps): void {
   });
 
   // —— download:cancel / pause / resume / list ——
-  wrap(IPC.downloadCancel, TaskIdInputSchema, ({ taskId }) => ({
-    ok: downloader.cancel(taskId),
-  }));
+  wrap(IPC.downloadCancel, TaskIdInputSchema, ({ taskId }) => {
+    const okCancel = downloader.cancel(taskId);
+    // 取消是用户动作不是失败，但它决定「队列里为什么少了一个」——只记总数，不记平台
+    if (okCancel) deps.stats.cancel();
+    return { ok: okCancel };
+  });
   wrap(IPC.downloadPause, TaskIdInputSchema, ({ taskId }) => ({
     ok: downloader.pause(taskId),
   }));
@@ -354,4 +375,7 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     deps.logger.write(level, `[renderer] ${message}`);
     return { ok: true };
   });
+
+  // —— stats:get（统计页数据源：recorder 的内存态直出，不让 UI 每次读盘再对不上）——
+  wrap<null, StatsSnapshot>(IPC.statsGet, null, () => deps.stats.snapshot());
 }

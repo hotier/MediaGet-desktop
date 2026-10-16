@@ -13,6 +13,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { registerIpc, type IpcRegistryDeps } from "../electron/main/ipc";
+import { createStats } from "../electron/main/stats";
 import { CONTRACT, EVENTS, describeIssues, type InvokeContract } from "../types/ipc-contract";
 import {
   DEFAULT_SETTINGS,
@@ -172,6 +173,8 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
       status: async () => CACHE_REPORT,
       clear: async () => ({ freed: 1024, skipped: [], report: CACHE_REPORT }),
     },
+    /** 真计数器而不是桩：stats:get 的出参形状要靠它验，parse:run 也在这条路上记账 */
+    stats: createStats({ load: () => null, save: () => {}, now: () => 1700000000000 }),
     updater: {
       snapshot: () => UPDATE_SNAPSHOT,
       check: async () => UPDATE_SNAPSHOT,

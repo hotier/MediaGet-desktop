@@ -24,6 +24,7 @@ import type {
   MgBridge,
   ParseInput,
   ParseRunOutcome,
+  StatsSnapshot,
   UpdateState,
 } from "../../../types/ipc";
 
@@ -84,6 +85,9 @@ export const api = {
   },
   probe: {
     engines: () => unwrap<EngineHealth[]>(bridge().probe.engines()),
+  },
+  stats: {
+    get: () => unwrap<StatsSnapshot>(bridge().stats.get()),
   },
   app: {
     pickDownloadDir: () => unwrap<string | null>(bridge().app.pickDownloadDir()),

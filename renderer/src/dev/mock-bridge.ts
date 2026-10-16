@@ -26,6 +26,7 @@ import {
   type MgBridge,
   type ParseData,
   type ParseRunOutcome,
+  type StatsSnapshot,
   type UpdateState,
 } from "../../../types/ipc";
 
@@ -325,6 +326,124 @@ function remember(t: DownloadTaskView): void {
     createdAt: Date.now(),
   });
   if (history.length > 50) history.length = 50;
+}
+
+/**
+ * 预览用计数档（stats:get）：本会话真正落进 history 的行如实累加，另外叠 13 天
+ * **确定性**合成活动 —— 只有「今天」这一份数据时，趋势与热力的形状根本没法自检。
+ * 伪随机取 day 索引的模，不用 Math.random：截图与断言要可重现。
+ * 边界：renderer 不吃 electron/main 的空档工厂，所以桶结构在这里照契约造一遍。
+ */
+function mockStats(): StatsSnapshot {
+  const DAY = 86_400_000;
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const keys = PLATFORMS.map((p) => p.key);
+  const kinds = ["video", "image", "audio", "file"] as const;
+  const pad = (n: number): string => String(n).padStart(2, "0");
+  const keyOf = (at: number): string => {
+    const d = new Date(at);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+  };
+
+  const snap: StatsSnapshot = {
+    schema: 1,
+    since: dayStart.getTime() - 13 * DAY,
+    updatedAt: Date.now(),
+    totals: {
+      downloads: 0,
+      failures: 0,
+      canceled: 2,
+      bytes: 0,
+      elapsedMs: 0,
+      elapsedCount: 0,
+      elapsedBytes: 0,
+    },
+    parse: { total: 0, failures: 0, local: 0, online: 0, mock: 0, durationMs: 0 },
+    byDay: {},
+    byPlatform: {},
+    byKind: {},
+    byHour: new Array<number>(168).fill(0),
+  };
+
+  const platformRow = (platform: string): StatsSnapshot["byPlatform"][string] =>
+    (snap.byPlatform[platform] ??= { downloads: 0, failures: 0, bytes: 0, parses: 0, parseFailures: 0 });
+  const dayRow = (at: number): StatsSnapshot["byDay"][string] =>
+    (snap.byDay[keyOf(at)] ??= { downloads: 0, failures: 0, bytes: 0, parses: 0 });
+
+  const addDownload = (
+    at: number,
+    platform: string,
+    kind: string,
+    bytes: number,
+    elapsedMs: number
+  ): void => {
+    const size = Math.max(0, Math.floor(bytes));
+    snap.totals.downloads += 1;
+    snap.totals.bytes += size;
+    if (elapsedMs > 0) {
+      snap.totals.elapsedMs += Math.floor(elapsedMs);
+      snap.totals.elapsedCount += 1;
+      snap.totals.elapsedBytes += size; // 与主进程同一条总线：平均速度只算有耗时样本的那部分
+    }
+    const kb = (snap.byKind[kind || "unknown"] ??= { downloads: 0, bytes: 0 });
+    kb.downloads += 1;
+    kb.bytes += size;
+    const pb = platformRow(platform);
+    pb.downloads += 1;
+    pb.bytes += size;
+    const db = dayRow(at);
+    db.downloads += 1;
+    db.bytes += size;
+    const d = new Date(at);
+    snap.byHour[d.getDay() * 24 + d.getHours()] += 1;
+  };
+
+  const addFailure = (at: number, platform: string): void => {
+    snap.totals.failures += 1;
+    platformRow(platform).failures += 1;
+    dayRow(at).failures += 1;
+  };
+
+  const addParse = (
+    at: number,
+    platform: string,
+    via: "local" | "online" | "mock",
+    okParse: boolean,
+    ms: number
+  ): void => {
+    snap.parse.total += 1;
+    snap.parse[via] += 1;
+    snap.parse.durationMs += Math.floor(ms);
+    if (!okParse) snap.parse.failures += 1;
+    const pb = platformRow(platform);
+    pb.parses += 1;
+    if (!okParse) pb.parseFailures += 1;
+    dayRow(at).parses += 1;
+  };
+
+  for (let back = 13; back >= 1; back--) {
+    const count = 2 + ((back * 5) % 9);
+    for (let i = 0; i < count; i++) {
+      const at = dayStart.getTime() - back * DAY + (7 + ((back + i) % 15)) * 3_600_000 + i * 900_000;
+      const platform = keys[(back + i) % keys.length];
+      addDownload(
+        at,
+        platform,
+        kinds[(back * 2 + i) % kinds.length],
+        8_000_000 + ((back * 3 + i) % 40) * 4_500_000,
+        1_200 + ((back + i) % 20) * 900
+      );
+      addParse(at, platform, i % 6 === 5 ? "online" : "local", i % 7 !== 3, 90 + ((back + i) % 12) * 55);
+    }
+    for (let f = 0; f < (back % 3); f++) {
+      addFailure(dayStart.getTime() - back * DAY + 21 * 3_600_000, keys[(back + f) % keys.length]);
+    }
+  }
+  // 本会话的真实行：历史页里有什么，统计页就该有什么
+  for (const h of history) addDownload(h.createdAt, h.platform ?? "", h.kind ?? "file", h.bytes ?? 0, 0);
+
+  return snap;
 }
 
 function tick(): void {
@@ -733,6 +852,10 @@ const mockBridge: MgBridge = {
           durationMs: 20 + i * 7,
         }))
       ),
+  },
+
+  stats: {
+    get: async () => ok<StatsSnapshot>(mockStats()),
   },
 
   app: {

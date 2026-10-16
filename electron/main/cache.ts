@@ -136,7 +136,7 @@ export function createCacheProbe(deps: CacheProbeDeps): CacheProbe {
     const partialEntries = orphanPartials(deps.downloadDir(), deps.livePartPaths());
     const junkEntries = scanTop(deps.userDataDir(), isJunk);
     const recordEntries = scanTop(deps.userDataDir(), (n) =>
-      ["config.json", "history.json", "queue.json"].includes(n)
+      ["config.json", "history.json", "queue.json", "stats.json"].includes(n)
     );
     const updateDir = deps.updaterCacheDir();
     const net = await netBytes();

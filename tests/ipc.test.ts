@@ -12,6 +12,7 @@ import { Downloader } from "../electron/main/downloader";
 import { createCacheProbe } from "../electron/main/cache";
 import { createLogger } from "../electron/main/logger";
 import { JsonStore } from "../electron/main/store";
+import { createStats } from "../electron/main/stats";
 import { createUpdater } from "../electron/main/updater";
 import { IPC, type InvokeResult } from "../types/ipc";
 
@@ -83,6 +84,8 @@ function harness() {
     livePartPaths: () => downloader.livePartPaths(),
     logs: logger,
   });
+  // 真计数器（内存档）：stats:get 的出参形状由 validateOutputs 顺带守住，造假桩等于放弃这条保障
+  const stats = createStats({ load: () => null, save: () => {} });
   registerIpc({
     ipcMain: fakeIpc,
     engine,
@@ -93,6 +96,7 @@ function harness() {
     getFonts: async () => ["Arial", "Segoe UI", "微软雅黑"],
     logger,
     cache,
+    stats,
     updater: createUpdater({ currentVersion: "0.0.0-test", onChange: () => {} }),
     // 出参也过契约：这批用例跑的是真 handler，正好当 contract 的冒烟面
     validateOutputs: true,

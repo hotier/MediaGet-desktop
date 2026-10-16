@@ -235,9 +235,11 @@ export const SettingsPatchSchema = AppSettingsSchema.partial().strict();
 /** app:listFonts 出参：本机已安装字体的 family 名数组（font-list 枚举，已去引号/去重/排序） */
 export const FontListSchema = z.array(STR.max(64));
 
+/** 窗口 5000 = `store.ts` 的 HISTORY_MAX，两处成对：上限放宽的是「一次能取多少」，不是「盘上存多少」。
+ *  平台/时间/作者的筛选仍在渲染层做（HistoryPage 已有），不在这加字段——两处各筛一遍必然漂移。 */
 export const HistoryFilterSchema = z.object({
   platform: STR.max(40).optional(),
-  limit: z.number().int().min(1).max(500).optional(),
+  limit: z.number().int().min(1).max(5000).optional(),
 });
 
 /** 仅主进程持久化格式（store.ts 真源），入参侧复用 */
@@ -478,6 +480,79 @@ export const LogWriteInputSchema = z.object({
 });
 
 // ————————————————————————————————————————————————
+// stats:get —— 生命周期计数器（userData/stats.json）
+//
+// 隐私红线在这一节最硬：这里**只有计数、字节与时长**，没有 url、没有文件名、
+// 没有作者名、没有 Cookie。逐条明细的真源仍是 history.json，统计页要形状不要内容。
+// 失败与解析走这里而不是塞进 history：历史是「下过的文件」，给它加 status 会让
+// 历史页冒出没有文件的行、清历史连带把统计抹掉。
+// ————————————————————————————————————————————————
+
+const COUNT = z.number().int().min(0);
+
+/** 单自然日桶（键 = 本机时区 YYYY-MM-DD；跨时区不迁移，如实按记录当下的本机日历） */
+export const StatsDayBucketSchema = z.object({
+  downloads: COUNT,
+  failures: COUNT,
+  bytes: COUNT,
+  parses: COUNT,
+});
+
+/** 单平台桶 —— 失败率按平台算就靠 parseFailures 与 failures 这两条 */
+export const StatsPlatformBucketSchema = z.object({
+  downloads: COUNT,
+  failures: COUNT,
+  bytes: COUNT,
+  parses: COUNT,
+  parseFailures: COUNT,
+});
+
+/** 单媒体类型桶（video / image / audio / file） */
+export const StatsKindBucketSchema = z.object({
+  downloads: COUNT,
+  bytes: COUNT,
+});
+
+/**
+ * 计数快照。`schema` 是**档内**结构版本（与 IPC 的 CONTRACT_VERSION 两回事：
+ * 后者管跨进程载荷，这个管 stats.json 落盘形状，改这里要写迁移，改那这里要升号）。
+ * `byDay` 只留最近 STATS_DAY_RETENTION 天，防止档无界增长；
+ * `byHour` 固定 168 格（星期 0=周日 × 小时），索引 = day*24+hour。
+ */
+export const StatsSnapshotSchema = z.object({
+  schema: z.literal(1),
+  since: z.number(),
+  updatedAt: z.number(),
+  totals: z.object({
+    downloads: COUNT,
+    failures: COUNT,
+    canceled: COUNT,
+    bytes: COUNT,
+    /** Σ(finishedAt - createdAt)：速度/耗时的唯一持久线索（逐任务 speed 不落盘） */
+    elapsedMs: COUNT,
+    elapsedCount: COUNT,
+    /**
+     * 有耗时样本的那部分字节。平均速度必须用 `elapsedBytes / elapsedMs`，
+     * 不能用 `bytes / elapsedMs`：缺 finishedAt 的老任务只进 bytes 不进 elapsedMs，
+     * 两个不同总线的数相除会把速度虚报成一坨谁也算不清的值。
+     */
+    elapsedBytes: COUNT,
+  }),
+  parse: z.object({
+    total: COUNT,
+    failures: COUNT,
+    local: COUNT,
+    online: COUNT,
+    mock: COUNT,
+    durationMs: COUNT,
+  }),
+  byDay: z.record(STR.max(10), StatsDayBucketSchema),
+  byPlatform: z.record(STR.max(40), StatsPlatformBucketSchema),
+  byKind: z.record(STR.max(20), StatsKindBucketSchema),
+  byHour: z.array(COUNT).length(168),
+});
+
+// ————————————————————————————————————————————————
 // 通道注册表：新增通道只在这里登记 in/out，main 的集中校验与守门测试同时生效
 // ————————————————————————————————————————————————
 
@@ -516,6 +591,7 @@ export const CONTRACT = {
   [IPC.appCacheClear]: invoke(CacheClearInputSchema, CacheClearResultSchema),
   [IPC.appOpenLogDir]: invoke(null, OkFlagSchema),
   [IPC.appLog]: invoke(LogWriteInputSchema, OkFlagSchema),
+  [IPC.statsGet]: invoke(null, StatsSnapshotSchema),
   [IPC.updateGetState]: invoke(null, UpdateStateSchema),
   [IPC.updateCheck]: invoke(null, UpdateStateSchema),
   [IPC.updateDownload]: invoke(null, UpdateStateSchema),

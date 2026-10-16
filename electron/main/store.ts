@@ -6,6 +6,7 @@
  *   config.json   —— 应用设置 AppSettings + 内核配置键（Cookie 等，§5）
  *   history.json  —— HistoryEntry[]（只存平台/标题/时间/落地路径，**不存直链**）
  *   queue.json    —— 下载队列持久化（重启恢复，P2 验收「重启后队列/历史完整」）
+ *   stats.json    —— StatsSnapshot 生命周期计数器（只有计数/字节/时长，无 url 无文件名）
  *
  * 原子写：写临时文件 → fsync → rename，避免断电/崩溃留下半个 JSON。
  * 凭据红线（§6.2）：config.json 含用户 Cookie，仅存本机 userData；
@@ -28,9 +29,18 @@ import {
   type AppSettings,
   type HistoryEntry,
   type PersistedQueueTask,
+  type StatsSnapshot,
 } from "../../types/ipc";
 
-const HISTORY_MAX = 500;
+/**
+ * 历史窗口。5000 是给统计页的「逐文件粒度」用的：作者榜、单文件大小分布、
+ * 类型字节占比只能从明细行算，计数器档给不了这些。代价是整档重写变贵——
+ * 本机按真实形状（含中文标题、图集 7 张、作者快照）实测：500 条 299 KB / 写 5.7 ms，
+ * 5000 条 3.0 MB / 整档写 25.5 ms、冷读+parse 19.3 ms。所以合并窗口
+ * （`HISTORY_WRITE_DEBOUNCE_MS`）与「读盘走内存缓存」这两条必须一起成立。
+ * 导出是为了截断用例能跟着这条线走，而不是把 5000 抄进测试。
+ */
+export const HISTORY_MAX = 5000;
 
 /**
  * 落盘队列条数上限。快照里只剩待办（done 不进快照、canceled 不再恢复），
@@ -41,6 +51,9 @@ const QUEUE_MAX = 200;
 
 /** 历史落盘合并窗口：批量下载连环完成时，一秒内几十次追加只重写一次整档 */
 const HISTORY_WRITE_DEBOUNCE_MS = 1000;
+
+/** 计数档合并窗口：整档很小（几 KB），但收尾风暴同样不该钉几十次写 */
+const STATS_WRITE_DEBOUNCE_MS = 1000;
 
 export type { PersistedQueueTask };
 
@@ -64,6 +77,9 @@ export class JsonStore {
   /** 已进内存、尚未落盘的追加（新在前） */
   private historyPending: HistoryEntry[] = [];
   private historyTimer: NodeJS.Timeout | null = null;
+  /** 计数档的内存对象（stats.ts 的 recorder 持有同一引用，这里只负责读盘与落盘） */
+  private statsCache: StatsSnapshot | null = null;
+  private statsTimer: NodeJS.Timeout | null = null;
 
   /**
    * @param onError 落盘失败的去处（默认 console.error；主进程注入文件日志）。
@@ -76,7 +92,7 @@ export class JsonStore {
     mkdirSync(this.dir, { recursive: true });
   }
 
-  private path(name: "config" | "history" | "queue"): string {
+  private path(name: "config" | "history" | "queue" | "stats"): string {
     return join(this.dir, `${name}.json`);
   }
 
@@ -224,6 +240,39 @@ export class JsonStore {
     }
   }
 
+  // —— stats（生命周期计数器：读只在启动发生一次，写走节流）——
+
+  /** 盘上的计数档；不存在 / 损坏 → null（由 stats.ts 决定从零起算） */
+  loadStats(): StatsSnapshot | null {
+    if (this.statsCache) return this.statsCache;
+    this.statsCache = this.readJson<StatsSnapshot | null>(this.path("stats"), null);
+    return this.statsCache;
+  }
+
+  /**
+   * 节流落盘。与队列不同，这里不另存 pending —— recorder 交回的就是它手上那份
+   * 最新对象，定时器到点直接写整份即可。
+   */
+  saveStatsThrottled(stats: StatsSnapshot): void {
+    this.statsCache = stats;
+    if (this.statsTimer) return;
+    this.statsTimer = setTimeout(() => {
+      this.statsTimer = null;
+      this.writeStatsNow();
+    }, STATS_WRITE_DEBOUNCE_MS);
+    if (typeof this.statsTimer.unref === "function") this.statsTimer.unref();
+  }
+
+  private writeStatsNow(): void {
+    if (!this.statsCache) return;
+    try {
+      this.writeJson(this.path("stats"), this.statsCache);
+    } catch (e) {
+      // 计数写失败是静默倒退：不留痕就没人知道统计页少了这一段
+      this.onError(`stats.json 落盘失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   // —— queue（下载队列恢复用；写走节流，进度高频不逐条落盘）——
 
   loadQueue(): PersistedQueueTask[] {
@@ -269,7 +318,7 @@ export class JsonStore {
 
   /**
    * 退出前调用：取消定时器并**同步**落盘最后快照，避免丢最后一次写入。
-   * 队列与历史共用这一个收尾口 —— 两者的落盘都是节流的，退出路径上不补就等于丢。
+   * 队列、历史、计数三档都是节流写 —— 退出路径上不补就等于丢。
    */
   flush(): void {
     if (this.dirtyTimer) {
@@ -282,5 +331,10 @@ export class JsonStore {
       this.historyTimer = null;
     }
     if (this.historyPending.length > 0) this.writeHistoryNow();
+    if (this.statsTimer) {
+      clearTimeout(this.statsTimer);
+      this.statsTimer = null;
+    }
+    this.writeStatsNow();
   }
 }

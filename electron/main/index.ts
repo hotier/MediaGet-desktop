@@ -27,6 +27,7 @@ import { createEngine } from "./engine";
 import { createOnlineFallback } from "./fallback";
 import { Downloader } from "./downloader";
 import { JsonStore } from "./store";
+import { createStats } from "./stats";
 import { createResources, readManifest } from "./resources";
 import { createClipboardWatcher } from "./clipboard";
 import { createDownloadNotifier } from "./notify";
@@ -251,6 +252,16 @@ function registerClipboardHotkey(): void {
   if (!ok) logger.warn(`[shortcut] ${CLIPBOARD_HOTKEY} 注册失败：键位可能已被其他程序占用`);
 }
 
+/**
+ * 生命周期计数器（userData/stats.json，统计页真源）：只累加计数/字节/时长，
+ * 逐条明细仍在 history.json。落盘走 JsonStore 的节流口 —— 收尾风暴不该钉几十次写。
+ */
+const stats = createStats({
+  load: () => store.loadStats(),
+  save: (s) => store.saveStatsThrottled(s),
+  onReset: (reason) => logger.warn(`[stats] ${reason}`),
+});
+
 const downloader = new Downloader({
   getDownloadDir: () =>
     store.loadConfig().settings.downloadDir || app.getPath("downloads"),
@@ -265,6 +276,14 @@ const downloader = new Downloader({
     done: (t) => {
       emit(IPC.evDownloadDone, t);
       notifier.onTaskEvent("done", t);
+      stats.done({
+        at: t.finishedAt ?? Date.now(),
+        platform: t.platform,
+        kind: t.kind,
+        bytes: t.received,
+        // 耗时是速度的唯一持久线索：逐任务 speed 不落盘（重启后本来也没意义）
+        elapsedMs: t.finishedAt ? t.finishedAt - t.createdAt : undefined,
+      });
       // 完成自动定位文件：默认关，开着并发下载会连环弹资源管理器（业主知情选择）
       if (store.loadConfig().settings.openFolderOnDone && t.filePath) {
         shell.showItemInFolder(t.filePath);
@@ -273,6 +292,7 @@ const downloader = new Downloader({
     error: (t) => {
       emit(IPC.evDownloadError, t);
       notifier.onTaskEvent("error", t);
+      stats.failure({ at: Date.now(), platform: t.platform });
       // 失败是日志里最有价值的一类：只投文件名与原因，**不投 url**（隐私红线：日志不落媒体直链）
       logger.error(`[download] ${t.filename} 失败: ${t.error ?? "未知原因"}`);
     },
@@ -435,6 +455,7 @@ registerIpc({
   },
   logger,
   cache,
+  stats,
   updater,
   getBinaryStatus: () => ({
     manifestLoaded: resources.verified,
