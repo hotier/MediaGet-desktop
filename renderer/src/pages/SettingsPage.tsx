@@ -499,8 +499,10 @@ export default function SettingsPage({
   const nav = (
     <nav
       aria-label="设置导航"
-      className="drag-region flex w-(--w-side) shrink-0 flex-col gap-1 border-r border-border bg-panel py-3 ps-2 pe-2 max-[860px]:hidden"
+      className="drag-region flex w-(--w-side) shrink-0 flex-col gap-1 border-r border-border bg-panel pb-3 ps-2 pe-2 max-[860px]:hidden"
     >
+      {/* 标题行 = 顶栏带（与主外壳的品牌行同款同高），mb-3 + gap-1 = 16px 让首个动作行落在 56px，与右侧内容对齐 */}
+      <div className="mb-3 flex h-(--wco-h) items-center px-2 text-[15px] font-semibold tracking-wide">设置</div>
       <button
         type="button"
         onClick={requestExit}
@@ -510,7 +512,6 @@ export default function SettingsPage({
         <span>返回</span>
         <span className="ms-auto text-[11px] text-faint font-mono">Esc</span>
       </button>
-      <div className="px-2 pb-3 pt-1 text-[15px] font-semibold tracking-wide">设置</div>
 
       {CATEGORIES.map((cat) => {
         const active = cat.id === sel;

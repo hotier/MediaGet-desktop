@@ -149,8 +149,9 @@ export default function App(): React.ReactElement {
         ) : (
           <>
         <nav className="drag-region flex w-(--w-side) shrink-0 flex-col gap-1 border-r border-border bg-panel pb-3 ps-2 pe-2" aria-label="页面导航">
-          {/* 品牌行 = 顶栏带：文字垂直居中即与系统三枚按钮同轴，侧栏与内容列共用这一条高度 */}
-          <div className="flex h-(--wco-h) items-center px-2 text-[15px] font-semibold tracking-wide">MediaGet</div>
+          {/* 品牌行 = 顶栏带：文字垂直居中即与系统三枚按钮同轴。mb-3 + 列表 gap-1 = 16px，
+              于是首个导航项与右侧内容（带高 40 + main 的 p-4）都落在 56px 这条线上 */}
+          <div className="mb-3 flex h-(--wco-h) items-center px-2 text-[15px] font-semibold tracking-wide">MediaGet</div>
 
           {PAGES.map((p) => (
             <button
