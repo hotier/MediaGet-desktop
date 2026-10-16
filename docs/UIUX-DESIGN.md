@@ -584,7 +584,7 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 | `Ctrl+V` | 粘贴并解析 | **首页聚焦时**：现状 `Ctrl+Enter` 需要两个键 —— 下载器用户肌肉记忆是"Ctrl+V 一把梭"。粘贴后 600ms 无新字符即自动解析（设置可关）|
 | `Ctrl+Enter` | 解析 | **保留现状**（`ParsePage.tsx:81` ✅）|
 | `Ctrl+D` | 下载全部（结果卡可见时）| 与浏览器"收藏"冲突无害（Electron 内）|
-| `Ctrl+1 / 2 / 3 / 4` | 切页（解析/下载/历史/设置）| VS Code 惯例；tab 上加 `⌃1` 角标提示 |
+| `Ctrl+1 / 2 / 3 / 4` | 切页（首页/队列/历史/统计）| VS Code 惯例。**现行口径（2026-10-16）**：4 = 统计页；设置改由 `Ctrl+,` 或侧栏「设置」进入，设置模式下 1–4 不生效（退出必须走 返回/Esc，脏状态有确认把关）|
 | `Ctrl+F` | 聚焦当前页搜索框 | 历史/下载页 |
 | `Ctrl+Shift+C` | 打开 Cookie 凭据设置 | 解析失败率高时的第一出路，给直达键 |
 | `Ctrl+,` | 打开设置 | Windows 应用已普遍采纳 |
@@ -1027,4 +1027,58 @@ shadcn 的语义名与本仓角色**不能望文生义**，映射钉死如下：
 - 验收门：`typecheck` / `lint` / `test` 全绿（23 文件 354 例；`boundaries.test.ts` 按源文件数生成用例——删 renderer 源文件少 2 例；`.qoder-credits/` 是 Qoder 会话画布工件目录，已从该 walk 排除，防用例数随 IDE 活动漂移；`style-discipline` 3 例）；`vite build` renderer **448.85 kB / gzip 145.26 kB**（迁移前 272.64 / 86.42，代价来自 Radix + cva + tailwind-merge），CSS 40.86 kB / gzip 8.62 kB；产物内 zod 命中 **0 次**（铁律 3 保持）。
 - 真实浏览器逐屏核对（dev-only mock 桥 + Vite 5433）：五页结构、明暗双主题、Select 5 项展开、Dialog 遮罩与 12px 圆角、Tooltip 焦点触发、Switch 拇指位移 20px、Checkbox 排除后按钮文案与清单摘要联动、魔法色经 `primary` 驱动主按钮与进度填充。
 - **未做的验证要说清**：本机 in-app Browser 无可见表面，截图不可用，因此以上是 computed-style / 几何 / 结构层面的核对，不是像素级观感评审；Electron 真窗口与打包态未复核（见 HANDOFF 铁律 5 与 README 验收门）。
+
+## 9. 统计页（2026-10-16，业主指令：「这个页面可以适当增加一些可交互的图表」「失败率和解析统计可以加」「历史记录可以提」）
+
+侧栏第 5 项「统计」（`⌃4`）。全站第一个带图表的页面，也是「指标不用仪表盘」那条口径落地得最紧的一页：图是数的一种摆法，不是数的唯一出口。
+
+### 9.1 两本账分开摆，卡片标题右边就写着它属于哪一本
+
+| 卡 | 口径来源 | 为什么只能用它 |
+| --- | --- | --- |
+| 累计（9 行读数）、趋势、平台榜、类型榜、活跃热力、解析通道 | 计数档 `stats:get`（自 `since` 累加，不随行数窗口截断） | 失败与取消**只活在这里**：history 只有 done 才追加，从明细算失败率永远是 100% |
+| 单文件体积分布、常看作者 | 历史明细（`history:list` 取满 `HISTORY_WINDOW = 5000`，见 `lib/local-limits.ts` 单一来源） | 逐文件粒度与作者名只有明细给得出；计数档故意不带文件名与作者（ARCHITECTURE §6 第 8 条） |
+| 本机占用 | `app:cacheStatus` 六桶按需扫描 | 与累计/明细不同一条时间轴，所以它自己说明是扫描结果；清理动作留在设置页，这里只指路 |
+
+卡片顺序按「先结论后分布」：累计 → 趋势 → 平台/类型（xl 双列）→ 活跃 → 体积/解析（xl 双列）→ 常看作者 → 占用。「刷新」一次读三源（`Promise.all`），**不做每卡独立刷新**：五本数据要同一时刻才有可比性，且统计页不在热路径上。
+
+### 9.2 图表底座：裸 ECharts + 本地四件（业主选定方案 A）
+
+评估过 `@devstool/shadcn-echarts`，结论是包装层的三个卖点在本仓全都失灵，2026-10-16 业主选 A：直接依赖 `echarts@6`，本仓写薄适配器。
+
+1. **自动上色失灵**：它按 shadcn 惯例读 `.dark` 类判明暗，本仓是反向约定（`:root` 即暗，明暗走 `data-theme`、风格走 `data-style`）；且 token 是三层链，自定义属性的 computed value 只做 `var()` 替换、**不求值 `color-mix()`** —— 拿那串文本喂 canvas 解析不了。
+2. **体积要自己控**：`echarts/core` + 显式 `use([...])` 只注册用到的（Bar/Line/Heatmap + Grid/Tooltip/Legend/MarkLine/VisualMap + CanvasRenderer，另加一个 `echarts/features` 的 `LegacyGridContainLabel` —— v6 把 `grid.containLabel` 挪进 opt-in 兼容件，漏登记**不报错**、只把类目名静默裁掉，真窗口实测踩过）。本机实测：全量 1.10 MB / gzip 370 KB / Node eval 106 ms → 摇树 625 KB / eval 48 ms。再加整页 `React.lazy`，`vite build` 产物实测 **StatsPage chunk 620.7 kB / gzip 209.9 kB**，启动 chunk **513.2 kB / gzip 162.7 kB** 里 echarts 标记命中 **0 次** —— 不开统计页就一行 echarts 代码都不下载。
+3. **口径不许外包**：本仓的作图规矩（§9.3）恰恰长在 tooltip 内容与配色语义上，那些正是包装层替我决定的部分。
+
+`renderer/src/components/charts/` 四件各守一层，越界的都不写：
+- `echarts-core.ts` —— 唯一注册点。加一类图就在此加一行 `use`，别处不许 import `echarts`。
+- `palette.ts` —— `useChartPalette()`：把 utility class 挂到离屏探针元素上读 `getComputedStyle` 的 `rgb()`，**代码里一个色值都不写**（§1.2「层 1 是唯一 hex 处」在 canvas 侧没有破口）。`MutationObserver` 盯 `:root` 的 `class/style/data-theme/data-style` 四个属性，于是明暗、五套风格、界面字号、界面字体改完图表实时跟上，不必给 `theme.ts` 加通知口子。色阶用 `withAlpha(primary, 0.16…1)` 叠出来，不再引入一套 ramp token。
+- `options.ts` —— 纯 option 构造（`trendOption` / `rankOption` / `heatOption` / `histogramOption` / `rankHeight`）：palette 由调用方注入、不碰 DOM，所以「失败次数落没落在右轴」「条长是份额还是实际数」这类判定能在 node 环境整份测掉（30 例），不必为验证一个数字去起 canvas。tooltip/label 回调只取 `dataIndex` 回自己的数组拿数，**不读 `params.value`**（那是 ECharts 加工过的显示值，再格式化一次就把口径绕回悬浮层）。
+- `EChart.tsx` —— 哑宿主：`init` / `setOption(option, { notMerge: true })`（合并会把上一次的系列留成残影）/ ResizeObserver / dispose / `onSelect(dataIndex)`。零业务逻辑，所以它不需要测试替身。
+
+热力图的色阶走 `visualMap: { show: false }` —— 只借它的数值→色阶换算，不卖它的滑块控件。
+
+### 9.3 三条作图规矩
+
+1. **数值常显**：榜单条右固定显示「实际数 · 份额」，直方图柱顶显示份额，卡片标题右边显示该图合计；只有趋势图例外（365 根柱贴不下 365 个数，合计写在标题右边）。进度条、环形图一个都没有。
+2. **坐标轴不是信息载体**：榜单的数值轴整条隐藏、上界锁 1 —— 长度已经表达了份额，刻度只会重复一遍（所以第一名满格是错的，份额 63% 就只画 63%）。趋势图的轴留着，因为「哪天破了 20 次」要能对着刻度读；`minInterval: 1` 是硬要求 —— 「1.5 次下载」的刻度等于把数据讲坏，而字节档撤掉该约束（整数语义在那儿不成立）。
+3. **除零不猜**：分母为 0 的比率是 `null` → 页面渲染「—」，不写 0%（「0% 成功率」和「一条都没下过」在图上是同一个形状，前者是结论，后者是不知道）；全零热力的 `visualMap.max` 顶到 1，否则 0/0 让色阶塌成一片；空榜单 `series` 给空数组，不画一根 0 长的条。平均速度的分子用 `totals.elapsedBytes`（有耗时样本的那部分字节）而不是 `totals.bytes` —— 两条总线相除造出一个偏高的假速度且无从发现；`sampled === 0` 时页面说明「需要至少一条带耗时的完成记录，老记录不追溯补这维度」。
+
+### 9.4 交互：可交互 = 换口径，不是缩放与拖拽
+
+- 趋势两组按钮：窗口 `7 / 30 / 90 / 365` 天 + 口径 `次数 / 字节`。字节档换的是柱子的数据、轴标签格式化与刻度约束，失败折线不动。
+- 榜单口径 `次数 / 字节 / 失败 / 解析` **一组按钮同时驱动平台榜与类型榜**：两榜同口径才能横向对照，分开切会造出「平台按失败排、类型按字节排」这种不相干的两句。
+- **点平台榜一行 → 历史页只看这个平台**：App 层传 `platformFocus = { key, seq }`（`seq` 让重复点同平台可重触发，与剪贴板填入同一条手法），历史页收到即落筛选。跨页只传平台键，不传行 id。
+- 「去清理」→ 设置模式「通用」分类的缓存卡；统计页不就地删文件。
+- 悬浮层只做补充，不做唯一出口：趋势 tooltip 列「下载 / 字节 / 失败 / 解析」四项，榜单 tooltip 给失败率或作品数，热力给「周三 21:00 · 12 次」。
+- 键盘与读屏：图是冗余呈现，同一批数在卡片文本里也读得到；`EChart` 各带 `ariaLabel`（如「近 30 天逐日下载与失败趋势」）。
+
+### 9.5 四态与验收边界
+
+- 加载：快照未到 → 三枚 `Skeleton`（28 / 56 / 44 高，占住大致版面）。
+- 空态：`isEmptyStats`（下载 + 失败 + 解析三者为 0）→ 居中 `ScanSearch` 引导「还没有可统计的记录 / 计数从安装这一刻起算」+ 重新读取按钮；**本机占用卡照给**（占用与计数无关，空态也有的看）。单张卡的档没记录用行内一句「这一档还没有记录」，不整页打空。
+- 错误：三源任一失败 → 顶部 destructive Alert 说清哪本读不出来，已到的数据照常渲染（不整页变白）。
+- 已验：`tests/stats-aggregation.test.ts`（18 例，聚合口径）+ `tests/stats-options.test.ts`（33 例：option 构造、取色换算、`fmtPercent`·`fmtDuration`·`fmtSpeed` 三个格式化出口，另三条目录纪律 —— echarts 只在登记点 import、`LegacyGridContainLabel` 在列、charts 目录内不写 hex）；四门绿；chunk 切分按 §9.2 实测数字核对（启动面不含 echarts）。
+- 已验（一次桌面级核对，dev 预览页 + mock 桥）：七张图全部挂载（`_echarts_instance_` 齐备、canvas 尺寸 = CSS 尺寸 × dpr 1.25）；喂进 canvas 的色确实是探针取回的 token 值（primary `rgb(37,99,235)`、bg-sunken `rgb(233,235,238)`、err `rgb(192,57,47)`、muted `rgb(89,96,106)`）；把 `data-theme` 从 light 翻到 dark，热力图主色随之从 `89,96,106` 变 `154,160,167` 再翻回 —— MutationObserver 那条路是活的；控制台无 warn。
+- **未验**：本机 in-app Browser 视口只有 338×570（远窄于应用 `minWidth: 820`），榜单在这种宽度下 grid 被挤到 62 px、类目轴不可读 —— 那是测试视口的产物，不代表真实窗口宽度下的形态；页面在真窗口的密度与观感待业主过一眼。
 

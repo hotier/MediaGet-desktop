@@ -49,14 +49,16 @@ mediaGet-desktop/
 │  │  ├─ engine.ts         # 解析引擎宿主：装配本地适配层 + unified-parser
 │  │  ├─ ipc.ts            # IPC handler（parse / download / settings / history）
 │  │  ├─ downloader.ts     # 下载管理器：流式落盘、Range 续传、Referer、重试
+│  │  ├─ stats.ts          # 生命周期计数器（userData/stats.json）：只落计数/字节/时长，不落 url 与文件名
 │  │  ├─ resources.ts      # yt-dlp/ffmpeg 定位与首启释放（拷到 userData）
 │  │  └─ fallback.ts       # 本地解析失败 → 线上 API 回落（可开关）
 │  ├─ preload/
 │  │  └─ index.ts          # contextBridge 白名单 API（唯一渲染层入口）
 │  └─ builder/             # electron-builder 配置（nsis + portable）
 ├─ renderer/               # Vite + Tailwind v4 + shadcn/ui + React
-│  ├─ src/pages/           # 解析页 / 下载页 / 设置页 / 历史页 / 首页
+│  ├─ src/pages/           # 五页：首页 / 队列 / 历史 / 统计 / 设置
 │  ├─ src/components/      # 业务组件（ResultCard / QueueRail / PlatformIcon / Update）
+│  ├─ src/components/charts/ # ECharts 适配器四件：echarts-core（唯一注册点）/ palette（Token 探针取色）/ options（纯 option 构造）/ EChart（哑宿主）
 │  ├─ src/components/ui/   # vendored shadcn 基座 16 件（cva + Radix + cn）
 │  ├─ src/lib/bridge.ts    # 对 preload API 的类型化封装
 │  └─ src/lib/utils.ts     # cn()：clsx + tailwind-merge
@@ -115,13 +117,14 @@ mediaGet-desktop/
 - **失败回落**：本地解析失败可选回落线上 API（站点有 24h 结果缓存兜底），兼顾住宅 IP 高成功率与最坏情况。
 - **直链时效**：解析结果到下载启动的窗口以秒计——UI 上「下载」按钮直接触发主进程流式落盘，不做「先展示直链让用户点」的二跳。
 - **更新**：`electron-updater` + GitHub Releases；无签名证书阶段接受 SmartScreen 提示，后续补签。
-- **依赖基线（2026-10-14 第三次修订：对 UI 框架不设限）**：此前两轮是"零新增 → headless 白名单（Radix dialog/select/switch/toast + lucide-react，禁 Tailwind/shadcn/framer-motion/tanstack）"，现**取消全部组件库/样式范式/动画库/路由的禁令**，按需引入。仍然有效的只有两条：① CSP `default-src 'self'` 禁远程字体 / icon font / 外链 SVG（技术边界，与选库无关）；② 新增 runtime 依赖与 `pnpm-lock.yaml` 同 commit 提交，并过 `typecheck`/`lint`/`test` 验收门。当前 runtime 依赖：react / react-dom / zod / electron-updater / lucide-react + **shadcn 基线**（`class-variance-authority` / `clsx` / `tailwind-merge` / `tw-animate-css` + 11 个 `@radix-ui/*`：checkbox、dialog、label、progress、radio-group、select、separator、slot、switch、tooltip），dev 侧 `tailwindcss@4` + `@tailwindcss/vite`。**shadcn/ui 已于 2026-10-14 落地为渲染层基线**（[docs/UIUX-DESIGN.md](docs/UIUX-DESIGN.md) §8：`components.json` + `renderer/src/components/ui/` 16 件 vendored 组件 + `@theme inline` 把层 2 Token 桥成 shadcn 语义 utility）。代价如实记账：renderer 产物 272.64 kB/gzip 86.42 → **448.85 kB/gzip 145.26**；zod 仍不进 renderer 包（`boundaries.test.ts` 铁律 3 守着）。样式语义真源仍是 [docs/UIUX-DESIGN.md](docs/UIUX-DESIGN.md) §5.2 三层 CSS Token。业主同日进一步指令「**都放宽，按照 Motrix 的 UI 设计框架和理念，不要给自己设限**」，为冷灰工具风写的三条审美禁令（不用玻璃、单一高程、不上浮缩放）随之解除：`tests/style-discipline.test.ts` 放宽为三条与选库无关的工程断言（hex 只在层 1 色板、消费的 CSS 变量必须已声明、不残留 `--air-*`），阴影层级与动效交由组件库主题决定。
+- **依赖基线（2026-10-14 第三次修订：对 UI 框架不设限）**：此前两轮是"零新增 → headless 白名单（Radix dialog/select/switch/toast + lucide-react，禁 Tailwind/shadcn/framer-motion/tanstack）"，现**取消全部组件库/样式范式/动画库/路由的禁令**，按需引入。仍然有效的只有两条：① CSP `default-src 'self'` 禁远程字体 / icon font / 外链 SVG（技术边界，与选库无关）；② 新增 runtime 依赖与 `pnpm-lock.yaml` 同 commit 提交，并过 `typecheck`/`lint`/`test` 验收门。当前 runtime 依赖：react / react-dom / zod / electron-updater / lucide-react + **shadcn 基线**（`class-variance-authority` / `clsx` / `tailwind-merge` / `tw-animate-css` + 11 个 `@radix-ui/*`：checkbox、dialog、label、progress、radio-group、select、separator、slot、switch、tooltip），dev 侧 `tailwindcss@4` + `@tailwindcss/vite`；2026-10-16 统计页新增 runtime 依赖 **`echarts@6`**（canvas 渲染、不触网不落盘；只在 `components/charts/echarts-core.ts` 一处摇树注册，整页 `React.lazy`，启动 chunk 里 echarts 命中 0 次——选型论证与实测数字见 [docs/UIUX-DESIGN.md §9.2](docs/UIUX-DESIGN.md)）。**shadcn/ui 已于 2026-10-14 落地为渲染层基线**（[docs/UIUX-DESIGN.md](docs/UIUX-DESIGN.md) §8：`components.json` + `renderer/src/components/ui/` 16 件 vendored 组件 + `@theme inline` 把层 2 Token 桥成 shadcn 语义 utility）。代价如实记账：renderer 产物 272.64 kB/gzip 86.42 → **448.85 kB/gzip 145.26**；zod 仍不进 renderer 包（`boundaries.test.ts` 铁律 3 守着）。样式语义真源仍是 [docs/UIUX-DESIGN.md](docs/UIUX-DESIGN.md) §5.2 三层 CSS Token。业主同日进一步指令「**都放宽，按照 Motrix 的 UI 设计框架和理念，不要给自己设限**」，为冷灰工具风写的三条审美禁令（不用玻璃、单一高程、不上浮缩放）随之解除：`tests/style-discipline.test.ts` 放宽为三条与选库无关的工程断言（hex 只在层 1 色板、消费的 CSS 变量必须已声明、不残留 `--air-*`），阴影层级与动效交由组件库主题决定。
 
 **UI 对账（2026-10-16，覆盖上面两段里的旧描述）**：以当前代码为准——
 ①**主题**：`accent.ts` 的动态魔法色已删除，改为 `themeStyle` 五套整带主题 × 明暗 × 字号三轴正交（浅档底色不染色、控件零填充只描边），`renderer/src/lib/accent.ts` 不存在，别再按「primary=封面主色」理解组件语义；
-②**导航**：侧栏 `⌃1–4` 角标与 Ctrl+1–4 快捷键通道已去掉，设置改为独立页 + 覆盖式一级分类（解析与 Cookie 合成「引擎」、运行环境并入「关于」，现 5 类）；
+②**导航**：侧栏 `⌃1–4` 角标已去掉；Ctrl+1–4 随统计页（2026-10-16）**回归为四页切换**（1 首页 / 2 队列 / 3 历史 / 4 统计），设置仍不是 Ctrl+4 而是独立页 + 覆盖式一级分类（解析与 Cookie 合成「引擎」、运行环境并入「关于」，现 5 类）；
 ③**更新呈现**：首页/队列/历史的「发现新版本」横幅已撤，关于页置顶「更新策略」行负责手动检测，结果走右上角 toast（见 `renderer/src/components/Update.tsx` 头注释）；
-④**新增能力**：首页批量导入（粘贴 / txt·csv 文件，渲染层 per-token 串行、零 IPC 变更）、队列与历史筛选、设置项两批（下载四条 + 通知/剪贴板/自启/代理 + 缓存/日志）、主进程文件日志与缓存占用清理；契约面 `CONTRACT_VERSION = 3`。
+④**新增能力**：首页批量导入（粘贴 / txt·csv 文件，渲染层 per-token 串行、零 IPC 变更）、队列与历史筛选、设置项两批（下载四条 + 通知/剪贴板/自启/代理 + 缓存/日志）、主进程文件日志与缓存占用清理；契约面 `CONTRACT_VERSION = 5`（v4 = 队列清理通道，v5 = `stats:get`）。
+⑤**统计页（2026-10-16 新增，规范见 [docs/UIUX-DESIGN.md §9](docs/UIUX-DESIGN.md)）**：侧栏第 5 项。两本账分开摆——计数档 `userData/stats.json`（只累加计数/字节/时长，无 url 无文件名，失败与取消只在它里面）出趋势·成功率·两榜·热力·解析通道，历史明细（窗口 5000 行，`lib/local-limits.ts` 单一来源）只出体积分布与作者榜，**任何比率不从明细算**。图表底座是裸 `echarts@6` + 本仓四件适配器（摇树注册 625 KB、整页懒加载、色值由 CSS Token 探针取，代码里零色值字面量）；数值常显、榜单数值轴隐藏、除零一律现算成「—」。
 剩余仍是：真实 tray 图标资产、以及**第一个 `v*` 标签**（发出去才有 `latest.yml`，应用内检测更新才可能成功）。
 - **UI 基线 = shadcn/ui + Tailwind v4 + Radix（2026-10-14，对标 Motrix v2）**：渲染层从 1609 行自绘 `styles.css` 迁到组件库，组件样式写在 JSX 的 utility 里，CSS 只剩三层 Token 与少数无法 utility 化的全局（约 300 行）。语义映射钉死在蓝图 §8.3——**shadcn 的 `primary` 是本 App 的动态魔法色（封面主色），`accent` 是中性 hover 底，`muted` 是次级表面**，三者不可望文生义；色彩真源仍在层 1 色板。选型理由不是"流行"，而是与对标项目同栈后可以直接借用它的信息架构与组件行为，并让 Radix 接管焦点管理、Esc、ARIA 这些我们此前手写的部分。ui.shadcn.com 本机不可达，故组件源码 vendored 入仓由我们维护。
 - **IPC 契约（2026-10-14 单一真源改造）**：载荷形状只在 `types/ipc-contract.ts` 用 zod 声明一次，`types/ipc.ts` 以 `import type` + `z.infer` 派生并保持**零运行时**（否则整层 schema 会被打进 renderer 包）。主进程按 `CONTRACT` 注册表统一校验入参，dev 构建额外校验出参（漂移报 `contract-drift`，打包版不付这个代价）。理由：interface 与 zod 段各写一遍时两份会静默背离，用户侧只表现为结果卡少个字段、无人报错；`tests/contract.test.ts` 把「漏登记通道」也变成当天红叉。对标 Motrix v2 的契约层做法。
@@ -152,7 +155,7 @@ pnpm install --frozen-lockfile  # 装依赖（含内核工件 @mediaget/parse-co
 pnpm dev                   # 先软补随包二进制（缺则下载，补不上只降级不挡开工），再 vite renderer + tsup main/preload + electron 联调（renderer 走 HMR，主进程/preload 改动需重启 Electron）
 pnpm run build             # build:app + electron-builder --win（nsis + portable → release/）
 pnpm run build:app         # 只出 dist-electron/ + dist-renderer/，不打包（本机验收门用这个）
-pnpm run test              # vitest（适配层、下载器、IPC 契约、边界约束、回落通道、内核面守卫——全离线）
+pnpm run test              # vitest（适配层、下载器、IPC 契约、边界约束、回落通道、内核面守卫、统计聚合与图表 option 口径——全离线）
 pnpm run typecheck         # tsc --noEmit
 pnpm run lint              # eslint（flat config）
 pnpm run fetch:binaries    # 手动补齐/重下随包二进制（`pnpm dev` 已自动软补；CI 用严格版，缺件即红）

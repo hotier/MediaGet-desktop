@@ -45,7 +45,10 @@
 | `electron/main/updater.ts` | 自动更新状态机：把 electron-updater 事件收敛成单个 `UpdateState` 快照（阶段 + 进度 + 错误），守卫「无源不检查、未下载完不安装」 | 窗口操作、下载队列 |
 | `electron/main/notify.ts` | 下载通知聚合器：文件粒度的 done/error 按组收敛成一次系统通知（组内无排队/下载中任务时才播报，图集不逐张弹） | `Notification` 本体（由 index.ts 装配注入） |
 | `electron/main/clipboard.ts` | 剪贴板监听：开关开启时轮询剪贴板 → 内核 `identify` 纯本地识别 → 命中分享链接投 `app:clipboardLink`（文本不落盘、不出本机） | — |
-| `electron/main/store.ts` | `userData` 配置/历史读写（JSON 文件 + 原子写；不用 SQLite 除非历史量大） | 敏感凭据明文（见 §6） |
+| `electron/main/store.ts` | `userData` 配置/历史读写（JSON 文件 + 原子写；不用 SQLite 除非历史量大）。历史窗口 `HISTORY_MAX = 5000`（2026-10-16 由 500 提档：统计页的作者榜与体积分布要够长的明细才画得出形状） | 敏感凭据明文（见 §6） |
+| `electron/main/stats.ts` | 生命周期计数器（`userData/stats.json`）：解析/下载/失败/取消/字节/耗时按 `totals` + `byDay`/`byPlatform`/`byKind`/`byHour` 只加不删，落盘走 JsonStore 同一节流口；`byDay` 保留 366 天 | url、文件名、作者名、Cookie（见 §6 第 8 条：统计面不许看出任何人下过什么）；逐条明细（那是 history 的活） |
+| `renderer/src/lib/stats.ts` | 统计页的聚合出口：把计数档 + 历史明细两份原始数据换成视图模型（趋势补零、两榜、成功率、速度、解析通道、热力、体积直方、作者榜）。纯函数、除零现算（比率 `null` / 份额 `0`） | 读盘、IPC、色值、ECharts option（那在 `charts/options.ts`） |
+| `renderer/src/components/charts/` | ECharts 适配器四件：`echarts-core.ts`（唯一注册点，摇树落点）/ `palette.ts`（CSS Token 探针 → canvas 取色）/ `options.ts`（纯 option 构造，node 环境可测）/ `EChart.tsx`（哑宿主：init/setOption/resize/dispose） | 业务口径（口径在 `lib/stats.ts`）；色值字面量（一个都不许写，见 UIUX §9.3） |
 | `electron/preload/index.ts` | `contextBridge.exposeInMainWorld('mg', {...})` 白名单 | 通配转发（禁止 `ipcRenderer` 原样暴露） |
 | `renderer/src/lib/bridge.ts` | 对 `window.mg` 的类型化封装 + React hooks | 直接拼 IPC channel 名 |
 | `renderer/src/components/ui/` | vendored shadcn/ui 基座（16 件，`cva` 变体 + Radix 原语 + `cn()`），组件只在这里包一层视觉 | 业务语义、IPC 调用、契约类型（真源在 `types/`）；件与件之间不互相依赖业务字段 |
@@ -78,7 +81,8 @@
 | `settings:get` / `settings:set` | 部分字段 | 全量生效配置 | Cookie/下载目录/并发/回落开关/日志级别与保留天数 |
 | `app:cacheStatus` / `app:cacheClear` | — / `{ keys }` | `{ items[], totalBytes, clearableBytes }` / `{ freed, skipped, report }` | 只清具名临时文件（网络缓存/孤儿断点/残留/日志）；更新包与本机记录只报占用，活任务的 `.part` 避让 |
 | `app:openLogDir` / `app:log` | — / `{ level, message }` | `{ ok }` | 渲染层未捕获异常经 `app:log` 落进同一份文件日志（上限 50 条/次会话） |
-| `history:list` / `history:clear` | `{ filter? }` | `HistoryEntry[]` | 只存平台/标题/作者快照/时间/落地路径，**不存媒体直链**（时效与隐私）；作者主页与头像是公开页面，2026-10-14 业主批准入档 |
+| `history:list` / `history:clear` | `{ filter?, limit? }`（`limit` 上限 = 窗口 `HISTORY_MAX` = 5000） | `HistoryEntry[]` | 只存平台/标题/作者快照/时间/落地路径，**不存媒体直链**（时效与隐私）；作者主页与头像是公开页面，2026-10-14 业主批准入档 |
+| `stats:get` | — | `StatsSnapshot` | 统计页真源（契约 v5，2026-10-16）：`totals` + `parse` + `byDay`/`byPlatform`/`byKind`/`byHour`。只有计数、字节、时长，**没有 url 与文件名**；失败与取消只在这份档里（history 只有成功记录，从它算失败率永远是 100%） |
 | `probe:engines` | — | `EngineHealth[]` | 本地版体检：逐平台跑固定样例，替代线上 `/api/engines` |
 | `update:state` | — | `UpdateState` | 当前更新快照（renderer 挂载时先取一次，补上窗口未建期间丢掉的事件） |
 | `update:check` / `update:download` | — | `UpdateState` | 主动检查 / 显式下载；失败不外抛，收敛进快照的 `phase=error` |
@@ -119,6 +123,7 @@
 5. 不解析 `blockedPlatforms.ts` 黑名单里的平台（微信视频号、付费/DRM 内容），沿用内核判定。
 6. 不做反检测加码：UA/请求头治理以内核既有实现为限。
 7. 文件日志（`userData/logs/app.log`）与 config 同处 userData，受同一红线约束：**不写 Cookie 值、不写媒体直链**，下载失败只投「文件名 + 原因」；渲染层转发的异常文本截到 2000 字符、单会话上限 50 条，避免堆栈把盘刷满。
+8. `userData/stats.json`（统计页计数档）只落**计数、字节、时长**：没有 url、文件名、作者名、Cookie。逐条明细归 history，统计面看不出任何人下过什么 —— 这条同时也决定了页面的算法：失败与取消只在计数档里，所以任何比率都不从历史明细算。
 
 ## 7. 构建与发布
 
@@ -136,6 +141,7 @@
 - 依赖升级由 Renovate 提 PR（`renovate.json5`，需先在仓库装 GitHub App 才生效）：`minimumReleaseAge: 7 days` + `minimumReleaseAgeBuffer: 1 day` 对齐 pnpm 默认一周的发布年龄冷却，避免机器人开出「本地装不动、CI 必红」的 PR；minor/patch 合成一枚周一的 PR，但 `@mediaget/parse-core` 与 Electron 打包链各自单独成组——内核升版是解析行为变更，跟 react 样式升级捆在一起就没法只回滚内核。
 - 随包二进制（yt-dlp/ffmpeg）在 Renovate 管辖之外：它不是 npm 依赖，且托管版 Renovate 不执行 `postUpgradeTasks`，不可能替我们下载并算 SHA-256。所以 `resources/binaries.json` 永远由人手改；观察上游用 `node scripts/fetch-binaries.cjs --check-updates`（CI 每周跑一次并贴出可直接粘贴的补丁，见 `binaries-watch.yml`）。
 - 代码约定：全 TS（含 main/preload，走 tsup/esbuild 编译）；命名沿用 mediaGet 约定（组件 PascalCase，hook/store/util kebab-case）；Windows 不敏感大小写，禁止两个文件仅首字母大小写之差。
+- 渲染层的第三方运行时依赖多了一枚 **echarts@6**（2026-10-16 统计页）：canvas 渲染、不触网、不落盘，因此 §1 的依赖边界照旧（它不是内核模块，也不碰 IPC）。两条纪律守着体积，只在架构层面重复一次：`echarts` 只在 `components/charts/echarts-core.ts` 一处 `use([...])` 注册（别处 import 到 `echarts` 就会把全量拉回启动面），整页 `React.lazy` 挂在第 5 项导航后。实测数字与选型论证见 [UIUX §9.2](UIUX-DESIGN.md)。
 
 ## 8. 分仓与同步（定稿）
 
