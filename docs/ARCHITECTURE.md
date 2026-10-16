@@ -124,11 +124,17 @@
 
 - `electron-builder`：`nsis`（per-user 安装、桌面快捷方式、卸载器）+ `portable`（单文件免安装，内测分发）。产物目录 `release/`。
 - 二进制随包：`yt-dlp.exe`、`ffmpeg.exe` 放 `extraResources`，**不打进 asar**；首启校验 SHA-256 后释放到 `userData/bin/`，支持「用户自备路径」覆盖。
+- 开发期补件：`pnpm dev` 前置 `node scripts/fetch-binaries.cjs --soft`——脚本幂等（在位且校验通过即跳过，约 0.3s），新机器不必先手动跑 `fetch:binaries`；`--soft` 只对**下载失败**容错（退出 0 + 播报「随包二进制未就绪」，manifest 写成部分清单，运行时对应链路如实降级），`binaries.json` 本身残缺或哈希不符仍非零退出。CI 不传 `--soft`，严格语义不变——这条分界由 `tests/binaries-watch.test.ts` 用真子进程锁住退出码。
 - 自动更新：`electron-updater` + GitHub Releases（generic provider）。无证书阶段接受 SmartScreen 提示；更新包需 `sha512` 校验（builder 自动生成）。
 - CI（GitHub Actions）：
-  - `test`：vitest（适配层、下载器、IPC 校验）；
-  - `smoke:kernel`：拉 `mediaGet@main` 最新内核跑固定链接冒烟解析，暴露上游接口腐化；
-  - `build:win`：`electron-builder --win`，产物作 artifact；打 tag 时发 Release。
+  - `ci.yml`（push `main` / PR）：`test` = typecheck + lint + vitest（全离线）；`build-win` = 拉固定版本二进制并强校验 → `electron-builder --win --publish never` → 断言安装包内 `resources/bin` 的 `yt-dlp.exe`/`ffmpeg.exe`/`manifest.json` 齐备。
+  - `release.yml`（push `v*` 标签）：`verify` 复检三关 → `publish` 打包，再用 `gh release create` 把 `*.exe` + `latest.yml` + `*.blockmap` 传到同一个 Release。`latest.yml` 与安装包不同 Release，应用内「检测更新」就永远查不到版本。
+  - 内核腐化告警不再靠并列检出冒烟（`smoke:kernel` 已随 2982811 拆桥删除）：`tests/kernel-sync.test.ts` 直接对工件 `dist/index.d.ts` 断言契约面，装不上依赖即红。
+- 发版：`pnpm release`（release-it）—— 先跑 `typecheck`/`lint`/`test` 门禁，再按 commit 前缀推导版本（`feat`→minor、`fix`→patch、`!` 或 `BREAKING CHANGE`→major），写 `CHANGELOG.md`、提交 `chore(release): vX.Y.Z`、打附注标签并 push。版本号只写进 `package.json`（`npm.publish: false`，本包 `private`，不上注册表）。要改档位随时覆盖：`pnpm release patch|minor|major|1.2.3`（显式参数优先于 commit 推导，实测确认）。
+- 提交规范由 commitlint 强制（husky `commit-msg`）：`type(scope): 摘要`，scope 必填、摘要 ≤120 字符。卡它的理由不是审美——commit 前缀是 release-it 的**发版输入**，写歪一个 `fix` 就决定档位，CHANGELOG 分组也直接取摘要行。
+- 包管理器只有 pnpm：`packageManager: pnpm@11.22.0` 是唯一版本源（CI 的 `pnpm/action-setup` 不写死版本，直接读它）；根 `preinstall` 跑 `scripts/only-pnpm.cjs`，非 pnpm 的 UA 一律拒装；`.npmrc` 里 `package-lock=false` 兜住 npm 抢在守卫前落盘的 `package-lock.json`。真源是 `pnpm-lock.yaml`——两把锁对同一份 `package.json` 给出两棵不同的树，混用直接造成「CI 绿本机红」且无从排查。
+- 依赖升级由 Renovate 提 PR（`renovate.json5`，需先在仓库装 GitHub App 才生效）：`minimumReleaseAge: 7 days` + `minimumReleaseAgeBuffer: 1 day` 对齐 pnpm 默认一周的发布年龄冷却，避免机器人开出「本地装不动、CI 必红」的 PR；minor/patch 合成一枚周一的 PR，但 `@mediaget/parse-core` 与 Electron 打包链各自单独成组——内核升版是解析行为变更，跟 react 样式升级捆在一起就没法只回滚内核。
+- 随包二进制（yt-dlp/ffmpeg）在 Renovate 管辖之外：它不是 npm 依赖，且托管版 Renovate 不执行 `postUpgradeTasks`，不可能替我们下载并算 SHA-256。所以 `resources/binaries.json` 永远由人手改；观察上游用 `node scripts/fetch-binaries.cjs --check-updates`（CI 每周跑一次并贴出可直接粘贴的补丁，见 `binaries-watch.yml`）。
 - 代码约定：全 TS（含 main/preload，走 tsup/esbuild 编译）；命名沿用 mediaGet 约定（组件 PascalCase，hook/store/util kebab-case）；Windows 不敏感大小写，禁止两个文件仅首字母大小写之差。
 
 ## 8. 分仓与同步（定稿）
@@ -145,7 +151,7 @@ mediaGet（已有，web 仓）                     mediaGet-desktop（本仓）
 
 `parse-core` 放在 mediaGet 仓**内部**的 `packages/` 下，而不是独立成第三个仓：改解析时内核与调用方在同一次原子提交里，不会出现「内核发了新版、web 还没跟上」的中间态。
 
-本仓**不含任何解析源码**，只含 `node_modules` 里的版本化工件 + 自己的适配层，因此 clone 后 `npm ci` 即可运行，不依赖 `../mediaGet` 存在。
+本仓**不含任何解析源码**，只含 `node_modules` 里的版本化工件 + 自己的适配层，因此 clone 后 `pnpm install --frozen-lockfile` 即可运行，不依赖 `../mediaGet` 存在。
 
 ### 同步流水线（单向）
 
