@@ -9,7 +9,6 @@ export default tseslint.config(
       "dist-renderer/**",
       "release/**",
       "node_modules/**",
-      "../mediaGet/**",
       // 本机诊断产物（崩溃探针输出、临时探针脚本）；.gitignore 已排除，lint 同样不该看
       ".cache/**",
     ],
@@ -42,8 +41,9 @@ export default tseslint.config(
   {
     // 诊断/运维类 CommonJS 脚本（scripts/*.cjs，Node 直接跑的运维件，
     // 不是 ESM 源码）：require/module 是宿主合法全局，ESM 规则不适用。
+    // 根级 `*.cjs` 同理——commitlint 等工具的配置件只认 CommonJS 导出。
     // __dirname / fetch / Buffer 也是 Node 宿主全局（fetch 自 Node 18 起内置）。
-    files: ["scripts/**/*.cjs", "scripts/**/*.js"],
+    files: ["scripts/**/*.cjs", "scripts/**/*.js", "*.cjs"],
     languageOptions: {
       sourceType: "commonjs",
       globals: {

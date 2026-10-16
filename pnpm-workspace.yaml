@@ -10,6 +10,8 @@ allowBuilds:
 minimumReleaseAgeExclude:
   - electron@44.7.2
   - lucide-react@1.57.0
+  # 内核工件 2026-10-15 首发，仍在发布年龄窗口内；超过 cutoff 后删除本行
+  - "@mediaget/parse-core@0.1.2"
 overrides:
   # app-builder-lib@26.15.x 声明 "@electron/get": "^3.0.0"，但它的
   # resolveCacheMode() 读的是 ElectronDownloadCacheMode —— 该枚举 3.1.0 才加入。

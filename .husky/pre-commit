@@ -1,0 +1,9 @@
+# 提交前只修本次暂存的文件：lint-staged 读 .lintstagedrc.json，eslint --fix 之后
+# 自动把改好的内容重新 add 回索引（未暂存的那部分改动由它的 stash 保护，不会丢）。
+#
+# 为什么门禁只这一条：全量四门（typecheck / lint / test / 二进制校验）一次要几十秒，
+# 压在每次 commit 上的结果一定是 --no-verify 常态化，等于没有门禁。重活交给 CI 与 `pnpm release`。
+#
+# 为什么不加 --max-warnings：`pnpm lint` 没带这个参数，warning 不挡构建。这里若比 CI 更严，
+# 就会出现「本地提交被拒、CI 却绿」的反向不一致——门禁必须和 CI 同标准。
+pnpm exec lint-staged
