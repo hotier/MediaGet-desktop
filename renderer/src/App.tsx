@@ -6,7 +6,7 @@
  * Ctrl+K 跳首页并聚焦它；顶栏已移除（页面标题不再占一行）。
  * 样式写在 utility 里，`styles.css` 只剩 Token 与少数无法 utility 化的规则（拖拽区、滚动条）。
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, History, Home, ListOrdered, Settings } from "lucide-react";
 import { api, BridgeError } from "./lib/bridge";
 import { setFontSize, setTheme, setThemeStyle, setFontFamily } from "./lib/theme";
@@ -45,6 +45,12 @@ export default function App(): React.ReactElement {
   const [clipboardFill, setClipboardFill] = useState<{ url: string; platform: string; seq: number } | null>(null);
   const clipboardSeq = useRef(0);
   const workspaceInputRef = useRef<HTMLTextAreaElement | null>(null);
+
+  /** 队列行 → 历史页定位。稳定引用：DownloadsPage 的行是 memo 组件，内联箭头会让每行都被判「变了」 */
+  const navToHistory = useCallback((target: "history", groupId: string) => {
+    setHistoryFocus(groupId);
+    setPage(target);
+  }, []);
 
   /** 读更新策略两开关：启动一次，退出设置模式时再读（保存即影响侧栏下载图标显示条件） */
   const loadUpdatePolicy = () =>
@@ -227,15 +233,7 @@ export default function App(): React.ReactElement {
                 onClipboardFillDone={() => setClipboardFill(null)}
               />
             )}
-            {page === "downloads" && (
-              <DownloadsPage
-                meta={meta}
-                onNav={(target, groupId) => {
-                  setHistoryFocus(groupId);
-                  setPage(target);
-                }}
-              />
-            )}
+            {page === "downloads" && <DownloadsPage meta={meta} onNav={navToHistory} />}
             {page === "history" && <HistoryPage meta={meta} focusKey={historyFocus} />}
           </main>
         </div>
