@@ -1,0 +1,108 @@
+name: Binaries Watch
+
+# 随包二进制（yt-dlp / ffmpeg）的上游版本观察。
+#
+# 为什么需要它：binaries.json 是固定 pin + 强 SHA-256，这是安全要求（不许 latest 漂移），
+# 但代价是「没人知道 yt-dlp 已经落后两个月」—— 而 yt-dlp 的版本几乎等于下载链路的寿命，
+# 落后到一定程度就是 TikTok 成片报 403/签名失效。所以观察归机器，写回归人：
+# 本工作流只读跑 `--check-updates`，把下载新资产后算出的 SHA-256 直接贴进 Summary，
+# 人复制进 binaries.json 即可，校验性质不变（机器人没有任何一条路径能改写随包件）。
+#
+# 顺带一提：Renovate 管不到这里——它不读非 npm 资产，且托管版不执行 postUpgradeTasks。
+
+on:
+  schedule:
+    # GitHub cron 走 UTC：01:17 UTC = 北京时间周一 09:17。
+    # 故意跟 Renovate 的「周一上午」同批，让人一次看完所有该升的东西；
+    # 分钟取 17 不取 00 —— 整点是 Actions 调度最堵的时候，定时任务会漂。
+    - cron: "17 1 * * 1"
+  # 随时手查（比如刚收到「某站解析挂了」的反馈）
+  workflow_dispatch:
+
+concurrency:
+  group: binaries-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    name: 比对上游最新正式版
+    runs-on: ubuntu-latest
+    # 只读观察：不给写权限，本 job 结构上就不可能改动仓库或发布任何东西
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      # 不需要 pnpm install：脚本只用 Node 内置模块（node:crypto/fs/path）与全局 fetch。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # GITHUB_TOKEN 是给 api.github.com 提额的：匿名请求按出口 IP 计限额，
+      # Actions 的共享出口 IP 实测会 403（本机也是这个现象），带上 token 就是本 run 独立额度。
+      - name: Check upstream releases (read-only)
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PATCH: ${{ runner.temp }}/patch.json
+        run: |
+          set -uo pipefail
+          # --json：建议片段走 stdout（存文件），过程日志走 stderr（进 Actions 日志）
+          node scripts/fetch-binaries.cjs --check-updates --json > "$PATCH"
+          code=$?
+
+          # 先判硬失败（脚本自身异常，不是「有新版本」）：红，本轮结论不可用。
+          # 放在数条数之前——硬失败时文件可能没内容，拿它去 JSON.parse 只会多一屏噪声。
+          if [ "$code" -ne 0 ] && [ "$code" -ne 3 ]; then
+            echo "::error::观察脚本异常退出（exit=$code），本轮结论不可用"
+            exit "$code"
+          fi
+
+          count=$(node -e 'const fs=require("fs");process.stdout.write(String(Object.keys(JSON.parse(fs.readFileSync(process.env.PATCH,"utf8"))).length))')
+
+          {
+            echo "## 随包二进制版本观察"
+            echo
+            echo "- 固定真源：\`resources/binaries.json\`（本工作流只读，不改文件）"
+            if [ "$count" -gt 0 ]; then
+              echo "- 结论：**${count} 项上游已有正式版**"
+            elif [ "$code" -eq 3 ]; then
+              echo "- 结论：本轮未能全部确认（见下方告警），不代表没问题"
+            else
+              echo "- 结论：全部二进制均为上游最新正式版"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$count" -gt 0 ]; then
+            {
+              echo
+              echo '升级两步（人手完成，别交给机器）：'
+              echo
+              echo "1. 用下面的片段替换 \`resources/binaries.json\` 里 \`binaries.<名称>\` 的 version/url/sha256/size 四个字段（\`file\`/\`note\` 保持原样）；"
+              echo '2. 本地跑 `node scripts/fetch-binaries.cjs --force`：它会按新 URL 重下并自校验——'
+              echo '   校验不过说明上游同名 tag 的资产被换过，那就不是「升个版」，先去上游查清楚。'
+              echo
+              echo '改完提交时前缀用 `build(deps):`（会构建但不进 CHANGELOG）；下载链路修好了才用 `fix:`。'
+              echo
+              echo '```json'
+              cat "$PATCH"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            # 观察类任务不判红：每周一次红叉只会训练人忽略它。用 warning 让 run 列表变黄。
+            echo "::warning title=随包二进制可升级::发现 ${count} 项上游新版本，补丁片段见 Job Summary"
+          fi
+
+          if [ "$code" -eq 3 ]; then
+            echo >> "$GITHUB_STEP_SUMMARY"
+            echo '本轮有项目未能确认（GitHub API 限流或网络异常）——**这不等于「都是最新」**。' >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=观察未完成::本轮未能确认全部上游版本，结论不完整（详见日志）"
+          fi
+
+      # 产物留一份纯 JSON，便于跨周对比「什么时候开始落后」
+      - name: Upload raw patch
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-watch-patch
+          path: ${{ runner.temp }}/patch.json
+          if-no-files-found: warn
