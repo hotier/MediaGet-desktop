@@ -1,7 +1,7 @@
 /**
  * 主进程入口（docs/ARCHITECTURE.md §2 index.ts）
  *
- * 应用生命周期 / 窗口 / 菜单 / 单实例锁。业务逻辑一律不在这里（只装配）。
+ * 应用生命周期 / 窗口 / 托盘 / 单实例锁。业务逻辑一律不在这里（只装配）。
  *
  * 安全（§6.4）：nodeIntegration:false、contextIsolation:true、sandbox:true、
  * webSecurity 不关、renderer 只加载本地文件。
@@ -14,6 +14,7 @@ import {
   ipcMain,
   Menu,
   nativeImage,
+  nativeTheme,
   Notification,
   session,
   shell,
@@ -428,6 +429,7 @@ registerIpc({
     updater.setPolicy(updatePolicy()); // 静默下载开关保存即热更
     clipboardWatcher.setEnabled(store.loadConfig().settings.clipboardWatch); // 通知两开关是读取时求值，无需热更
     applyLoginItem(store.loadConfig().settings.launchAtLogin); // 开机自启保存即同步系统登录项
+    applyTitleBarOverlay(); // 明暗改完重贴按钮符号色（浅档配深符号，否则白符号消失在白底上）
     void applyProxy(); // 代理保存即热更（对新请求生效；在途连接不打断）
     logger.pruneExpired(); // 保留天数改完即清一次（级别是读取时求值，无需动作）
   },
@@ -461,6 +463,42 @@ function quitApp(): void {
   app.quit();
 }
 
+/**
+ * 自定义顶栏（Windows · Window Controls Overlay）：`titleBarStyle:'hidden'` 让 web 内容顶到
+ * 窗口上沿，只有最小化/最大化/关闭三枚按钮仍由系统画。选它而不是 `frame:false` 自绘：
+ * 贴边最大化、Win11 悬停快照布局飞窗、读屏可达性都是系统给的，自绘要逐条重做，
+ * 而且按钮几何由 DPI/缩放决定，猜出来的宽度一定和实际对不上。
+ * 非 Windows 保持原生标题条：mac 的灯位与 Linux 的边框各有平台规矩，首发只在 Win 上改。
+ */
+const TITLEBAR_H = 40; // 与 renderer 的 --wco-h 同值：那条带就是按钮的家，高了对不齐
+const usesWindowControlsOverlay = process.platform === "win32";
+
+/** 按钮底色透明 → 融进我们那条带，hover 高亮仍由系统画；符号色取当前档正文墨色 */
+function titleBarOverlay(): Electron.TitleBarOverlay {
+  return {
+    color: "#00000000",
+    symbolColor: overlaySymbolColor(),
+    height: TITLEBAR_H,
+  };
+}
+
+/**
+ * 符号色跟 styles.css 的墨色 token（暗 #e4e6e8 / 浅 #1b1e21）。主进程看不到 CSS，
+ * 就按同一套解析规则自己算：theme=system 时读 nativeTheme —— 这正是 renderer 的
+ * matchMedia 在 Electron 里跟随的同一个源，两处不会漂成两个答案。
+ */
+function overlaySymbolColor(): string {
+  const theme = store.loadConfig().settings.theme;
+  const dark = theme === "dark" || (theme !== "light" && nativeTheme.shouldUseDarkColors);
+  return dark ? "#e4e6e8" : "#1b1e21";
+}
+
+/** 明暗或主题风格改完即刻重贴：不重贴的话浅档按钮符号是白的，直接看不见 */
+function applyTitleBarOverlay(): void {
+  if (!usesWindowControlsOverlay) return;
+  mainWindow?.setTitleBarOverlay(titleBarOverlay());
+}
+
 function createWindow(): void {
   const winIcon = iconFromFile("window.png");
   mainWindow = new BrowserWindow({
@@ -471,6 +509,10 @@ function createWindow(): void {
     show: false,
     title: "即刻解析",
     icon: winIcon.isEmpty() ? undefined : winIcon,
+    ...(usesWindowControlsOverlay && {
+      titleBarStyle: "hidden",
+      titleBarOverlay: titleBarOverlay(),
+    }),
     webPreferences: {
       preload: join(__dirname, "../preload/index.js"),
       nodeIntegration: false,
@@ -563,6 +605,8 @@ app.whenReady().then(() => {
   createWindow();
   createTray();
   registerClipboardHotkey();
+  // theme=system 时系统换档不会走 settings 写入，按钮符号色得跟着 nativeTheme 走
+  nativeTheme.on("updated", applyTitleBarOverlay);
 
   // 登录项与偏好对账（注册表被外部清理时随下次启动自愈）
   applyLoginItem(store.loadConfig().settings.launchAtLogin);

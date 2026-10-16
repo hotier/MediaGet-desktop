@@ -148,8 +148,9 @@ export default function App(): React.ReactElement {
           />
         ) : (
           <>
-        <nav className="drag-region flex w-(--w-side) shrink-0 flex-col gap-1 border-r border-border bg-panel py-3 ps-2 pe-2" aria-label="页面导航">
-          <div className="px-2 pb-4 text-[15px] font-semibold tracking-wide">即刻解析</div>
+        <nav className="drag-region flex w-(--w-side) shrink-0 flex-col gap-1 border-r border-border bg-panel pb-3 ps-2 pe-2" aria-label="页面导航">
+          {/* 品牌行 = 顶栏带：文字垂直居中即与系统三枚按钮同轴，侧栏与内容列共用这一条高度 */}
+          <div className="flex h-(--wco-h) items-center px-2 text-[15px] font-semibold tracking-wide">即刻解析</div>
 
           {PAGES.map((p) => (
             <button
@@ -216,6 +217,8 @@ export default function App(): React.ReactElement {
 
         {/* 裁掉切页入场（统一从左滑入）的滑移出界，不越界探入左侧导航 */}
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {/* 顶栏带：系统的三枚按钮浮在它右端，所以这条带只用来拖窗、不放控件；页面内容一律从它下面起 */}
+          <div aria-hidden className="drag-region h-(--wco-h) shrink-0" />
           <main key={page} className="flex-1 overflow-y-auto p-4 animate-in fade-in duration-200 slide-in-from-left-3">
             {bootError && (
               <Alert variant="destructive" className="mb-3">

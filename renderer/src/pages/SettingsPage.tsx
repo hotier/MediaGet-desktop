@@ -1171,6 +1171,8 @@ export default function SettingsPage({
 
       {/* 裁掉切页入场（统一从左滑入）的滑移出界，不越界探入左侧导航 */}
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        {/* 顶栏带：与主页面同款，系统按钮浮在它右端，分类内容从它下面起 */}
+        <div aria-hidden className="drag-region h-(--wco-h) shrink-0" />
         <main key={sel} className="flex-1 overflow-y-auto p-4 animate-in fade-in duration-200 slide-in-from-left-3">
           {/* ≤860px：侧栏隐藏，降级为顶部横向 chip */}
           <div className="mb-4 hidden flex-col gap-2 max-[860px]:flex">

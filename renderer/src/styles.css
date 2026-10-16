@@ -292,6 +292,7 @@
   --r-lg: 12px; /* 卡片与浮层（对齐 shadcn rounded-lg） */
   --w-side: 208px; /* 外壳侧栏（utility 里以 w-(--w-side) 消费） */
   --w-rail: 300px; /* 解析页右栏队列轨 */
+  --wco-h: 40px; /* 顶栏带高：Window Controls Overlay 三枚按钮的家，与主进程 TITLEBAR_H 同值 */
 }
 
 /* 界面字体族不再用 [data-font] 属性预登记：族名来自本机 font-list 枚举（不可枚举成 CSS 规则），

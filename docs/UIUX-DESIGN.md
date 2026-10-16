@@ -556,6 +556,18 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 
 **任务在飞时点"退出"** → 原生模态（主进程 `dialog.showMessageBox`，`type:'warning'`, `buttons:['仍然退出','取消并继续下载']`）：3 个下载未完成，退出后可从托盘恢复并断点续传。**不静默丢任务**。
 
+**顶栏（自定义，2026-10-16 落地）**
+
+原生标题条已去掉，走 **Window Controls Overlay**：`titleBarStyle:'hidden'` + `titleBarOverlay`（仅 win32，mac/Linux 保持原生条）。web 内容顶到窗口上沿，只有三枚按钮由系统画。
+
+| 点 | 口径 |
+| --- | --- |
+| **为什么不用 `frame:false` 自绘** | 贴边最大化、Win11 悬停快照布局飞窗、读屏可达性都是系统白给的；按钮几何由 DPI/缩放决定，自绘猜出来的宽度必和实际对不上。Motrix 走自绘是因为它连菜单一起重画进了 DOM，我们没有菜单可摊这份成本 |
+| **带高** | `--wco-h: 40px`（styles.css 层 2.5）= 主进程 `TITLEBAR_H`。两处各留一份常量，改一处必须同改，否则按钮不居中 |
+| **按钮底色** | `color:'#00000000'` 透明：按钮浮在我们自己那条带上，hover 高亮仍由系统画，不另起一条系统底 |
+| **符号色** | 跟层 1 墨色（暗 `#e4e6e8` / 浅 `#1b1e21`）。主进程看不到 CSS，按同一规则自己解析：`theme!=="system"` 直接用设定，`system` 读 `nativeTheme.shouldUseDarkColors`（renderer 的 `matchMedia` 在 Electron 里就是它）。settings 写入与 `nativeTheme` 变更两条路都要重贴，漏一次浅色档符号就白在底上 |
+| **这条带的规矩** | 带内只放拖拽区，**不摆任何可点控件** —— 右端那 3 枚是系统按钮，压上去点不动。侧栏品牌行「即刻解析」就是这条带的左半（文字垂直居中即与按钮同轴），内容列另起一条 `drag-region h-(--wco-h)` 空带 |
+
 **应用菜单（菜单栏）**：**已删除**（`Menu.setApplicationMenu(null)`）。业主判定这套「文件/编辑/视图/窗口」在本应用里用不到，而 `autoHideMenuBar` 意味着 Alt 才出现 —— Win 用户既发现不了也用不上。菜单里的能力都有去处：编辑类（撤销/复制/粘贴/全选）由 Chromium 原生快捷键完成，不需要菜单注册；显示与退出走托盘；重载与开发者工具在 dev 由 detach 的 DevTools 承担。§3.4 的快捷键表因此是**唯一**的动作发现渠道，设置页"快捷键"分组必须让它可见。
 
 ### 3.4 快捷键
@@ -694,7 +706,7 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 | 首屏 hero 化 / 大插画营销风 | 工具类应用，用户停留时长集中在任务列表；视觉预算该给进度与状态 |
 | ~~引入 lucide-react 等图标包~~（**2026-10-14 业主修订：允许**） | 原判定"违反无新依赖基线"已被 README C4 修订取代：`lucide-react` 进入白名单（tree-shaking、按需打包）。仍不建议引入**其他**图标方案（icon font 违反 C1、SVG sprite 外链违反 CSP）。注意：图标统一 `strokeWidth={1.5}` 以保持原方案 1.5px 描边一致性 |
 | 打包 Web 字体 | CSP `default-src 'self'` 需改 CSP 才能加载远程字体（**安全倒退**），本地打包则 +2–5MB 体积换不到质变；`Segoe UI Variable` 在 Win11 已是优质选择 |
-| 自绘窗口标题栏（frameless） | 现状用原生帧 + `app-region:drag` 已工作；frameless 要自己实现 Win11 圆角/贴边吸附/最大化遮挡/DPI/快照，成本极高收益极小 |
+| ~~自绘窗口标题栏（frameless）~~（**2026-10-16 部分改口：已用 WCO，按钮仍交系统画**） | 原生标题条已经没了（§3.3 顶栏）。再往前一步的 `frame:false` 全自绘仍不做：要自己实现 Win11 圆角/贴边吸附/最大化遮挡/DPI/快照飞窗，成本极高收益极小 |
 | 历史存直链 / "一键重新下载" | 违反 `ARCHITECTURE.md §3` 与隐私红线；直链分钟级失效，存了也是废数据。用"重新解析"替代 |
 | 剪贴板静默监听 | 隐私噪音，且 `Ctrl+Alt+V` 显式动作已覆盖需求 |
 | 多窗口 / 每任务独立窗口 | Electron 多窗 + 单实例锁 + `restore()` 语义会复杂化（`claimedTargets` 防双写逻辑跨窗会失效）|
