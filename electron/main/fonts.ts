@@ -9,6 +9,42 @@ import { getFonts } from "font-list";
 
 let cache: Promise<string[]> | null = null;
 
+/**
+ * 中文中文字体族名单（小写匹配、按前缀判定）——业主指令 2026-10-15：字体族
+ * 「中文字体靠前、英文字体靠后」的分类依据。
+ * 为什么需要名单而不是看字形：Windows 上最常见的中文系统字体登记的是英文名
+ * （实测本机注册表：DengXian=等线、另有 SimSun/Microsoft YaHei…），名字里没有
+ * 一个中文字符；只看 name 是否含 CJK 会把主力中文字体错分到英文组。
+ * 名单覆盖：中文系统字体（英文名 + 中文字面两路）/ 华文、汉仪等 foundry
+ * 拼音或中文字面 / 东亚字体与思源系开源中文字体。未命中名单但含 CJK 字面的
+ * 仍归中文组（见 isChineseFamily）。
+ */
+const CHINESE_FONT_PREFIXES = [
+  // 中文系统字体（微软/汉仪等登记的英文名）
+  "dengxian", "simsun", "simhei", "simkai", "simfang", "simyou", "simli",
+  "nsim", "kaiti", "heiti", "fangsong", "yuanti", "xaobo", "liang", "hupo",
+  "microsoft yahei", "microsoft jhengyu",
+  "hanyi", "fangzheng", "fzht", "fzkai", "fzshu", "fzsong",
+  // 东亚/繁体系统自带
+  "ms jhenghao", "pmingliu", "mingliu", "dfkai", "dfsong",
+  "yu gothic", "meiryo", "malgun", "batang", "gulim", "dotum",
+  // 华文系（STSong/STKaiti/…）与思源系开源中文
+  "stsong", "stkaiti", "stxihei", "stzhongs", "stliberation", "stmiddle",
+  "source han", "sarasa",
+  "noto sans cjk", "noto serif cjk", "noto sans sc", "noto sans tc",
+  "noto sans hk", "noto sans jp", "noto sans kr",
+] as const;
+
+/** 是否 CJK 字面（中日韩统一表意文字 / 假名 / 兼容表意） */
+function hasCjk(name: string): boolean {
+  return /[㐀-䶿一-鿿豈-﫿぀-ゟ゠-ヿ]/.test(name);
+}
+
+export function isChineseFamily(name: string): boolean {
+  const n = name.trim().toLowerCase();
+  return hasCjk(n) || CHINESE_FONT_PREFIXES.some((p) => n.startsWith(p));
+}
+
 function normalize(raw: string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];
@@ -20,9 +56,16 @@ function normalize(raw: string[]): string[] {
     seen.add(key);
     out.push(name);
   }
-  return out.sort((a, b) =>
-    a.localeCompare(b, "zh-Hans-CN", { numeric: true, sensitivity: "base" })
-  );
+  return orderFamilies(out);
+}
+
+/** 分组排序（导出给单测）：中文靠前、英文靠后，组内 locale 序 */
+export function orderFamilies(names: string[]): string[] {
+  const cmp = (a: string, b: string) =>
+    a.localeCompare(b, "zh-Hans-CN", { numeric: true, sensitivity: "base" });
+  const cn = names.filter(isChineseFamily).sort(cmp);
+  const en = names.filter((f) => !isChineseFamily(f)).sort(cmp);
+  return [...cn, ...en];
 }
 
 export function listInstalledFonts(): Promise<string[]> {

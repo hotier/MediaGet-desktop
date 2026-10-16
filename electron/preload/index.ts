@@ -37,6 +37,7 @@ const mg: MgBridge = {
   },
   history: {
     list: (filter) => invoke(IPC.historyList, filter),
+    remove: (keys) => invoke(IPC.historyRemove, { keys }),
     clear: () => invoke(IPC.historyClear),
   },
   probe: {
@@ -53,6 +54,7 @@ const mg: MgBridge = {
     cacheStatus: () => invoke(IPC.appCacheStatus),
     clearCache: (keys) => invoke(IPC.appCacheClear, { keys }),
     openLogDir: () => invoke(IPC.appOpenLogDir),
+    openExternal: (url) => invoke(IPC.appOpenExternal, { url }),
     log: (level, message) => invoke(IPC.appLog, { level, message }),
     onClipboardLink: (cb) => on(IPC.evClipboardLink, cb),
     update: {

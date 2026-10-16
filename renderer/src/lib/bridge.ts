@@ -81,6 +81,7 @@ export const api = {
   history: {
     list: (filter?: HistoryFilter) =>
       unwrap<HistoryEntry[]>(bridge().history.list(filter)),
+    remove: (keys: string[]) => unwrap<HistoryEntry[]>(bridge().history.remove(keys)),
     clear: () => unwrap(bridge().history.clear()),
   },
   probe: {
@@ -97,6 +98,7 @@ export const api = {
     cacheStatus: () => unwrap<CacheStatus>(bridge().app.cacheStatus()),
     clearCache: (keys: CacheItemKey[]) => unwrap<CacheClearResult>(bridge().app.clearCache(keys)),
     openLogDir: () => unwrap(bridge().app.openLogDir()),
+    openExternal: (url: string) => unwrap(bridge().app.openExternal(url)),
     /** 转发失败不该再生出一条转发（上报通道自身故障时无处可报）：静默吞掉 */
     log: async (level: LogSeverity, message: string) => {
       try {

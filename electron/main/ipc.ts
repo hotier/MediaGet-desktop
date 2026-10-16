@@ -11,6 +11,7 @@
  *   PLATFORM_INFO，不复制域名表（§4 防盗链）。
  */
 import { z } from "zod";
+import { basename, extname } from "node:path";
 import { shell } from "electron";
 import { PLATFORM_INFO, sanitizeFilename } from "@mediaget/parse-core";
 import { resolveKey } from "../../shared/platforms";
@@ -21,11 +22,13 @@ import {
   EnqueueInputSchema,
   FolderPathSchema,
   HistoryFilterSchema,
+  HistoryRemoveInputSchema,
   IdentifyInputSchema,
   LogWriteInputSchema,
   ParseInputSchema,
   SettingsPatchSchema,
   TaskIdInputSchema,
+  UrlInputSchema,
   CONTRACT,
 } from "../../types/ipc-contract";
 import {
@@ -195,14 +198,33 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     return outcome;
   });
 
-  // —— download:enqueue ——
+  /**
+ * 文件名净化：拆成「名字本体 + 扩展名」分别处理，再拼回。
+ *
+ * 为什么不能直接把完整文件名丢给 sanitizeFilename：那个函数的 maxLen 作用在整个串上，
+ * 会从尾部硬砍 —— 超长标题的结果是「秋日通勤…标标标-108」，**扩展名连同清晰度后缀一起
+ * 被砍掉**，落盘成没有 .mp4 的文件，Windows 判定不了类型、双击打不开。
+ *
+ * 所以这里给本体留出扩展名所需的长度：名字超长时优先砍在「保留前后」的省略号上
+ * （见 renderer download-plan 的 ellipsizeMiddle，与预览同口径），这里只做兜底 ——
+ * 即便 renderer 传来的名字已经超长，扩展名也必须活着。
+ */
+function sanitizeWithExt(name: string, maxLen: number): string {
+  const ext = extname(name);
+  const stem = ext ? basename(name, ext) : name;
+  // 扩展名本身也要留位置；最小给本体 8 格，装不下极短扩展名时以扩展名为先（保类型）
+  const stemBudget = Math.max(8, maxLen - ext.length);
+  return sanitizeFilename(stem, stemBudget, "download") + (ext ? ext.toLowerCase() : "");
+}
+
+// —— download:enqueue ——
   wrap(IPC.downloadEnqueue, EnqueueInputSchema, (input): EnqueueOutcome => {
     const { items, groupId, meta } = input;
     const referer = meta?.platform ? refererFor(meta.platform) : undefined;
     // 文件名统一走内核 utils/filename 净化（勿在客户端复制规则）
     const normalized = items.map((it) => ({
       ...it,
-      filename: sanitizeFilename(it.filename, 80, "download"),
+      filename: sanitizeWithExt(it.filename, 80),
       referer: it.referer ?? referer,
     }));
     const gid = groupId ?? `g-${Date.now().toString(36)}`;
@@ -264,6 +286,8 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     if (patch.openFolderOnDone !== undefined) next.settings.openFolderOnDone = patch.openFolderOnDone;
     if (patch.retryTimes !== undefined) next.settings.retryTimes = patch.retryTimes;
     if (patch.defaultQuality !== undefined) next.settings.defaultQuality = patch.defaultQuality;
+    if (patch.filenamePreset !== undefined) next.settings.filenamePreset = patch.filenamePreset;
+    if (patch.filenameExtra !== undefined) next.settings.filenameExtra = patch.filenameExtra;
     if (patch.keepPartials !== undefined) next.settings.keepPartials = patch.keepPartials;
     if (patch.notifyOnDone !== undefined) next.settings.notifyOnDone = patch.notifyOnDone;
     if (patch.notifyOnError !== undefined) next.settings.notifyOnError = patch.notifyOnError;
@@ -309,6 +333,11 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     store.clearHistory();
     return { ok: true };
   });
+  // —— history:remove（多选删除：行键 = 条目 id 或 groupId，store 侧双命中删整组）——
+  // 返回删除后的剩余列表而非 ok 旗：UI 直接拿去刷新，省一次 history.list 回读。
+  wrap(IPC.historyRemove, HistoryRemoveInputSchema, ({ keys }): HistoryEntry[] =>
+    store.removeHistory(keys)
+  );
   // —— probe:engines（本地版体检：注册表 × 在场引擎 × 用户开关，不发抓取、不打平台风控）——
   // 三件事一次算清：这平台供不供（开关）、谁能解（引擎自报 ∧ 注册表能力位）、为什么不行（detail）。
   // 平台行集来自注册表而不是内核自述，所以关掉的/内核没登记但我们能解的平台都在表上。
@@ -369,6 +398,12 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     return { ok: true };
   });
 
+  // —— app:openExternal（结果卡「在浏览器打开」：scheme 校验已在 UrlInputSchema 收口）——
+  wrap(IPC.appOpenExternal, UrlInputSchema, async (input) => {
+    // openExternal 用 activate:false：不抢焦点，用户还在本软件里操作
+    await shell.openExternal(input.url, { activate: false });
+    return { ok: true };
+  });
   // —— stats:get（统计页数据源：recorder 的内存态直出，不让 UI 每次读盘再对不上）——
   wrap<null, StatsSnapshot>(IPC.statsGet, null, () => deps.stats.snapshot());
 }

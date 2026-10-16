@@ -9,6 +9,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueueRail } from "../renderer/src/components/QueueRail";
 import { TooltipProvider } from "../renderer/src/components/ui/tooltip";
+import { PLATFORMS } from "../shared/platforms";
 import type { DownloadTaskView } from "../types/ipc";
 
 function task(over: Partial<DownloadTaskView>): DownloadTaskView {
@@ -27,8 +28,10 @@ function task(over: Partial<DownloadTaskView>): DownloadTaskView {
   };
 }
 
-const render = (tasks: DownloadTaskView[]): string =>
-  renderToStaticMarkup(createElement(TooltipProvider, null, createElement(QueueRail, { tasks, onShowAll: () => {} })));
+const render = (tasks: DownloadTaskView[], onUseExample?: (url: string) => void): string =>
+  renderToStaticMarkup(
+    createElement(TooltipProvider, null, createElement(QueueRail, { tasks, onShowAll: () => {}, onUseExample }))
+  );
 
 describe("QueueRail", () => {
   it("下载中：文件名 + 百分比 + 进度条", () => {
@@ -44,8 +47,9 @@ describe("QueueRail", () => {
       task({ taskId: "a", status: "done" }),
       task({ taskId: "b", status: "canceled" }),
     ]);
-    expect(html).toContain("暂无进行中的任务");
     expect(html).not.toContain('data-slot="progress"');
+    // 无任务时给的是平台速查（meta 为 null 时退化为引导文案），不是一片空白
+    expect(html).toContain("打开完整队列");
   });
 
   it("未知总长时显示已收字节而不是百分比", () => {
@@ -61,19 +65,41 @@ describe("QueueRail", () => {
     // 错误详情改由应用内 Tooltip 呈现（截断文字场景），不再挂 native title
     expect(html).toContain('data-slot="tooltip-trigger"');
     expect(html).not.toContain("title=");
+    // 原因要直接可见，不能只藏在 tooltip 里
+    expect(html).toContain("HTTP 403");
   });
 
-  it("超过 8 条折叠，计数仍显示全量", () => {
+  it("超过 5 条折叠，计数仍显示全量", () => {
     const many = Array.from({ length: 12 }, (_, i) =>
       task({ taskId: `t-${i}`, filename: `秋日通勤穿搭-${i + 1}.jpg` })
     );
     const html = render(many);
-    expect(html).toContain("秋日通勤穿搭-8.jpg");
-    expect(html).not.toContain("秋日通勤穿搭-9.jpg");
+    expect(html).toContain("秋日通勤穿搭-5.jpg");
+    expect(html).not.toContain("秋日通勤穿搭-6.jpg");
+    expect(html).toContain("还有 7 个任务…");
     expect(html).toContain(">12<");
   });
 
   it("空队列也给「打开完整队列」出口，右栏不塌成空白", () => {
     expect(render([])).toContain("打开完整队列");
+  });
+
+  it("空态：铺注册表平台速查，点击回填示例链接", () => {
+    const html = render([], () => {});
+    expect(html).toContain("支持的平台");
+    // 平台名取自 shared/platforms.ts：测试不再自带 meta 夹具，夹具会与注册表漂移。
+    // 折叠态只铺前 8 个，断言取注册表默认序的前几项
+    expect(html).toContain("抖音");
+    expect(html).toContain("小红书");
+    // 列的是整张注册表而不是两三条硬编：折叠文案把总数报出来
+    expect(html).toContain(`全部 ${PLATFORMS.length} 个平台`);
+    // 有回填能力时提示可点
+    expect(html).toContain("点一下填入示例链接");
+  });
+
+  it("没有回填回调时平台按钮禁用（不给点了没反应的假交互）", () => {
+    const html = render([]);
+    expect(html).toContain("disabled");
+    expect(html).not.toContain("点一下填入示例链接");
   });
 });

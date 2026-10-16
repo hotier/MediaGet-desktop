@@ -360,6 +360,40 @@ body {
   scrollbar-color: var(--line-strong) transparent;
 }
 
+/* Sonner 浮空 toast 的进出轴与留白（业主指令 2026-10-15 两条：
+ * ① 框内上下空白太大（上游 padding 16px 四周写死）；② 进场从右、退场回右 —— 进出同轴。
+ *
+ * 只覆盖 --y：上游的进出场与堆叠位移全走 `transform: var(--y)` 这一支变量。
+ * 堆叠压缩（非 front 的 translateY(lift*offset…) 与 scale 收纳）故意留在垂直轴 ——
+ * 全部水平化会让同屏多条 toast 横向散开，右上角的「叠成一摞」变成「排成一横排」。
+ * 与 Toaster 的 top-right 锚定是耦合约定：换位置（左/中）时这些方向要一并改。
+ * !important 不是偷懒：本文件与 sonner 运行时注入样式的先后顺序不可靠（由 import 时机决定），
+ * 而它的选择器最高 6 个属性类，靠特异性压不住同权重规则。 */
+
+/* ① 密度：四周 16px → 上下 10px / 左右 12px（单行提示高度 54px → 约 42px） */
+[data-sonner-toaster] [data-sonner-toast][data-styled="true"] {
+  padding: 10px 12px;
+}
+
+/* ② 入场起点：右外侧（front 落位前都从这来；110% 留余量，右缘 1px 描边不残留） */
+[data-sonner-toaster] [data-sonner-toast]:not([data-mounted="true"]) {
+  --y: translateX(110%) !important;
+}
+/* ② 落位：front 停在原位（非 front 不匹配这条 → 上游的垂直堆叠原样保留） */
+[data-sonner-toaster] [data-sonner-toast][data-mounted="true"][data-front="true"] {
+  --y: translateX(0) !important;
+}
+/* ② 退场：三条 removed 形态（front / 非 front 展开 / 非 front 收纳）一并水平右移。
+ *    上游分别写 translateY(-100%)/translateY(…) 与 translateY(40%)，全是 --y，接得住 */
+[data-sonner-toaster] [data-sonner-toast][data-removed="true"][data-swipe-out="false"] {
+  --y: translateX(110%) !important;
+}
+/* ② 跟手甩出不接管：位移交给 --swipe-amount，但 --y 的垂直分量要置零，
+ *    否则「向上飞走」与「跟手横移」合成斜飞 */
+[data-sonner-toaster] [data-sonner-toast][data-swipe-out="true"] {
+  --y: translateX(0) !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

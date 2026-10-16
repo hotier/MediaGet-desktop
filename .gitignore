@@ -34,6 +34,9 @@ Downloads/
 # Qoder session artifacts (canvas / credits reports), machine-local
 .qoder-credits/
 
+# 本机 Python 运行时（pythoncore-3.15-64，非本仓源码也非构建产物，勿入仓）
+Python/
+
 # editors / os
 .idea/
 .vscode/

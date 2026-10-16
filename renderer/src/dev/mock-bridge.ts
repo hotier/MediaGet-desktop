@@ -833,6 +833,14 @@ const mockBridge: MgBridge = {
       if (filter?.limit) rows = rows.slice(0, filter.limit);
       return ok(rows);
     },
+    // 与主进程 store.removeHistory 同口径：行键命中条目 id 或其 groupId 都删（选一行删整组）
+    remove: async (keys) => {
+      const drop = new Set(keys);
+      const kept = history.filter((h) => !(drop.has(h.id) || (h.groupId && drop.has(h.groupId))));
+      history.length = 0;
+      history.push(...kept);
+      return ok(kept.map((h) => ({ ...h })));
+    },
     clear: async () => {
       history.length = 0;
       return ok({ ok: true });
@@ -907,6 +915,7 @@ const mockBridge: MgBridge = {
       return ok<CacheClearResult>({ freed: before.totalBytes - report.totalBytes, skipped, report });
     },
     openLogDir: async () => ok({ ok: true }),
+    openExternal: async () => ok({ ok: true }),
     log: async () => ok({ ok: true }),
     update: {
       state: async () => ok(updateSnapshot()),

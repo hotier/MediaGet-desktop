@@ -21,6 +21,7 @@ const StatsPage = lazy(() => import("./pages/StatsPage"));
 import { Badge } from "./components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
 import { Skeleton } from "./components/ui/skeleton";
+import { Toaster } from "./components/ui/sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
 
 type Page = "home" | "downloads" | "history" | "stats";
@@ -155,6 +156,9 @@ export default function App(): React.ReactElement {
 
   return (
     <TooltipProvider>
+      {/* 浮空 toast 容器：portal 到 body、固定定位，不占内容流（业主指令 2026-10-15）。
+          挂在 Provider 内、全部页面之外，所以切页不打断正在显示的提示。 */}
+      <Toaster />
       <div className="flex h-full flex-row bg-background text-foreground text-sm">
         {settingsMode ? (
           <SettingsPage
@@ -246,6 +250,10 @@ export default function App(): React.ReactElement {
                 tasks={tasks}
                 inputRef={workspaceInputRef}
                 onNav={setPage}
+                onOpenSettings={(category) => {
+                  setSettingsEntry(category);
+                  setSettingsMode(true);
+                }}
                 clipboardFill={clipboardFill}
                 onClipboardFillDone={() => setClipboardFill(null)}
               />

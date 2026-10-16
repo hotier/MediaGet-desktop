@@ -143,6 +143,8 @@ export class JsonStore {
         platformSwitches: Object.fromEntries(
           Object.entries(raw.settings?.platformSwitches ?? {}).map(([k, v]) => [k, { ...v }])
         ),
+        // filenameExtra 同理：缺省时若沿用 DEFAULT_SETTINGS 的对象引用，settings:set 的写回会污染常量
+        filenameExtra: { ...DEFAULT_SETTINGS.filenameExtra, ...(raw.settings?.filenameExtra ?? {}) },
       },
       kernel: raw.kernel ?? {},
     };
@@ -221,6 +223,25 @@ export class JsonStore {
     }
     this.writeHistoryNow();
     return [];
+  }
+
+  /**
+   * 删除选中记录（history:remove）。传入的是**行键**集合 —— UI 一行可能聚了图集的
+   * 多条条目（同 groupId），故删除口径是「条目 id 命中 **或** 其 groupId 命中」都删，
+   * 保证选一行删掉整组、不留下半截图集。返回删除后的剩余列表，UI 直接拿去刷新，
+   * 省一次回读（也不给「删完刚好空表」留特判：空数组就是空态）。
+   * 用户动作，立即落盘（与 clearHistory 同一条语义）。必须先走 loadHistory 把合并窗口里
+   * 待写的追加折进缓存再筛，再经 writeHistoryNow 清掉 pending —— 绕过缓存直接写盘，
+   * 节流定时器到点会拿旧缓存把删掉的行复活。
+   */
+  removeHistory(keys: string[]): HistoryEntry[] {
+    const drop = new Set(keys);
+    const hit = (e: HistoryEntry): boolean =>
+      drop.has(e.id) || (e.groupId != null && drop.has(e.groupId));
+    const keep = this.loadHistory().filter((e) => !hit(e));
+    this.historyCache = keep;
+    this.writeHistoryNow();
+    return keep;
   }
 
   /** 合并窗口：窗口内无论追加多少条，只重写一次整档 */

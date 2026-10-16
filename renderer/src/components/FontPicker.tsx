@@ -4,7 +4,11 @@
  * 数据源是**本机枚举**的字体族（font-list 在主进程跑，约 3–4s），所以：
  * - 打开面板时才懒加载（父级传 fetchFonts），带「读取中…」态；进程侧已缓存，重开即时。
  * - 列表可能上百条，顶部即时过滤 + 滚动；每项按自身字形渲染，选中/关闭即回调 value。
+ *   顺序 = 主进程给的顺序（中文字体组在前、英文组在后，业主指令 2026-10-15），
+ *   过滤只做保留、不重排——分组是数据源的承诺，不在 UI 层重实现一遍。
  * - 用原生 div + 面板自管理（本仓未装 Popover/Command 原语），视觉口径对齐 ui/select.tsx。
+ *   触发器 w-36 / 面板 w-56 比通用 Select（w-28~36）宽一档：字体名动辄二三十字符，
+ *   再窄就全是截断（业主指令 2026-10-15 宽度收窄，对齐通用档）。
  * value 语义："system" = 哨兵（内联 --font-ui 被清除，回落基座栈），其余 = 具体 family 名。
  */
 import * as React from "react";
@@ -134,7 +138,7 @@ export function FontPicker({
         onClick={() => setOpen((o) => !o)}
         onKeyDown={onTriggerKey}
         className={cn(
-          "flex h-9 w-44 items-center justify-between gap-2 rounded-md border border-input bg-control px-3 py-2 text-sm whitespace-nowrap outline-none",
+          "flex h-9 w-36 items-center justify-between gap-2 rounded-md border border-input bg-control px-3 py-2 text-sm whitespace-nowrap outline-none",
           "transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40",
           "[&_svg]:pointer-events-none [&_svg]:shrink-0"
         )}
@@ -148,7 +152,7 @@ export function FontPicker({
       {open && (
         <div
           className={cn(
-            "absolute z-50 mt-1 w-64 overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-pop",
+            "absolute z-50 mt-1 w-56 overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-pop",
             "animate-in fade-in-0 zoom-in-95"
           )}
         >

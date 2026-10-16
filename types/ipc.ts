@@ -32,6 +32,7 @@ import type {
   EnqueueOutcomeSchema,
   HistoryEntrySchema,
   HistoryFilterSchema,
+  HistoryRemoveInputSchema,
   IdentifyInputSchema,
   IdentifyOutcomeSchema,
   ParseDataSchema,
@@ -88,9 +89,13 @@ export type InvokeResult<T> = InvokeOk<T> | InvokeErr;
 //     引擎之一，「有哪些平台、提不提供」归本仓注册表 + 开关决定）。载荷侧两条不兼容变更：
 //     `app:getMeta` 去掉 `platforms`（两进程改为 import 同一模块，不再过 IPC 复制一张表），
 //     `settings` 新增 `platformSwitches`（每平台 enabled 覆盖，缺省跟随注册表默认）。
+// v7：新增两条通道 `history:remove`（历史多选删除：行键 = 条目 id 或 groupId，出参直接回剩余列表）与
+//     `app:openExternal`（结果卡「在浏览器打开」，scheme 白名单只放 http/https）。
+//     `settings` 另加两键 `filenamePreset` / `filenameExtra`（下载文件名主体与追加开关）。
+//     升号理由与 v5 同一条：通道集合增了。两把新键都有缺省值，旧存档读进来按 v7 解释不会缺字段。
 // ————————————————————————————————————————————————
 
-export const CONTRACT_VERSION = 6;
+export const CONTRACT_VERSION = 7;
 
 // ————————————————————————————————————————————————
 // channel 常量（preload/main/renderer 三方共用字面量，禁止散落拼写）
@@ -109,6 +114,7 @@ export const IPC = {
   settingsGet: "settings:get",
   settingsSet: "settings:set",
   historyList: "history:list",
+  historyRemove: "history:remove",
   historyClear: "history:clear",
   probeEngines: "probe:engines",
   appGetBinaryStatus: "app:getBinaryStatus",
@@ -119,6 +125,7 @@ export const IPC = {
   appCacheClear: "app:cacheClear",
   appOpenLogDir: "app:openLogDir",
   appLog: "app:log",
+  appOpenExternal: "app:openExternal",
   statsGet: "stats:get",
   updateGetState: "update:state",
   updateCheck: "update:check",
@@ -200,6 +207,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   openFolderOnDone: false,
   retryTimes: 1,
   defaultQuality: "main",
+  filenamePreset: "title",
+  filenameExtra: { quality: true, index: true },
   keepPartials: false,
   notifyOnDone: true,
   notifyOnError: true,
@@ -216,6 +225,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
 /** history:list */
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 export type HistoryFilter = z.infer<typeof HistoryFilterSchema>;
+/** history:remove */
+export type HistoryRemoveInput = z.infer<typeof HistoryRemoveInputSchema>;
 
 /** probe:engines —— 本地版体检 */
 export type EngineHealth = z.infer<typeof EngineHealthSchema>;
@@ -290,6 +301,8 @@ export interface MgBridge {
   };
   history: {
     list(filter?: HistoryFilter): Promise<InvokeResult<HistoryEntry[]>>;
+    /** 删除选中行（行键 = 条目 id 或 groupId，主进程双命中删整组），返回剩余列表 */
+    remove(keys: string[]): Promise<InvokeResult<HistoryEntry[]>>;
     clear(): Promise<InvokeResult<{ ok: boolean }>>;
   };
   probe: {
@@ -312,6 +325,8 @@ export interface MgBridge {
     clearCache(keys: CacheItemKey[]): Promise<InvokeResult<CacheClearResult>>;
     /** 在资源管理器打开日志目录（userData/logs） */
     openLogDir(): Promise<InvokeResult<{ ok: boolean }>>;
+    /** 用系统默认浏览器打开外链（scheme 白名单 http/https；不抢焦点） */
+    openExternal(url: string): Promise<InvokeResult<{ ok: boolean }>>;
     /** 渲染层异常转发到文件日志（窗口崩溃外的另一条线索；级别不含 off） */
     log(level: LogSeverity, message: string): Promise<InvokeResult<{ ok: boolean }>>;
     /** 剪贴板监听命中分享链接（main 端已识别：url 有值时可直接填入输入面） */

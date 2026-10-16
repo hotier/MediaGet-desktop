@@ -17,6 +17,25 @@ export function resolveTheme(theme: Theme): "dark" | "light" {
   return theme;
 }
 
+/**
+ * 已解析明暗的订阅出口。存在理由：第三方浮层（sonner 的 Toaster）需要「当前是暗还是亮」
+ * 这个值本身，而它又不该自己再读一遍 matchMedia —— 那会和这里的判定分叉。
+ * 订阅在 apply() 里派发，所以设置页改主题、系统明暗变化（system 档）都能推到消费方。
+ */
+type ThemeListener = (resolved: "dark" | "light") => void;
+const listeners = new Set<ThemeListener>();
+
+export function getResolvedTheme(): "dark" | "light" {
+  return resolveTheme(current);
+}
+
+export function subscribeTheme(fn: ThemeListener): () => void {
+  listeners.add(fn);
+  return () => {
+    listeners.delete(fn);
+  };
+}
+
 function apply(): void {
   const resolved = resolveTheme(current);
   // dark 是 :root 默认态；仅 light 需要显式标记，system+暗时保持无属性
@@ -25,6 +44,7 @@ function apply(): void {
   } else {
     delete document.documentElement.dataset.theme;
   }
+  for (const fn of listeners) fn(resolved);
 }
 
 /** 设置页保存后调用；null/undefined = 维持现状（首帧默认 system） */

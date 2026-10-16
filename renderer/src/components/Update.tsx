@@ -3,11 +3,14 @@
  * 「下载更新」起流并弹出**流式下载弹窗**——主体是本次版本的 changelog，进度条右侧显百分比，
  * 下方显下载速度与已下/总大小；底部按钮「暂停 / 取消」（暂停时「继续下载 / 取消」，完成时「立即重启」）。
  * 右上角 X 仅关弹窗、不停下载；关掉后重开「查看进度」仍见实时进度（下载在主进程后台跑）。
- * 结果阶段以右上角 toast 播报（撤掉了首页/队列/历史的「发现新版本」横幅）。
+ * 结果阶段以浮空 toast 播报（撤掉了首页/队列/历史的「发现新版本」横幅；2026-10-15 改用 sonner，
+ * 不再自绘右上角浮层）。播不播、用什么档由 renderer/src/lib/update-announce.ts 的决策表定：
+ * 取消下载后状态回落 available 是「恢复可重下的入口」，不能再播一次「发现新版本」。
  */
 import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { toast } from "sonner";
 import { api } from "../lib/bridge";
+import { updateNotice } from "../lib/update-announce";
 import type { UpdateState } from "../../../types/ipc";
 import { Button } from "./ui/button";
 import { Progress } from "./ui/progress";
@@ -64,7 +67,9 @@ function phrase(s: UpdateState): string {
     case "up-to-date":
       return `已是最新版本 v${s.currentVersion}`;
     case "available":
-      return `发现新版本${next}（当前 v${s.currentVersion}）`;
+      // 只报新版本号；「当前 v…」不上 toast（业主指令 2026-10-15）——
+      // 当前版本在对话框与设置页都在，提示里它是噪声，播报的主角是「有了什么新东西」
+      return `发现新版本${next}`;
     case "downloading":
       return `正在下载${next}… ${s.percent ?? 0}%`;
     case "paused":
@@ -96,9 +101,6 @@ function dialogTitle(s: UpdateState): string {
   }
 }
 
-/** 只在结果阶段弹 toast：进行中类信息已有流式下载弹窗承载 */
-const TOAST_PHASES: UpdateState["phase"][] = ["up-to-date", "available", "downloaded", "error"];
-
 export function UpdateActions({
   state,
   onState,
@@ -108,21 +110,17 @@ export function UpdateActions({
 }): React.ReactElement {
   const busy = state.phase === "checking" || state.phase === "downloading";
   const [dlOpen, setDlOpen] = useState(false);
-  const [toast, setToast] = useState<{ id: number; text: string } | null>(null);
   const prevPhase = useRef(state.phase);
   useEffect(() => {
-    if (state.phase !== prevPhase.current) {
-      prevPhase.current = state.phase;
-      if (TOAST_PHASES.includes(state.phase)) {
-        setToast({ id: Date.now(), text: phrase(state) });
-      }
-    }
+    if (state.phase === prevPhase.current) return;
+    const prev = prevPhase.current;
+    prevPhase.current = state.phase;
+    // 档位与「播不播」全走决策表 —— 取消下载后的 available 回落不播（业主报 2026-10-15），
+    // error 走红档，其余中性 info（带档才渲染图标）
+    const notice = updateNotice(prev, state.phase);
+    if (notice === "error") toast.error(phrase(state));
+    else if (notice === "info") toast.info(phrase(state));
   }, [state]);
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 4000);
-    return () => clearTimeout(t);
-  }, [toast]);
 
   // 起流并打开弹窗；右上角 X 只 setDlOpen(false)，下载在主进程继续
   function startDownload(): void {
@@ -231,17 +229,6 @@ export function UpdateActions({
           )}
         </DialogContent>
       </Dialog>
-      {toast &&
-        createPortal(
-          <div
-            key={toast.id}
-            role="status"
-            className="fixed top-4 right-4 z-50 max-w-[24rem] rounded-md border border-border bg-popover px-3 py-2 text-sm text-popover-foreground shadow-md"
-          >
-            {toast.text}
-          </div>,
-          document.body,
-        )}
     </div>
   );
 }

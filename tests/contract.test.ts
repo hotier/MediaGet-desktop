@@ -136,6 +136,12 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
         ];
       },
       clearHistory: () => {},
+      // history:remove 的真实 handler 会调这里；契约测试只要「返回形状对」（剩余 HistoryEntry[]），
+      // 双命中删组的落盘行为归 store.test.ts 管。回一条与 loadHistory 同构的剩余项即可。
+      removeHistory: (keys: string[]) =>
+        keys.includes("h-1") || keys.includes("g-1")
+          ? []
+          : [{ id: "h-keep", files: [], createdAt: 1 }],
     },
     getAppMeta: opts.getAppMeta ?? (() => ({ version: "0.0.0-test", electron: "44" })),
     kernelMode: () => "local" as const,
@@ -201,10 +207,14 @@ const BAD_INPUT: Record<string, unknown> = {
   [IPC.downloadClear]: { taskIds: [] },
   [IPC.settingsSet]: { evilField: 1 },
   [IPC.historyList]: { limit: 0 },
+  // 空集合不是合法请求（min(1) 拒「删 0 条」的误触），超上限说明 UI 状态坏了
+  [IPC.historyRemove]: { keys: [] },
   [IPC.appShowInFolder]: 1234,
   [IPC.appCacheClear]: { keys: ["not-a-cache"] },
   // off 是「不落盘」的门槛档，不是一条可写入的日志
   [IPC.appLog]: { level: "off", message: "x" },
+  // openExternal 只放行 http/https：file:// 之类是提权动作，必须拒
+  [IPC.appOpenExternal]: { url: "file:///C:/Windows/system32/cmd.exe" },
 };
 
 /** 每个通道的一份合法调用（无入参通道传 undefined） */
@@ -224,9 +234,11 @@ const GOOD_INPUT: Record<string, unknown> = {
   [IPC.downloadResume]: { taskId: "t-1" },
   [IPC.downloadClear]: { taskIds: ["t-1"] },
   [IPC.settingsSet]: { throttleMs: 100 },
+  [IPC.historyRemove]: { keys: ["h-1"] },
   [IPC.appShowInFolder]: "C:/Downloads/a.mp4",
   [IPC.appCacheClear]: { keys: ["net", "logs"] },
   [IPC.appLog]: { level: "error", message: "渲染层炸了一处" },
+  [IPC.appOpenExternal]: { url: "https://www.bilibili.com/video/BV1xx411c7mD" },
 };
 
 /** CONTRACT 的键是字面量通道名，测试里按 string 索引需要这一层 widening */

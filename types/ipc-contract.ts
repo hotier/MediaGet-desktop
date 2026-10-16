@@ -215,6 +215,10 @@ export const AppSettingsSchema = z.object({
   retryTimes: z.number().int().min(0).max(3),
   /** 清晰度预选默认策略：main=内核推荐直链 / highest=最高画质 / lowest=最低画质省流量 */
   defaultQuality: z.enum(["main", "highest", "lowest"]),
+  /** 下载文件名主体组合：title=仅标题 / authorTitle=作者 - 标题 / titleAuthor=标题 - 作者 / titleDate=标题_日期 */
+  filenamePreset: z.enum(["title", "authorTitle", "titleAuthor", "titleDate"]),
+  /** 追加开关（在预设主体之后）：quality=清晰度后缀、index=多文件序号 */
+  filenameExtra: z.object({ quality: z.boolean(), index: z.boolean() }),
   /** 取消任务保留 .part 断点（下次同链接入队可续）；关=取消即删腾磁盘 */
   keepPartials: z.boolean(),
   /** 系统通知：整组文件下载结束后弹一次 Windows 通知（按组聚合，图集不逐张弹） */
@@ -252,6 +256,17 @@ export const FontListSchema = z.array(STR.max(64));
 export const HistoryFilterSchema = z.object({
   platform: STR.max(40).optional(),
   limit: z.number().int().min(1).max(5000).optional(),
+});
+
+/**
+ * history:remove 入参 —— 行键集合（条目 id 或 groupId，store 侧双命中删整组）。
+ * 键宽对齐既有口径：id/groupId 在 enqueue/队列侧都是 STR.max(64)；
+ * 集合限 1–5000，与 `history:list` 的窗口上界成对（v5 把窗口从 500 提到 5000，这里跟着走，
+ * 否则「全选可见行删除」撞上旧上限会被判 bad-input）；空集合拒绝 —— 「删 0 条」不是合法请求，
+ * 误触也不该走到落盘写；超上限说明 UI 状态坏了，宁可 bad-input 也不整表重写。
+ */
+export const HistoryRemoveInputSchema = z.object({
+  keys: z.array(STR.max(64)).min(1).max(5000),
 });
 
 /** 仅主进程持久化格式（store.ts 真源），入参侧复用 */
@@ -445,6 +460,17 @@ export const PickDirResultSchema = z.union([STR, z.null()]);
 /** app:showInFolder 入参：本机绝对路径（renderer 不可信输入，长度封顶即可） */
 export const FolderPathSchema = z.string().max(1000);
 
+/**
+ * 外链输入：只放行 http/https（openExternal 是提权动作，其他协议一律拒）。
+ * 包一层 object：`z.string().refine()` 的类型仍是 string，主进程取不到 .url。
+ */
+export const UrlInputSchema = z.object({
+  url: z
+    .string()
+    .max(2000)
+    .refine((u) => /^https?:\/\//i.test(u), "只支持 http/https 链接"),
+});
+
 // ————————————————————————————————————————————————
 // 本地缓存 / 日志（设置→通用）
 // ————————————————————————————————————————————————
@@ -591,6 +617,7 @@ export const CONTRACT = {
   [IPC.settingsGet]: invoke(null, AppSettingsSchema),
   [IPC.settingsSet]: invoke(SettingsPatchSchema, AppSettingsSchema),
   [IPC.historyList]: invoke(HistoryFilterSchema.optional(), z.array(HistoryEntrySchema)),
+  [IPC.historyRemove]: invoke(HistoryRemoveInputSchema, z.array(HistoryEntrySchema)),
   [IPC.historyClear]: invoke(null, OkFlagSchema),
   [IPC.probeEngines]: invoke(null, z.array(EngineHealthSchema)),
   [IPC.appGetBinaryStatus]: invoke(null, BinaryStatusReportSchema),
@@ -601,6 +628,7 @@ export const CONTRACT = {
   [IPC.appCacheClear]: invoke(CacheClearInputSchema, CacheClearResultSchema),
   [IPC.appOpenLogDir]: invoke(null, OkFlagSchema),
   [IPC.appLog]: invoke(LogWriteInputSchema, OkFlagSchema),
+  [IPC.appOpenExternal]: invoke(UrlInputSchema, OkFlagSchema),
   [IPC.statsGet]: invoke(null, StatsSnapshotSchema),
   [IPC.updateGetState]: invoke(null, UpdateStateSchema),
   [IPC.updateCheck]: invoke(null, UpdateStateSchema),

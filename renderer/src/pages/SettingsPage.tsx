@@ -22,6 +22,10 @@ import { api, BridgeError } from "../lib/bridge";
 import { fmtBytes } from "../lib/format";
 import { CACHE_ITEMS as SETTINGS_CACHE_ITEMS } from "../lib/cache-items";
 import { setFontSize, setTheme, setThemeStyle, setFontFamily } from "../lib/theme";
+import {
+  buildFilename,
+  type FilenamePreset,
+} from "../lib/download-plan";
 import type {
   AppMeta,
   AppSettings,
@@ -93,6 +97,19 @@ const ENGINE_COL = {
   channel: "w-[calc(1.5rem+5.2em)]",
 } as const;
 
+/**
+ * 字段是否已改：标量走引用比较即可；`filenameExtra` 是对象，必须按值比 ——
+ * 否则 setDraft 每次换新对象都会算「脏」，保存按钮会一直亮着。
+ */
+function fieldChanged(f: keyof AppSettings, draft: AppSettings, saved: AppSettings): boolean {
+  if (f === "filenameExtra") {
+    const a = draft.filenameExtra;
+    const b = saved.filenameExtra;
+    return a.quality !== b.quality || a.index !== b.index;
+  }
+  return draft[f] !== saved[f];
+}
+
 /** 标量字段归属哪个设置区块（脏计数/放弃都以区块为粒度）；Cookie 字段的区块 id = 其 key */
 const SCALAR_SECTION: Partial<Record<keyof AppSettings, string>> = {
   launchAtLogin: "startup",
@@ -111,6 +128,8 @@ const SCALAR_SECTION: Partial<Record<keyof AppSettings, string>> = {
   retryTimes: "post",
   keepPartials: "post",
   defaultQuality: "post",
+  filenamePreset: "name",
+  filenameExtra: "name",
   theme: "theme",
   themeStyle: "theme",
   fontSizePx: "font",
@@ -129,7 +148,7 @@ const CATEGORIES: Array<{
   sections: string[];
 }> = [
   { id: "general", label: "通用", icon: SlidersHorizontal, sections: ["startup", "window", "notify", "clipboard", "cache", "log"] },
-  { id: "download", label: "下载", icon: Download, sections: ["dir", "load", "proxy", "post"] },
+  { id: "download", label: "下载", icon: Download, sections: ["dir", "name", "load", "proxy", "post"] },
   { id: "appearance", label: "外观", icon: Palette, sections: ["theme", "font"] },
   { id: "engine", label: "引擎", icon: Cpu, sections: ["fallback", "engines", ...COOKIE_ROWS.map((r) => r.key)] },
   { id: "about", label: "关于", icon: Info, sections: ["about"] },
@@ -151,6 +170,21 @@ const LOG_LEVELS: Array<{ value: AppSettings["logLevel"]; label: string }> = [
 ];
 /** 保留天数：契约允许 1–90，常用四档 + 自定义 */
 const LOG_RETENTION_OPTIONS = [3, 7, 14, 30];
+
+/** 预览用的固定样例：不依赖真实解析数据，随时能看懂规则效果 */
+const SAMPLE_TITLE = "秋日通勤穿搭";
+const SAMPLE_AUTHOR = "小明";
+
+/**
+ * 文件命名预设：下拉文案 + 示例（与 download-plan 的 buildFilename 同一套语义）。
+ * 示例只给人看「大概长这样」，真名靠下方实时预览。
+ */
+const FILENAME_PRESETS: Array<{ value: FilenamePreset; label: string; sample: string }> = [
+  { value: "title", label: "仅标题", sample: "{标题}" },
+  { value: "authorTitle", label: "作者 - 标题", sample: "{作者} - {标题}" },
+  { value: "titleAuthor", label: "标题 - 作者", sample: "{标题} - {作者}" },
+  { value: "titleDate", label: "标题_日期", sample: "{标题}_20261015" },
+];
 
 /**
  * 缓存项文案与展示顺序见 `lib/cache-items.ts`（统计页报同一份占用，名字必须同源）。
@@ -192,14 +226,15 @@ export default function SettingsPage({
   update: UpdateState | null;
   onUpdateState: (s: UpdateState) => void;
   onExit: () => void;
-  /** 进入设置模式时默认选中的分类（侧栏下载图标直达「关于」；缺省 download） */
+  /** 进入设置模式时默认选中的分类（侧栏下载图标直达「关于」；缺省落 CATEGORIES 首项「通用」——
+   *  此前硬编码 "download"，点「设置」会跳过通用直接进下载分类，2026-10-15 业主指出后修正） */
   initialCategory?: string;
 }): React.ReactElement {
   const [saved, setSaved] = useState<AppSettings | null>(null);
   const [draft, setDraft] = useState<AppSettings | null>(null);
   const [cookieEdits, setCookieEdits] = useState<Record<string, string>>({});
   const [cookieClears, setCookieClears] = useState<Record<string, boolean>>({});
-  const [sel, setSel] = useState(initialCategory ?? "download");
+  const [sel, setSel] = useState(initialCategory ?? CATEGORIES[0].id);
   const [engines, setEngines] = useState<EngineHealth[]>([]);
   const [bins, setBins] = useState<BinaryStatusReport | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
@@ -297,7 +332,7 @@ export default function SettingsPage({
     if (!saved || !draft) return 0;
     let n = 0;
     for (const f of SCALAR_FIELDS) {
-      if (SCALAR_SECTION[f] === section && draft[f] !== saved[f]) n++;
+      if (SCALAR_SECTION[f] === section && fieldChanged(f, draft, saved)) n++;
     }
     const row = COOKIE_ROWS.find((r) => r.key === section);
     if (row) {
@@ -792,6 +827,58 @@ export default function SettingsPage({
                 <FolderOpen />
                 浏览…
               </Button>
+            </div>
+          </ItemCard>
+        );
+
+      case "name":
+        return (
+          <ItemCard title="文件命名">
+            <Row label="命名组合" hint="决定文件名的主体部分。作者缺失时自动退化为仅标题，不会留下多余的连接符。" end>
+              <Select
+                value={draft.filenamePreset}
+                onValueChange={(v) => setDraft({ ...draft, filenamePreset: v as AppSettings["filenamePreset"] })}
+              >
+                <SelectTrigger className="w-48" aria-label="命名组合">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {FILENAME_PRESETS.map((p) => (
+                    <SelectItem key={p.value} value={p.value}>
+                      {p.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Row>
+            <Row label="追加清晰度" hint="在主体后加当前清晰度后缀（如 -1080P）；多清晰度平台用它区分不同画质。" end>
+              <Switch
+                id="fn-quality"
+                aria-label="追加清晰度"
+                checked={draft.filenameExtra.quality}
+                onCheckedChange={(v) =>
+                  setDraft({ ...draft, filenameExtra: { ...draft.filenameExtra, quality: v } })
+                }
+              />
+            </Row>
+            <Row label="多文件加序号" hint="图集第 3 张加 -3、分 P 第 2 集加 -P2，避免同名相撞。关掉则由同名冲突规则自动改名兜底。" end>
+              <Switch
+                id="fn-index"
+                aria-label="多文件加序号"
+                checked={draft.filenameExtra.index}
+                onCheckedChange={(v) =>
+                  setDraft({ ...draft, filenameExtra: { ...draft.filenameExtra, index: v } })
+                }
+              />
+            </Row>
+            <div className="flex items-baseline gap-2 rounded-md bg-muted/40 px-3 py-2">
+              <span className="shrink-0 text-xs text-muted-foreground">预览</span>
+              <span className="min-w-0 break-all font-mono text-xs">
+                {buildFilename(
+                  { title: SAMPLE_TITLE, author: SAMPLE_AUTHOR, qualitySuffix: "-1080P", ext: ".mp4" },
+                  { preset: draft.filenamePreset, extra: draft.filenameExtra }
+                )}
+              </span>
             </div>
           </ItemCard>
         );
@@ -1419,7 +1506,8 @@ const CUSTOM_VALUE = "__custom__";
 /**
  * 数值档位下拉：常用选项平铺在菜单里，末项「自定义」；选自定义后下拉框原位换成输入框，
  * Enter 提交（非法值留在编辑态提示），失焦合法则提交否则取消，Esc 取消回下拉框。
- * 当前值不在档位里时，触发器显示自定义值、菜单项同步显示，重开可再编辑。
+ * 当前值不在档位里时，触发器显示「值·自定义」、菜单项同步显示，重开可再编辑。
+ * Radix 重复选中已选项不触发 onValueChange，故关菜单时兜底强制进输入态（否则第二次进不去）。
  */
 function PresetSelect({
   value,
@@ -1443,6 +1531,11 @@ function PresetSelect({
   const [err, setErr] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const isPreset = options.includes(value);
+  // 关菜单兜底要在 onOpenChange 里读最新值，而 Radix 的关闭回调不重渲染，故用 ref 同步
+  const isPresetRef = useRef(isPreset);
+  isPresetRef.current = isPreset;
+  const customModeRef = useRef(customMode);
+  customModeRef.current = customMode;
 
   function startCustom(): void {
     setText(String(value));
@@ -1502,6 +1595,15 @@ function PresetSelect({
         if (v === CUSTOM_VALUE) startCustom();
         else onChange(Number(v));
       }}
+      onOpenChange={(open) => {
+        // Radix 的坑：重复「选中当前已选中项」时 onValueChange 不触发
+        // （useControllableState 受控模式下 value2 === prop 就不调 onChange），
+        // 于是第二次点「自定义 · N」既不切自定义态也不关菜单 —— 表现就是「自定义过一次就再也进不去」。
+        // 菜单关闭时兜底：仍处于自定义占位且未进输入态，就强制进输入态。
+        if (!open && !customModeRef.current && !isPresetRef.current) {
+          startCustom();
+        }
+      }}
     >
       <SelectTrigger className="w-28" aria-label={ariaLabel}>
         <SelectValue />
@@ -1514,7 +1616,7 @@ function PresetSelect({
         ))}
         <SelectSeparator />
         <SelectItem value={CUSTOM_VALUE}>
-          {isPreset ? "自定义…" : `自定义 · ${fmt(value)}`}
+          {isPreset ? "自定义…" : `${fmt(value)}·自定义`}
         </SelectItem>
       </SelectContent>
     </Select>

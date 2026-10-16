@@ -7,7 +7,19 @@
  *  3. 「仅音频」不能附带主视频。
  */
 import { describe, expect, it } from "vitest";
-import { buildPlan, buildQualityOptions, buildQualityPlan, summarize } from "../renderer/src/lib/download-plan";
+import {
+  buildFilename,
+  buildPlan,
+  buildQualityOptions,
+  buildQualityPlan,
+  summarize,
+  clampTitle,
+  deriveShape,
+  ellipsizeMiddle,
+  TITLE_MAX_LEN,
+  type FilenameExtra,
+  type FilenamePreset,
+} from "../renderer/src/lib/download-plan";
 import type { ParseData } from "../types/ipc";
 
 const base: ParseData = { title: "示例视频", url: "https://cdn/a.mp4" };
@@ -140,6 +152,162 @@ describe("buildPlan", () => {
   it("无数据 / 无可用媒体 → 空计划（按钮据此禁用，不产生空任务）", () => {
     expect(buildPlan(undefined)).toEqual([]);
     expect(buildPlan({ title: "只有标题" })).toEqual([]);
+  });
+});
+
+describe("buildFilename 命名规则", () => {
+  const ctx = { title: "秋日通勤穿搭", author: "小明", qualitySuffix: "-1080P", ext: ".mp4" };
+  const extra = (quality: boolean, index = false): FilenameExtra => ({ quality, index });
+  const FIXED = new Date(2026, 9, 15); // 2026-10-15（本地时区，避免时区偏移导致跨日）
+
+  it("仅标题：现状行为，不加任何后缀", () => {
+    expect(buildFilename(ctx, { preset: "title", extra: extra(false) })).toBe("秋日通勤穿搭.mp4");
+  });
+
+  it("作者 - 标题 / 标题 - 作者：两个方向", () => {
+    expect(buildFilename(ctx, { preset: "authorTitle", extra: extra(false) })).toBe("小明 - 秋日通勤穿搭.mp4");
+    expect(buildFilename(ctx, { preset: "titleAuthor", extra: extra(false) })).toBe("秋日通勤穿搭 - 小明.mp4");
+  });
+
+  it("标题_日期：日期取入队时刻，格式 YYYYMMDD", () => {
+    expect(buildFilename(ctx, { preset: "titleDate", extra: extra(false) }, FIXED)).toBe(
+      "秋日通勤穿搭_20261015.mp4"
+    );
+  });
+
+  it("缺作者时退化为仅标题，不留空连接符", () => {
+    const noAuthor = { title: "只有标题", ext: ".mp4" };
+    expect(buildFilename(noAuthor, { preset: "authorTitle", extra: extra(false) })).toBe("只有标题.mp4");
+    expect(buildFilename(noAuthor, { preset: "titleAuthor", extra: extra(false) })).toBe("只有标题.mp4");
+  });
+
+  it("空标题回落 media（与旧 buildPlan 的兜底一致）", () => {
+    expect(buildFilename({ title: "", ext: ".jpg" }, { preset: "title", extra: extra(false) })).toBe("media.jpg");
+  });
+
+  it("清晰度开关：关=不加，开=加后缀", () => {
+    expect(buildFilename(ctx, { preset: "title", extra: extra(false) })).toBe("秋日通勤穿搭.mp4");
+    expect(buildFilename(ctx, { preset: "title", extra: extra(true) })).toBe("秋日通勤穿搭-1080P.mp4");
+  });
+
+  it("序号开关：图集 -3 / 分P -P2", () => {
+    const idx = extra(false, true);
+    expect(buildFilename({ ...ctx, indexSuffix: "-3", ext: ".jpg" }, { preset: "title", extra: idx })).toBe(
+      "秋日通勤穿搭-3.jpg"
+    );
+    expect(buildFilename({ ...ctx, indexSuffix: "-P2" }, { preset: "title", extra: idx })).toBe(
+      "秋日通勤穿搭-P2.mp4"
+    );
+  });
+
+  it("两个开关独立叠加：主体 + 清晰度 + 序号", () => {
+    expect(buildFilename({ ...ctx, indexSuffix: "-2" }, { preset: "authorTitle", extra: extra(true, true) })).toBe(
+      "小明 - 秋日通勤穿搭-1080P-2.mp4"
+    );
+  });
+
+  it("标题限长 15 字：只压标题，作者/后缀/扩展名不受限", () => {
+    const longTitle = "秋日通勤穿搭分享第".repeat(20); // 200 字
+    const out = buildFilename(
+      {
+        title: longTitle,
+        author: "小明",
+        qualitySuffix: "-1080P",
+        indexSuffix: "-3",
+        ext: ".mp4",
+      },
+      { preset: "authorTitle", extra: { quality: true, index: true } }
+    );
+    // 标题部分恰好 15 字（含省略号），作者与后缀原样保留
+    expect(out).toBe(`小明 - ${clampTitle(longTitle)}-1080P-3.mp4`);
+    expect(clampTitle(longTitle)).toHaveLength(TITLE_MAX_LEN);
+    expect(out.endsWith("-1080P-3.mp4")).toBe(true);
+    expect(out).toContain("小明"); // 作者没被砍
+    // 限制只作用于标题：200 字的标题被压到 15，作者与后缀原样留下
+    expect(longTitle.length).toBeGreaterThan(80);
+    expect(out).toHaveLength(`小明 - ${clampTitle(longTitle)}-1080P-3.mp4`.length);
+  });
+
+  it("标题未超 15 字则原样保留（不引入省略号）", () => {
+    expect(clampTitle("秋日通勤穿搭")).toBe("秋日通勤穿搭"); // 6 字
+    expect(clampTitle("一二三四五六七八九十")).toBe("一二三四五六七八九十"); // 恰好 10 字
+    const exact = "标".repeat(TITLE_MAX_LEN);
+    expect(clampTitle(exact)).toBe(exact);
+    expect(clampTitle("标".repeat(TITLE_MAX_LEN + 1))).toHaveLength(TITLE_MAX_LEN);
+  });
+
+  it("ellipsizeMiddle：头尾都保留、预算严格、emoji 不劈成半个代理", () => {
+    expect(ellipsizeMiddle("abcdefghij", 20)).toBe("abcdefghij");
+    // 40 字压到 20：走「保留前后 + 省略」分支
+    const mid = ellipsizeMiddle("标题内容".repeat(10), 20);
+    expect(mid).toHaveLength(20);
+    expect(mid).toContain("…");
+    expect(mid.startsWith("标题内容")).toBe(true);
+    expect(mid.endsWith("标题内容")).toBe(true);
+    // 预算小到连省略号都放不下时降级为纯截断（不抛错、不留省略号）
+    const tiny = ellipsizeMiddle("标题内容".repeat(10), 2);
+    expect(tiny).toHaveLength(2);
+    expect(tiny).not.toContain("…");
+    // 切点落在 emoji 中间时，两侧都不留半个代理：
+    // 逐码元判定「高位后必须跟低位」，比正则更直白也更不易写错
+    const withEmoji = ellipsizeMiddle("😀".repeat(20), 20);
+    expect(withEmoji).toContain("…");
+    for (let i = 0; i < withEmoji.length; i++) {
+      const code = withEmoji.charCodeAt(i);
+      if (code >= 0xd800 && code <= 0xdbff) {
+        // 高代理后面必须紧跟低位代理，否则就是半个 emoji
+        expect(withEmoji.charCodeAt(i + 1)).toBeGreaterThanOrEqual(0xdc00);
+        expect(withEmoji.charCodeAt(i + 1)).toBeLessThanOrEqual(0xdfff);
+        i++;
+      } else {
+        expect(code).toBeLessThan(0xd800); // 孤立低代理同样非法
+      }
+    }
+  });
+});
+
+describe("buildPlan 应用命名规则", () => {
+  const data: ParseData = {
+    title: "合集",
+    author: "小明",
+    url: "https://cdn/a.mp4",
+    images: ["https://cdn/1.jpg", "https://cdn/2.jpg"],
+  };
+  const rule = { preset: "authorTitle" as FilenamePreset, extra: { quality: false, index: true } };
+
+  it("规则贯穿视频 / 音频 / 图集三项", () => {
+    const plan = buildPlan({ ...data, audioUrl: "https://cdn/a.mp3" }, undefined, rule);
+    expect(plan.map((p) => p.filename)).toEqual([
+      "小明 - 合集.mp4",
+      "小明 - 合集.mp3",
+      "小明 - 合集-1.jpg",
+      "小明 - 合集-2.jpg",
+    ]);
+  });
+
+  it("缺省 rule = 现状行为（旧调用点与旧配置不变）", () => {
+    expect(buildPlan(data)[0].filename).toBe("合集.mp4");
+    expect(buildPlan(data).find((p) => p.id === "img-1")?.filename).toBe("合集-2.jpg");
+  });
+});
+
+describe("deriveShape 资源形态", () => {
+  it("按实际拿到的媒体数组判形态，不信契约 type", () => {
+    // 抖音图集实测会返回 type:"text"，若按 type 判会错成文字
+    expect(deriveShape({ type: "text", images: ["https://cdn/1.jpg"] })).toBe("gallery");
+    expect(deriveShape({ type: "video", videos: [{ url: "a" }, { url: "b" }] })).toBe("multi-video");
+    expect(deriveShape({ type: "image", url: "https://cdn/a.mp4" })).toBe("single-video");
+    expect(deriveShape({ audioUrl: "https://cdn/a.mp3" })).toBe("audio");
+    expect(deriveShape({ title: "只有文字" })).toBe("text");
+    expect(deriveShape(undefined)).toBe("text");
+  });
+
+  it("单个 videos 项不算多视频（那是主视频的另一种写法）", () => {
+    expect(deriveShape({ url: "https://cdn/a.mp4", videos: [{ url: "https://cdn/a.mp4" }] })).toBe("single-video");
+  });
+
+  it("空 images / 空 videos 数组不改变判定", () => {
+    expect(deriveShape({ url: "https://cdn/a.mp4", images: [], videos: [] })).toBe("single-video");
   });
 });
 

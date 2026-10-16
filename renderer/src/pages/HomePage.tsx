@@ -10,6 +10,7 @@
  * 本页 Textarea 是全应用唯一解析输入面，Ctrl+K 由 App 层跳来并聚焦（inputRef）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import { ArrowUpRight, Download, FileUp, Info, Loader2 } from "lucide-react";
 import { api, BridgeError } from "../lib/bridge";
 import type {
@@ -105,6 +106,7 @@ export default function HomePage({
   tasks,
   inputRef,
   onNav,
+  onOpenSettings,
   clipboardFill,
   onClipboardFillDone,
 }: {
@@ -112,6 +114,11 @@ export default function HomePage({
   /** App 层 Ctrl+K 用的输入框 ref：聚焦首页工作台 */
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   onNav: (p: Page) => void;
+  /**
+   * 打开设置并直达某个分类（结果卡失败态的「去配置 Cookie」用）。
+   * 设置是 App 层的独立模式（不是 Page），故不能走 onNav。
+   */
+  onOpenSettings?: (category: string) => void;
   /** 剪贴板监听命中的链接（main 端已识别）：填入输入框并照常解析 */
   clipboardFill: { url: string; platform: string; seq: number } | null;
   /** 消费后清账（App 层置空，避免重挂载时重放同一条） */
@@ -121,7 +128,6 @@ export default function HomePage({
   const [identifyHint, setIdentifyHint] = useState<string>("");
   const [items, setItems] = useState<BatchItem[]>([]);
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<string>("");
   const [helpOpen, setHelpOpen] = useState(false);
   const [recent, setRecent] = useState<HistoryEntry[]>([]);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -243,23 +249,23 @@ export default function HomePage({
   const onImportFile = useCallback(
     async (f: File) => {
       if (f.size > IMPORT_MAX_BYTES) {
-        setToast("文件超过 1MB，请精简后再导入");
+        toast.error("文件超过 1MB，请精简后再导入");
         return;
       }
       let raw: string;
       try {
         raw = await f.text();
       } catch (e) {
-        setToast(`文件读取失败：${e instanceof Error ? e.message : String(e)}`);
+        toast.error(`文件读取失败：${e instanceof Error ? e.message : String(e)}`);
         return;
       }
       const all = candidateTokens(raw);
       if (all.length === 0) {
-        setToast("文件中未发现有效链接");
+        toast.error("文件中未发现有效链接");
         return;
       }
       if (all.length > IMPORT_MAX_ITEMS) {
-        setToast(`文件含 ${all.length} 条链接，本次仅解析前 ${IMPORT_MAX_ITEMS} 条`);
+        toast.warning(`文件含 ${all.length} 条链接，本次仅解析前 ${IMPORT_MAX_ITEMS} 条`);
       }
       onInput(all.slice(0, IMPORT_MAX_ITEMS).join("\n"));
     },
@@ -279,7 +285,7 @@ export default function HomePage({
     onClipboardFillDone();
     const cur = textRef.current;
     if (cur.trim() !== "" && cur !== autoFilledRef.current) {
-      setToast("输入框有内容，剪贴板链接未填入");
+      toast.info("输入框有内容，剪贴板链接未填入");
       return;
     }
     autoFilledRef.current = clipboardFill.url;
@@ -288,12 +294,6 @@ export default function HomePage({
 
   // 封面/主色上抛已移除（2026-10-15 蓝白指令）：焦点色由「主题风格」整带决定，
   // 不再随解析结果里的封面抽色漂移。
-
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => setToast(""), 4000);
-    return () => clearTimeout(timer);
-  }, [toast]);
 
   // Esc：模态优先（ResultCard 的 Dialog 自己处理）→ 清输入框
   useEffect(() => {
@@ -420,12 +420,6 @@ export default function HomePage({
           </DialogContent>
         </Dialog>
 
-        {toast && (
-          <Alert>
-            <AlertDescription>{toast}</AlertDescription>
-          </Alert>
-        )}
-
         {items.map((item, i) => {
           if (item.status === "pending" && items.length === 1) {
             return (
@@ -476,12 +470,11 @@ export default function HomePage({
               outcome={item.outcome}
               sourceUrl={item.sourceUrl}
               onRetry={() => void parseOne(item.id, item.text, true)}
+              onNavigate={onOpenSettings}
               onQueued={(count) =>
-                setToast(
-                  count > 0
-                    ? `已加入下载队列（${count} 个文件），到「队列」页查看进度`
-                    : "没有可下载的文件"
-                )
+                count > 0
+                  ? toast.success(`已加入下载队列（${count} 个文件），到「队列」页查看进度`)
+                  : toast.warning("没有可下载的文件")
               }
             />
           ) : null;
@@ -517,7 +510,11 @@ export default function HomePage({
         </Card>
       </section>
 
-      <QueueRail tasks={tasks} onShowAll={() => onNav("downloads")} />
+      <QueueRail
+        tasks={tasks}
+        onShowAll={() => onNav("downloads")}
+        onUseExample={(url) => onInput(url)}
+      />
     </div>
   );
 }

@@ -1,11 +1,12 @@
 /**
  * 底部浮层（Radix Dialog 的形态变体）：**没有遮罩**，卡片让开侧栏停在内容区底部。
  * 用法必须配 `modal={false}` —— 否则模态锁会给背景加 pointer-events:none 并 aria-hidden，
- * 上方列表就只剩「看得见」而点不动了。关闭只靠 X / Esc / 再次点行。
+ * 上方列表就只剩「看得见」而点不动了。收起只靠角落按钮 / Esc / 再次点行 ——
+ * 角落那枚给的是 ChevronDown 不是 X：这层只会向下收，图标方向与退场方向一致（业主指令 2026-10-15）。
  */
 import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { X } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { cn } from "~/lib/utils";
 
 const Sheet = DialogPrimitive.Root;
@@ -32,10 +33,11 @@ function SheetContent({
         {children}
         <DialogPrimitive.Close
           data-slot="sheet-close"
+          title="收起"
           className="absolute top-4 right-4 rounded-sm opacity-60 outline-none transition-opacity hover:opacity-100 focus-visible:ring-[3px] focus-visible:ring-ring/50"
         >
-          <X className="size-4" />
-          <span className="sr-only">关闭</span>
+          <ChevronDown className="size-4" />
+          <span className="sr-only">收起</span>
         </DialogPrimitive.Close>
       </DialogPrimitive.Content>
     </DialogPrimitive.Portal>

@@ -13,7 +13,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
 import { api } from "../lib/bridge";
-import { buildPlan, buildQualityPlan, type QualityStrategy, summarize } from "../lib/download-plan";
+import {
+  buildPlan,
+  buildQualityPlan,
+  deriveShape,
+  DEFAULT_FILENAME_EXTRA,
+  type FilenameExtra,
+  type FilenamePreset,
+  type QualityStrategy,
+  type ResourceShape,
+  SHAPE_LABEL,
+  summarize,
+} from "../lib/download-plan";
 import { fmtCount, fmtDuration } from "../lib/format";
 import { buildAuthorSnapshot } from "../lib/work-info";
 import type { ParseRunOutcome } from "../../../types/ipc";
@@ -46,6 +57,7 @@ export function ResultCard({
   sourceUrl,
   onQueued,
   onRetry,
+  onNavigate,
 }: {
   outcome: ParseRunOutcome;
   /** 用户输入的分享链接（写历史用，非直链） */
@@ -53,6 +65,11 @@ export function ResultCard({
   onQueued: (count: number) => void;
   /** 失败态 [重试] / 直链过期后 [重新解析并下载]：由页面重新发起解析 */
   onRetry?: () => void;
+  /**
+   * 失败态「去配置 Cookie」：打开设置并直达分类 id（引擎页 = "engine"）。
+   * 缺省时该按钮不渲染 —— 不给点了没反应的假按钮。
+   */
+  onNavigate?: (category: string) => void;
 }): React.ReactElement {
   const { result, via, fallbackReason, durationMs } = outcome;
   const data = result.data;
@@ -64,13 +81,22 @@ export function ResultCard({
   const [planOpen, setPlanOpen] = useState(false);
   const [previewIdx, setPreviewIdx] = useState<number | null>(null);
   const [reasonOpen, setReasonOpen] = useState(false);
+  const [lyricsOpen, setLyricsOpen] = useState(false);
 
   // 清晰度预选策略（设置→下载）：随每次解析重读，组件复用不重挂载也能拿到最新值
   const [qualityStrategy, setQualityStrategy] = useState<QualityStrategy>("main");
+  // 命名规则同源重读；缺省为「仅标题 + 多文件序号」，与 buildPlan 的 rule 缺省一致
+  const [naming, setNaming] = useState<{ preset: FilenamePreset; extra: FilenameExtra }>({
+    preset: "title",
+    extra: DEFAULT_FILENAME_EXTRA,
+  });
   useEffect(() => {
     void api.settings
       .get()
-      .then((s) => setQualityStrategy(s.defaultQuality))
+      .then((s) => {
+        setQualityStrategy(s.defaultQuality);
+        setNaming({ preset: s.filenamePreset, extra: s.filenameExtra });
+      })
       .catch(() => {});
   }, [outcome]);
 
@@ -102,8 +128,8 @@ export function ResultCard({
   const qualityOptions = qualityPlan.options;
   const activeIdx = Math.min(qualityIdx ?? qualityPlan.primaryIndex, Math.max(0, qualityOptions.length - 1));
   const plan = useMemo(
-    () => buildPlan(data, qualityOptions[activeIdx]),
-    [data, qualityOptions, activeIdx]
+    () => buildPlan(data, qualityOptions[activeIdx], naming),
+    [data, qualityOptions, activeIdx, naming]
   );
   const selected = useMemo(() => plan.filter((p) => !excluded.has(p.id)), [plan, excluded]);
 
@@ -164,37 +190,35 @@ export function ResultCard({
 
   if (result.code !== 200) {
     return (
-      <Card>
-        <CardContent className="flex flex-col gap-3 py-4">
-          <h2 className="font-semibold text-[15px]">解析失败</h2>
-          <p className="flex flex-wrap items-center gap-2 text-sm">
-            {result.msg}
-            {result.failType && <Badge variant="warn">{result.failType}</Badge>}
-          </p>
-          {fallbackReason && <p className="text-xs text-muted-foreground">回落原因：{fallbackReason}</p>}
-          <div className="flex flex-wrap items-center gap-2">
-            {onRetry && (
-              <Button size="sm" variant="outline" onClick={onRetry}>
-                重试
-              </Button>
-            )}
-            <ViaBadge via={via} />
-            <span className="text-xs tabular-nums text-muted-foreground">{fmtDuration(durationMs)}</span>
-          </div>
-        </CardContent>
-      </Card>
+      <ParseFailure
+        msg={result.msg}
+        failType={result.failType}
+        platformName={platformName}
+        fallbackReason={fallbackReason}
+        via={via}
+        durationMs={durationMs}
+        onRetry={onRetry}
+        onOpenSource={sourceUrl ? () => void openExternal(sourceUrl) : undefined}
+        onConfigureCookie={onNavigate ? () => onNavigate("engine") : undefined}
+      />
     );
   }
 
   const images = (data?.images ?? []).filter(Boolean);
   const stats = buildStatItems(data);
   const planSummary = summarize(selected);
+  const shape = deriveShape(data);
 
   return (
     <>
       <Card>
-        <CardContent className="flex flex-col gap-4 py-4">
-          {/* —— 信息层 —— */}
+        {/*
+          三层节奏（2026-10-15）：同层内 gap-2 紧贴成一组，层与层之间 gap-5 拉开。
+          此前所有区块共用 gap-4，视觉上「一片平」，用户找不到主次。
+        */}
+        <CardContent className="flex flex-col gap-5 py-4">
+          {/* —— 第一眼：这是什么（封面 + 标题 + 身份）—— */}
+          <div className="flex flex-col gap-3">
           <div className="flex gap-4">
             {data?.cover && (
               <img
@@ -209,6 +233,7 @@ export function ResultCard({
                 <h2 className="truncate font-semibold text-[15px]">{data?.title || data?.desc || "（无标题）"}</h2>
               </TruncatedTooltip>
               <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                <Badge variant="secondary">{SHAPE_LABEL[shape]}</Badge>
                 {platformName && (
                   <Badge variant="outline" className="gap-1.5 ps-1">
                     <PlatformIcon platform={result.platform} />
@@ -233,7 +258,14 @@ export function ResultCard({
                     {Math.round((data.duration > 100000 ? data.duration / 1000 : data.duration))}s
                   </span>
                 )}
-                {data?.type && <Badge variant="secondary">{typeLabel(data.type)}</Badge>}
+                {/*
+                  type 徽标只在它表达了形态徽标没说的东西时才显示。
+                  「视频/单视频」「图集/图集」这类是同一件事的两种说法，同行双标签纯属噪音；
+                  music 之类形态徽标覆盖不到的（或未知新平台值）仍要露出。
+                */}
+                {data?.type && !(TYPE_COVERED_BY_SHAPE[data.type] ?? []).includes(shape) && (
+                  <Badge variant="secondary">{typeLabel(data.type)}</Badge>
+                )}
               </div>
               {stats.length > 0 && (
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs tabular-nums text-muted-foreground">
@@ -258,39 +290,78 @@ export function ResultCard({
               )}
             </div>
           </div>
+          </div>
 
+          {/* —— 第二眼：值不值得下（描述 + 形态专属区块）—— */}
+          <div className="flex flex-col gap-3">
           {data?.desc && data.desc !== data.title && (
             <TruncatedTooltip label={data.desc} contentClassName="max-w-96">
               <p className="line-clamp-3 text-xs leading-relaxed text-muted-foreground">{data.desc}</p>
             </TruncatedTooltip>
           )}
 
-          {images.length > 0 && (
-            <ul className="grid grid-cols-4 gap-2">
-              {images.slice(0, 8).map((src, i) => (
-                <li key={i}>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <button
-                        type="button"
-                        onClick={() => setPreviewIdx(i)}
-                        aria-label={`查看第 ${i + 1} 张图`}
-                        className="relative block aspect-square w-full overflow-hidden rounded-md border border-border outline-none transition-all hover:border-ring hover:shadow-sm focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                      >
-                        <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" className="size-full object-cover" />
-                        {i === 7 && images.length > 8 && (
-                          <span className="absolute inset-0 flex items-center justify-center bg-[var(--overlay)] text-sm font-medium text-popover-foreground">
-                            +{images.length - 8}
-                          </span>
-                        )}
-                      </button>
-                    </TooltipTrigger>
-                    <TooltipContent>查看第 {i + 1} 张图</TooltipContent>
-                  </Tooltip>
+          {/* —— 形态专属区块：只有对应形态出现，插在摘要与选择层之间 —— */}
+          {shape === "gallery" && <GalleryBlock images={images} onPreview={setPreviewIdx} />}
+
+          {shape === "audio" && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-3 py-2 text-xs">
+              {data?.music?.author && (
+                <span className="font-medium">
+                  ♪ {data.music.author}
+                  {data.music.title ? ` - ${data.music.title}` : ""}
+                </span>
+              )}
+              {data?.lyrics && (
+                <button
+                  type="button"
+                  onClick={() => setLyricsOpen((v) => !v)}
+                  className="text-muted-foreground underline-offset-2 hover:underline"
+                >
+                  {lyricsOpen ? "收起歌词" : "查看歌词"}
+                </button>
+              )}
+            </div>
+          )}
+          {shape === "audio" && lyricsOpen && data?.lyrics && (
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+              {data.lyrics}
+            </pre>
+          )}
+
+          {shape === "multi-video" && (
+            <ol className="flex flex-col gap-1.5">
+              {(data?.videos ?? []).map((v, i) => (
+                <li key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] tabular-nums">
+                    {i + 1}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{v.title || `分 P ${i + 1}`}</span>
+                  {v.durationFormat && <span className="shrink-0 tabular-nums">{v.durationFormat}</span>}
                 </li>
               ))}
-            </ul>
+            </ol>
           )}
+
+          {shape === "text" && (
+            <div className="flex flex-col gap-2 rounded-md border border-dashed border-border px-3 py-4 text-center">
+              <p className="text-xs text-muted-foreground">纯文字内容，没有可下载的文件</p>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => void copyText(data?.title ?? data?.desc ?? "")}>
+                  复制文字
+                </Button>
+                {sourceUrl && (
+                  <Button size="sm" variant="outline" onClick={() => void openExternal(sourceUrl)}>
+                    <ExternalLink />
+                    打开原页面
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+          </div>
+
+          {/* —— 操作区：与上方信息拉开，不让清单和介绍黏在一起 —— */}
+          <Separator />
 
           {/* —— 选择层：清晰度（队列状态不锁它，换清晰度是为了再下一份）—— */}
           {qualityOptions.length > 1 && (
@@ -312,7 +383,6 @@ export function ResultCard({
           )}
 
           {/* —— 下载清单层：点之前就知道会得到什么 —— */}
-          <Separator />
           <div className="flex flex-col gap-2">
             <button
               type="button"
@@ -493,9 +563,201 @@ const TYPE_LABEL: Record<string, string> = {
   video: "视频",
   image: "图集",
   music: "音乐",
-  text: "图文",
+  text: "文字",
 };
 
 function typeLabel(type: string): string {
   return TYPE_LABEL[type] ?? type;
+}
+
+/**
+ * 契约 type → 它已被哪些形态徽标覆盖（覆盖了就不再重复显示 type 徽标）。
+ *
+ * 注意 type 是平台各填的、不可靠（实测抖音图集会填 text），所以这里只用来**去重**，
+ * 绝不参与形态判定（那是 deriveShape 按实际媒体数组算的）。
+ * music 故意不入表：形态里没有「音乐」，它的信息不能被吞掉。
+ */
+const TYPE_COVERED_BY_SHAPE: Record<string, ResourceShape[]> = {
+  video: ["single-video", "multi-video"],
+  image: ["gallery", "multi-video"],
+  text: ["text"],
+};
+
+/** 图集形态的主视觉：缩略网格 + 大图预览（Radix Dialog 接管 Esc 与焦点） */
+function GalleryBlock({
+  images,
+  onPreview,
+}: {
+  images: string[];
+  onPreview: (i: number) => void;
+}): React.ReactElement {
+  return (
+    <ul className="grid grid-cols-4 gap-2">
+      {images.slice(0, 8).map((src, i) => (
+        <li key={i}>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => onPreview(i)}
+                aria-label={`查看第 ${i + 1} 张图`}
+                className="relative block aspect-square w-full overflow-hidden rounded-md border border-border outline-none transition-all hover:border-ring hover:shadow-sm focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
+                <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" className="size-full object-cover" />
+                {i === 7 && images.length > 8 && (
+                  <span className="absolute inset-0 flex items-center justify-center bg-[var(--overlay)] text-sm font-medium text-popover-foreground">
+                    +{images.length - 8}
+                  </span>
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>查看第 {i + 1} 张图</TooltipContent>
+          </Tooltip>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** 打开外链：统一走 shell（renderer 不自己 window.open） */
+async function openExternal(url: string): Promise<void> {
+  try {
+    await api.app.openExternal(url);
+  } catch {
+    /* 打不开就保持现状，不弹错打断用户 */
+  }
+}
+
+/** 复制纯文字内容到剪贴板 */
+async function copyText(text: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    /* 剪贴板被拒时静默：内容已在页面上，用户可以手选 */
+  }
+}
+
+/**
+ * 解析失败态：按 failType 给「下一步做什么」，而不是只回一句 msg。
+ *
+ * 契约的 failType 是内核分好类的（mediaGet CLAUDE.md：bot-gated / sources-down /
+ * source-unavailable / script-error），此前界面完全没用它 —— 结果是用户看到一句
+ * 「解析失败」不知道该重试、该换链接，还是该去配 Cookie。
+ */
+const FAILURE_GUIDE: Record<
+  string,
+  { title: string; hint: string; actions: Array<"retry" | "browser" | "cookie"> }
+> = {
+  "bot-gated": {
+    title: "平台要求登录或验证",
+    hint: "内容对游客有限制，不是软件故障。在引擎页配置该平台 Cookie 后通常可解析。",
+    actions: ["cookie", "browser", "retry"],
+  },
+  "sources-down": {
+    title: "解析接口暂时不可用",
+    hint: "上游接口网络异常或风控，稍后重试一般会好。",
+    actions: ["retry", "browser"],
+  },
+  "source-unavailable": {
+    title: "内容已失效或需要权限",
+    hint: "原内容可能已删除、转为私密，或需要会员权限。",
+    actions: ["browser"],
+  },
+  "script-error": {
+    title: "解析脚本出错",
+    hint: "平台页面结构可能已变更，可重试一次；持续出现请反馈。",
+    actions: ["retry", "browser"],
+  },
+};
+
+function ParseFailure({
+  msg,
+  failType,
+  platformName,
+  fallbackReason,
+  via,
+  durationMs,
+  onRetry,
+  onOpenSource,
+  onConfigureCookie,
+}: {
+  msg: string;
+  failType?: string;
+  platformName: string;
+  fallbackReason?: string;
+  via: "local" | "online" | "mock";
+  durationMs: number;
+  onRetry?: () => void;
+  onOpenSource?: () => void;
+  onConfigureCookie?: () => void;
+}): React.ReactElement {
+  const guide = failType ? FAILURE_GUIDE[failType] : undefined;
+  const [detailOpen, setDetailOpen] = useState(false);
+
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-3 py-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="font-semibold text-[15px]">{guide?.title ?? "解析失败"}</h2>
+          {platformName && (
+            <Badge variant="outline" className="gap-1.5">
+              {platformName}
+            </Badge>
+          )}
+          {failType && <Badge variant="warn">{failType}</Badge>}
+        </div>
+
+        <p className="text-sm text-muted-foreground">{guide?.hint ?? msg}</p>
+
+        {/* 原始 msg 始终可达：guide 覆盖的是「人话」，底层原因不能藏起来 */}
+        {guide && (
+          <button
+            type="button"
+            onClick={() => setDetailOpen((v) => !v)}
+            className="flex items-center gap-1 self-start text-xs text-muted-foreground underline-offset-2 hover:underline"
+          >
+            {detailOpen ? "收起技术详情" : "技术详情"}
+            {detailOpen ? <ChevronUp className="size-3" /> : <ChevronDown className="size-3" />}
+          </button>
+        )}
+        {detailOpen && (
+          <p className="rounded-md bg-muted/50 px-2.5 py-2 font-mono text-xs break-all text-muted-foreground">
+            {msg}
+          </p>
+        )}
+
+        {fallbackReason && (
+          <p className="text-xs text-muted-foreground">
+            本地内核不可用，已走线上回落：{fallbackReason}
+          </p>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          {guide?.actions.includes("retry") && onRetry && (
+            <Button size="sm" onClick={onRetry}>
+              重试
+            </Button>
+          )}
+          {guide?.actions.includes("cookie") && onConfigureCookie && (
+            <Button size="sm" variant="outline" onClick={onConfigureCookie}>
+              去配置 Cookie
+            </Button>
+          )}
+          {guide?.actions.includes("browser") && onOpenSource && (
+            <Button size="sm" variant="outline" onClick={onOpenSource}>
+              <ExternalLink />
+              在浏览器打开
+            </Button>
+          )}
+          {!guide && onRetry && (
+            <Button size="sm" variant="outline" onClick={onRetry}>
+              重试
+            </Button>
+          )}
+          <ViaBadge via={via} />
+          <span className="text-xs tabular-nums text-muted-foreground">{fmtDuration(durationMs)}</span>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }

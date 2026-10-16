@@ -92,15 +92,195 @@ export function buildQualityOptions(data?: ParseData): QualityOption[] {
 }
 
 /**
+ * 命名规则（设置 → 下载 → 文件命名）。
+ *
+ * 拆成「主体预设 + 追加开关」两段而不是一整个模板串：预设是有限枚举（可下拉、可
+ * 在设置里给出人话示例），开关是独立布尔（可开关、可单独预览）。日期归入 titleDate 预设
+ * 而非开关 —— 否则「加日期」与「标题_日期」两个概念会打架。
+ */
+export type FilenamePreset = "title" | "authorTitle" | "titleAuthor" | "titleDate";
+
+export interface FilenameExtra {
+  /** 清晰度后缀（如 `-1080P`）；默认开 —— 现状主视频文件名就带该后缀，关掉才是行为变更 */
+  quality: boolean;
+  /** 多文件序号（图集 `-3`、分P `-P2`）；默认开，与现状一致 */
+  index: boolean;
+}
+
+export const DEFAULT_FILENAME_EXTRA: FilenameExtra = { quality: true, index: true };
+
+/**
+ * 标题限长上限（占整个文件名长度的部分）。
+ *
+ * 只管标题：作者、后缀、扩展名不参与这个预算 —— 它们是「附加信息」，砍标题能解决
+ * 「名字长得没法看」的问题，砍附加信息反而丢关键上下文（清晰度、期数）。
+ */
+export const TITLE_MAX_LEN = 15;
+
+/** 超长时的省略标记：1 个字符，计入长度预算 */
+const ELLIPSIS = "…";
+
+/**
+ * 超长限长：保留前后、中间省略。
+ *
+ * 为什么不用尾部硬砍：标题的开头通常是主题（「秋日通勤穿搭…），结尾常有信息量
+ * （清晰度、期数、关键结论）。砍尾会把结尾一起丢掉，而且砍掉的量不可控。
+ *
+ * 切点可能落在代理对中间（emoji 占两个 UTF-16 码元），半个高/低代理会显示成乱码，
+ * 所以两侧都要 trimLoneSurrogate —— 净化阶段虽会删掉 emoji，但预览与结果卡先显示着。
+ */
+export function ellipsizeMiddle(s: string, maxLen: number): string {
+  if (s.length <= maxLen) return s;
+  const budget = maxLen - ELLIPSIS.length;
+  if (budget < 2) {
+    // 连省略号都放不下（极端 maxLen），退化为纯截断，别在这里抛错
+    return s.slice(0, Math.max(0, maxLen));
+  }
+  // 尾部略多于头部：结尾的信息通常更关键（清晰度/期数/年份）
+  const tail = Math.ceil(budget / 2);
+  const head = budget - tail;
+  return `${trimLoneSurrogate(s.slice(0, head), "end")}${ELLIPSIS}${trimLoneSurrogate(
+    s.slice(s.length - tail),
+    "start"
+  )}`;
+}
+
+/**
+ * 切点可能落在代理对中间（emoji 占两个 UTF-16 码元），半个高/低代理会显示成乱码。
+ * 净化阶段会删掉 emoji，但预览与结果卡先显示着，不能等 sanitize 兜底。
+ */
+function trimLoneSurrogate(chunk: string, edge: "start" | "end"): string {
+  if (!chunk) return chunk;
+  if (edge === "end") {
+    const code = chunk.charCodeAt(chunk.length - 1);
+    // 结尾落在一个高代理（emoji 的前半）上 → 去掉它
+    if (code >= 0xd800 && code <= 0xdbff) return chunk.slice(0, -1);
+    return chunk;
+  }
+  const code = chunk.charCodeAt(0);
+  // 开头是一个低代理（说明切开了它前面那个高代理）→ 连它一起去掉
+  if (code >= 0xdc00 && code <= 0xdfff) return chunk.slice(1);
+  return chunk;
+}
+
+/** 标题超长时压到 TITLE_MAX_LEN 之内（保留前后、中间省略）；未超长原样返回 */
+export function clampTitle(title: string): string {
+  return ellipsizeMiddle(title, TITLE_MAX_LEN);
+}
+
+/** 标题与作者都缺时的兜底主体（现状 buildPlan 里的 "media"） */
+const FALLBACK_TITLE = "media";
+
+/** 日期取本地日历日，不带时分秒：文件名里的日期只需要到天 */
+function yyyymmdd(d: Date): string {
+  const p = (n: number): string => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`;
+}
+
+/** 拼接下载文件名。
+ *
+ * 只负责「拼」，不负责「洗」：Windows 非法字符 / 表情 / 保留名一律由主进程入队时的
+ * `sanitizeWithExt` 兜底（净化规则单一真源在 mediaGet 内核的 utils/filename.ts，
+ * 勿在客户端复制那套规则）。
+ *
+ * 限长也在这里做掉，但**只限标题**（clampTitle，15 字）：结果卡要显示「用户最终会看到的
+ * 名字」，若留到主进程再砍，显示名就会和落盘名对不上（docs/UIUX-DESIGN.md 记过这个坑）。
+ */
+export function buildFilename(
+  ctx: {
+    /** 标题（可空，走了 PADDING_FALLBACK 的值） */
+    title: string;
+    /** 作者（可空：部分平台不返回，退化成仅标题而不是留一个空 ` - `） */
+    author?: string;
+    /** 清晰度后缀，形如 `-1080P`；由调用方决定是否附加 */
+    qualitySuffix?: string;
+    /** 序号后缀，形如 `-3` / `-P2`；多文件项才有 */
+    indexSuffix?: string;
+    /** 扩展名，含点，如 `.mp4` */
+    ext: string;
+  },
+  rule: { preset: FilenamePreset; extra: FilenameExtra },
+  /** 日期注入点：便于测试固定值，缺省取当前时刻（入队时刻） */
+  now: Date = new Date()
+): string {
+  // 标题先压到 15 字再参与拼接：主体里出现的每一处标题都该同样限长，
+  // 否则「作者 - 长标题」里的长标题会把整体重新撑长
+  const title = clampTitle(ctx.title.trim() || FALLBACK_TITLE);
+  const author = ctx.author?.trim() ?? "";
+
+  let stem: string;
+  switch (rule.preset) {
+    case "authorTitle":
+      stem = author ? `${author} - ${title}` : title;
+      break;
+    case "titleAuthor":
+      stem = author ? `${title} - ${author}` : title;
+      break;
+    case "titleDate":
+      stem = `${title}_${yyyymmdd(now)}`;
+      break;
+    case "title":
+    default:
+      stem = title;
+      break;
+  }
+
+  if (rule.extra.quality && ctx.qualitySuffix) stem += ctx.qualitySuffix;
+  if (rule.extra.index && ctx.indexSuffix) stem += ctx.indexSuffix;
+
+  return `${stem}${ctx.ext}`;
+}
+
+/**
+ * 资源形态：决定结果卡长什么样。
+ *
+ * 为什么不直接用契约的 `data.type`：那个字段是平台各自填的，同一形态在不同平台会填出
+ * 不同值（抖音图集见过返回 `text`），不可作为布局依据。这里只认**实际拿到的媒体数组**——
+ * 用户最终下到什么东西，卡片就该按那个东西组织。
+ */
+export type ResourceShape =
+  | "single-video"
+  | "multi-video"
+  | "gallery"
+  | "audio"
+  | "text";
+
+export const SHAPE_LABEL: Record<ResourceShape, string> = {
+  "single-video": "单视频",
+  "multi-video": "多视频",
+  gallery: "图集",
+  audio: "音频",
+  text: "文字",
+};
+
+export function deriveShape(data?: ParseData): ResourceShape {
+  if (!data) return "text";
+  const videos = (data.videos ?? []).filter((v) => Boolean(v.url));
+  const images = (data.images ?? []).filter(Boolean);
+  if (videos.length > 1) return "multi-video";
+  if (images.length > 0) return "gallery";
+  if (data.audioUrl && !data.url && videos.length === 0) return "audio";
+  if (data.url || videos.length === 1) return "single-video";
+  return "text";
+}
+
+/**
  * 展开下载计划。未指定清晰度 = 用默认项（而不是「什么都不下」）。
  *
  * 多 P（bilibili 等）按选中清晰度在同 label 的 qualities 里取；取不到不静默：
  * 回落默认并写 fallbackNote。
  */
-export function buildPlan(data: ParseData | undefined, sel?: QualityOption): PlanEntry[] {
+export function buildPlan(
+  data: ParseData | undefined,
+  sel?: QualityOption,
+  rule?: { preset: FilenamePreset; extra: FilenameExtra }
+): PlanEntry[] {
   if (!data) return [];
   const chosen = sel ?? defaultOption(data);
-  const title = data.title || data.desc || data.name || "media";
+  const title = data.title || data.desc || data.name || FALLBACK_TITLE;
+  // 规则缺省 = 现状行为（仅标题 + 清晰度档位后缀 + 多文件序号），保证旧调用点与旧测试不变
+  const naming = rule ?? { preset: "title" as FilenamePreset, extra: DEFAULT_FILENAME_EXTRA };
+  const author = data.author;
   const out: PlanEntry[] = [];
 
   const mainUrl = chosen.url ?? data.url;
@@ -110,7 +290,10 @@ export function buildPlan(data: ParseData | undefined, sel?: QualityOption): Pla
       label: `视频 · ${chosen.label}`,
       kind: "video",
       url: mainUrl,
-      filename: `${title}${chosen.suffix}.mp4`,
+      filename: buildFilename(
+        { title, author, qualitySuffix: chosen.suffix, ext: ".mp4" },
+        naming
+      ),
     });
   }
 
@@ -121,7 +304,7 @@ export function buildPlan(data: ParseData | undefined, sel?: QualityOption): Pla
       label: "音频",
       kind: "audio",
       url: data.audioUrl as string,
-      filename: `${title}.mp3`,
+      filename: buildFilename({ title, author, ext: ".mp3" }, naming),
     });
   }
 
@@ -136,7 +319,16 @@ export function buildPlan(data: ParseData | undefined, sel?: QualityOption): Pla
       label: `分 P ${i + 1}${v.title ? ` · ${v.title}` : ""}`,
       kind: "video",
       url,
-      filename: `${title}-P${i + 1}${hit ? chosen.suffix : ""}.mp4`,
+      filename: buildFilename(
+        {
+          title,
+          author,
+          qualitySuffix: hit ? chosen.suffix : undefined,
+          indexSuffix: `-P${i + 1}`,
+          ext: ".mp4",
+        },
+        naming
+      ),
       fallbackNote: wanted && !hit ? `无 ${wanted}，用默认清晰度` : undefined,
     });
   });
@@ -148,7 +340,10 @@ export function buildPlan(data: ParseData | undefined, sel?: QualityOption): Pla
       label: `图 ${i + 1}/${(data.images ?? []).length}`,
       kind: "image",
       url: img,
-      filename: `${title}-${i + 1}.jpg`,
+      filename: buildFilename(
+        { title, author, indexSuffix: `-${i + 1}`, ext: ".jpg" },
+        naming
+      ),
     });
   });
 
