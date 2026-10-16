@@ -138,9 +138,14 @@ export default function HomePage({
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...up } : it)));
   }, []);
 
-  /** 单条解析（批内逐条调用；结果卡 [重试] 也走它） */
+  /**
+   * 单条解析（批内逐条调用；结果卡与失败卡的 [重试] 都走它，`retry=true`）。
+   * 重试必须带 `forceOnline`：主进程有 24h 结果缓存，而 CDN 直链 5 分钟就过期——
+   * 不带的话重试永远拿回同一条过期直链，用户怎么点都是同一个错。
+   * （契约字段自 v1 就有、主进程一直在听，此前缺的只是渲染层这一传。）
+   */
   const parseOne = useCallback(
-    async (id: number, source: string) => {
+    async (id: number, source: string, retry = false) => {
       patchItem(id, { status: "pending", outcome: undefined, error: undefined });
       let sourceUrl: string | undefined;
       try {
@@ -149,7 +154,7 @@ export default function HomePage({
         // identify 只服务 sourceUrl 落历史，失败不拦解析
       }
       try {
-        const r = await api.parse({ text: source });
+        const r = await api.parse(retry ? { text: source, forceOnline: true } : { text: source });
         patchItem(id, { status: "done", outcome: r, sourceUrl });
       } catch (e) {
         patchItem(id, {
@@ -461,7 +466,7 @@ export default function HomePage({
               <Alert key={item.id} variant="destructive">
                 <AlertDescription className="flex flex-wrap items-center gap-2">
                   <span className="min-w-0 flex-1">{item.error}</span>
-                  <Button size="sm" variant="outline" onClick={() => void parseOne(item.id, item.text)}>
+                  <Button size="sm" variant="outline" onClick={() => void parseOne(item.id, item.text, true)}>
                     重试
                   </Button>
                 </AlertDescription>
@@ -474,7 +479,7 @@ export default function HomePage({
               outcome={item.outcome}
               meta={meta}
               sourceUrl={item.sourceUrl}
-              onRetry={() => void parseOne(item.id, item.text)}
+              onRetry={() => void parseOne(item.id, item.text, true)}
               onQueued={(count) =>
                 setToast(
                   count > 0
