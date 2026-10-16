@@ -20,14 +20,29 @@
  * - 无 manifest（dev 用户自备、旧包）→ 只定位不校验，并在日志明示降级。
  *   降级不是隐形的：`describe()` 把每个二进制的实际强度报给设置页。
  *
- * 性能约定：sha256 是同步 CPU 操作，ffmpeg 79 MB ≈ 107 ms。`locate()` 在每次
- * 解析前都会被内核配置读取路径调到，故这里按 `路径 + size + mtimeMs` 记忆化
- * 校验结果 —— 同一份文件只算一次；文件被替换（size/mtime 变）自动失效重算。
- * 不做记忆化会让主进程在首次解析时同步卡住上百毫秒。
+ * 性能约定：sha256 是同步 CPU 操作，ffmpeg 82.8 MB 本机实测 110.8 ms（读 48.6 +
+ * 算 62.2），yt-dlp 17.8 MB 24.3 ms。这段计算发生在**建窗之前**（index.ts 顶层
+ * publishKernelEnv）与首帧的 `app:getMeta` 里，每次启动都付一遍就是白扣的启动延迟。
+ * 两层记忆化把它压成「每台机器一次」：
+ * - 进程内：`verifyCache` 按 `路径 + size + mtimeMs` 记结论；
+ * - 跨进程：`<userData>/bin/verify.json` 落同一把尺（路径 + size + mtimeMs +
+ *   当时的期望哈希），命中即免哈希。期望哈希变了（升 manifest）或文件被换
+ *   （size/mtime 变）自动失效重算。
+ * 这份磁盘记忆的强度与进程内记忆**完全一致**：它证明的是「这个路径的这个
+ * size+mtime 曾对这条基线校验通过」，挡得住截断下载与意外损坏，挡不住能同时
+ * 改写二进制和这个 json 的本机攻击者 —— 那是威胁模型之外（本机已沦陷时
+ * Cookie 也在盘上）。校验失败仍按拒绝使用处理，不让「记过」冒充「验过」。
  */
 import { createHash } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 
 export type BinName = "yt-dlp" | "ffmpeg";
 
@@ -62,6 +77,19 @@ export interface ResolvedBin {
   /** 来源：user=用户自备 / extracted=首启释放 / packaged=直接使用（dev） */
   origin: "user" | "extracted" | "packaged";
 }
+
+/**
+ * 跨进程校验记忆的一条记录：`<userData>/bin/verify.json`
+ * `{ "ffmpeg": { path, size, mtimeMs, expected } }`。
+ * 四个字段全对上才免哈希，任一不符即重算（升基线 / 换文件都会失效）。
+ */
+interface VerifyRecord {
+  path: string;
+  size: number;
+  mtimeMs: number;
+  expected: string;
+}
+type VerifyMemo = Partial<Record<BinName, VerifyRecord>>;
 
 /** 单个二进制的可汇报状态（设置页 / 日志用，如实反映校验强度） */
 export interface BinStatus {
@@ -108,6 +136,53 @@ export function createResources(deps: ResourcesDeps) {
    */
   const verifyCache = new Map<string, boolean>();
 
+  /**
+   * 跨进程的校验记忆（<userData>/bin/verify.json，每档二进制只留最近一条）。
+   * 读失败/坏 JSON 一律按「没有记忆」处理：这层是启动加速，不是校验本身。
+   */
+  const memoFile = join(binDir, "verify.json");
+  let memo: VerifyMemo | null = null;
+
+  function readMemo(): VerifyMemo {
+    if (memo) return memo;
+    try {
+      memo = JSON.parse(readFileSync(memoFile, "utf8")) as VerifyMemo;
+    } catch {
+      memo = {};
+    }
+    return memo;
+  }
+
+  /** 记忆命中 = 路径与期望基线都对得上，且文件的 size+mtime 与记录时一致 */
+  function memoHit(name: BinName, path: string, expected: string): boolean {
+    const rec = readMemo()[name];
+    if (!rec || rec.expected !== expected || rec.path !== path) return false;
+    try {
+      const st = statSync(path);
+      return st.isFile() && st.size === rec.size && st.mtimeMs === rec.mtimeMs;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 记账（只在通过时写：失败结论不值得留给下次启动） */
+  function memoPut(name: BinName, path: string, expected: string): void {
+    let st: ReturnType<typeof statSync>;
+    try {
+      st = statSync(path);
+    } catch {
+      return;
+    }
+    if (!st.isFile()) return;
+    readMemo()[name] = { path, size: st.size, mtimeMs: st.mtimeMs, expected };
+    try {
+      mkdirSync(dirname(memoFile), { recursive: true });
+      writeFileSync(memoFile, JSON.stringify(memo, null, 2), "utf8");
+    } catch {
+      /* 写不进去只影响下次启动的耗时，不影响本次校验结论 */
+    }
+  }
+
   function cacheKey(name: BinName, path: string): string | null {
     try {
       const st = statSync(path);
@@ -139,6 +214,10 @@ export function createResources(deps: ResourcesDeps) {
         mkdirSync(binDir, { recursive: true });
         try {
           copyFileSync(src, local);
+          // 源已按基线验过、字节是我们自己复制的，副本无需再哈希一遍；
+          // 直接把「已校验」记到副本身份上，下次启动 locate 命中即走。
+          const expected = deps.expectedHashes?.[name];
+          if (expected) memoPut(name, local, expected);
           return { name, path: local, origin: "extracted" };
         } catch {
           // 释放失败直接用 packaged（asar.unpacked 场景可读）
@@ -171,6 +250,11 @@ export function createResources(deps: ResourcesDeps) {
       const hit = verifyCache.get(key);
       if (hit !== undefined) return hit;
     }
+    // 进程内没记到，再看上一次启动记没记到（命中即省掉上百毫秒的同步哈希）
+    if (memoHit(name, path, expected)) {
+      if (key) verifyCache.set(key, true);
+      return true;
+    }
     let ok: boolean;
     try {
       const actual = hashFile(path);
@@ -185,6 +269,7 @@ export function createResources(deps: ResourcesDeps) {
       ok = false;
     }
     if (key) verifyCache.set(key, ok);
+    if (ok) memoPut(name, path, expected);
     return ok;
   }
 

@@ -7,7 +7,7 @@
  *  - 无 manifest → 降级放行，verified=false，并打印降级日志（不假装校验过）。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -260,5 +260,106 @@ describe("createResources().locate 健壮性（防「目录当二进制」与热
 
     // 且总量是「每路径一次」量级，而不是「每调用一次」
     expect(afterSix).toBeLessThanOrEqual(2);
+  });
+});
+
+/**
+ * 跨进程校验记忆（<userData>/bin/verify.json）。
+ *
+ * 加它的理由是本机实测的数字：ffmpeg 82.8 MB 同步哈希 110.8 ms、yt-dlp 17.8 MB
+ * 24.3 ms，而这段计算落在**建窗之前**（index.ts 顶层 publishKernelEnv）——
+ * 进程内记忆化只能保住一次启动，每次冷启动仍白扣 ~135 ms。这几条用例钉住的是
+ * 「记忆只在身份相符时有效」这一面：省时间不能省成「把上一次的结论当永久的」。
+ */
+describe("createResources() 跨进程校验记忆", () => {
+  const bin = (name: "yt-dlp" | "ffmpeg") =>
+    join(userDataDir, "bin", process.platform === "win32" ? `${name}.exe` : name);
+
+  function counting(expected: Record<string, string>, counter: { n: number }) {
+    return createResources({
+      userDataDir,
+      packagedDir,
+      readKernelConfig: () => undefined,
+      expectedHashes: expected,
+      hashFile: (p) => {
+        counter.n += 1;
+        return createHashReal("sha256").update(readFileSync(p)).digest("hex");
+      },
+    });
+  }
+
+  it("第二次启动不再哈希同一份文件（启动路径上的同步 sha256 每台机器只付一次）", () => {
+    const src = fakeBin(packagedDir, "ffmpeg", "BIG");
+    const expected = sha256File(src);
+    const hashes = { n: 0 };
+    const first = counting({ ffmpeg: expected }, hashes);
+    expect(first.locate("ffmpeg")?.origin).toBe("extracted");
+    const afterFirst = hashes.n;
+    expect(afterFirst).toBeGreaterThan(0);
+
+    // 新实例 = 新的一次启动：进程内缓存归零，磁盘记忆必须顶上
+    const second = counting({ ffmpeg: expected }, hashes);
+    expect(second.locate("ffmpeg")?.origin).toBe("extracted");
+    expect(hashes.n).toBe(afterFirst); // 一次都没多算
+    expect(existsSync(join(userDataDir, "bin", "verify.json"))).toBe(true);
+  });
+
+  it("释放的副本直接记账，不再对副本复算一遍（首启 = 源一次，而不是源 + 副本两次）", () => {
+    const src = fakeBin(packagedDir, "yt-dlp", "GOOD");
+    const hashes = { n: 0 };
+    const r = counting({ "yt-dlp": sha256File(src) }, hashes);
+    const hit = r.locate("yt-dlp");
+    expect(hit?.path).toBe(bin("yt-dlp"));
+    expect(hashes.n).toBe(1); // 只验了随包源
+    expect(sha256File(hit!.path)).toBe(sha256File(src)); // 副本字节确实对得上
+  });
+
+  it("文件被换过（size/mtime 变）→ 记忆失效重算，并按不匹配拒绝", () => {
+    const src = fakeBin(packagedDir, "ffmpeg", "BIG");
+    const expected = sha256File(src);
+    const hashes = { n: 0 };
+    counting({ ffmpeg: expected }, hashes).locate("ffmpeg");
+    const afterFirst = hashes.n;
+
+    writeFileSync(bin("ffmpeg"), "TRUNCATED-BY-BAD-COPY"); // 半截副本：size 变了
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const again = counting({ ffmpeg: expected }, hashes);
+    expect(again.locate("ffmpeg")).toBeNull();
+    expect(hashes.n).toBeGreaterThan(afterFirst); // 没有把旧结论当免检
+    expect(again.describe().find((s) => s.name === "ffmpeg")?.integrity).toBe("rejected");
+    expect(warn.mock.calls.some((c) => String(c[0]).includes("不匹配，拒绝使用"))).toBe(true);
+  });
+
+  it("升基线（manifest 换了哈希）→ 记忆按期望值作废，重算后才认", () => {
+    const src = fakeBin(packagedDir, "yt-dlp", "GOOD");
+    const hashes = { n: 0 };
+    counting({ "yt-dlp": sha256File(src) }, hashes).locate("yt-dlp");
+    const afterFirst = hashes.n;
+
+    const other = createHashReal("sha256").update("ANOTHER-BUILD").digest("hex");
+    const upgraded = counting({ "yt-dlp": other }, hashes);
+    expect(upgraded.locate("yt-dlp")).toBeNull(); // 新基线不匹配 → 拒用（旧记忆救不了它）
+    expect(hashes.n).toBeGreaterThan(afterFirst);
+  });
+
+  it("verify.json 是坏 JSON → 按「没有记忆」处理，校验照做、定位照给", () => {
+    const src = fakeBin(packagedDir, "ffmpeg", "BIG");
+    const expected = sha256File(src);
+    const hashes = { n: 0 };
+    counting({ ffmpeg: expected }, hashes).locate("ffmpeg");
+    mkdirSync(join(userDataDir, "bin"), { recursive: true });
+    writeFileSync(join(userDataDir, "bin", "verify.json"), "{ not json");
+
+    const hashes2 = { n: 0 };
+    const r = counting({ ffmpeg: expected }, hashes2);
+    expect(r.locate("ffmpeg")?.path).toBe(bin("ffmpeg"));
+    expect(hashes2.n).toBeGreaterThan(0); // 坏档不命中，于是老老实实重算
+  });
+
+  it("无基线（降级档）不写记忆：没验过的东西不给它「免检」身份", () => {
+    fakeBin(packagedDir, "ffmpeg", "ANY");
+    const r = createResources({ userDataDir, packagedDir, readKernelConfig: () => undefined });
+    expect(r.locate("ffmpeg")?.origin).toBe("extracted");
+    expect(existsSync(join(userDataDir, "bin", "verify.json"))).toBe(false);
   });
 });
