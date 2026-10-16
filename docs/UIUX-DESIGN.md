@@ -882,7 +882,7 @@ button:disabled{color:var(--text-disabled);border-color:var(--line);opacity:1} /
 
 | 区 | 规格（实测值） | 说明 |
 | --- | --- | --- |
-| 左侧栏 | 220px；`#121212` 60% + `backdrop-filter: blur(20px)`；含品牌字、五页导航（lucide 图标 + `⌃1–5` 角标 + 选中左侧 3px accent 竖条）、版本 meta-chip | 拖拽区，控件 no-drag |
+| 左侧栏 | 220px；`#121212` 60% + `backdrop-filter: blur(20px)`；含品牌字、五页导航（lucide 图标 + `⌃1–5` 角标 + 选中左侧 3px accent 竖条） | 拖拽区，控件 no-drag；版本信息不在这里（只在设置→关于） |
 | 悬浮顶栏 | 高 60px，距边 16px（`.air-main` padding/gap 均 16）；玻璃同侧栏、圆角 8px；**全局粘贴入口**（输入 + 解析按钮，Ctrl+K 直达，Enter 提交后切解析页自动解析） | 聚焦光感 = accent 描边 |
 | 主内容 | 大卡片网格；缩略图 16:9 圆角 6px；标题 16px/500、元信息 12px 灰；页面切换 `page-in` 250ms 淡入上移 8px（`key={page}` 重挂载） | 首页 `HomePage.tsx`（最近历史 + 队列摘要） |
 

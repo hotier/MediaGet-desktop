@@ -535,12 +535,6 @@ export default function SettingsPage({
           </button>
         );
       })}
-
-      {meta && (
-        <div className="mt-auto px-2 py-2 text-[11px] text-disabled font-mono">
-          v{meta.version} · {meta.kernelMode}
-        </div>
-      )}
     </nav>
   );
 

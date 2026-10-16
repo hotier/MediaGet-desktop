@@ -176,42 +176,35 @@ export default function App(): React.ReactElement {
             </button>
           ))}
 
-          <div className="mt-auto flex flex-col gap-1">
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => {
-                  setSettingsEntry(null);
-                  setSettingsMode(true);
-                }}
-                className="no-drag flex h-9 flex-1 items-center gap-2.5 rounded-md px-3 text-sm text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
-              >
-                <Settings size={16} strokeWidth={1.5} />
-                <span>设置</span>
-              </button>
-              {update?.phase === "downloaded" && updatePolicy.onStartup && updatePolicy.autoDownload && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label="更新包已下载完成，去关于页安装"
-                      onClick={() => {
-                        setSettingsEntry("about");
-                        setSettingsMode(true);
-                      }}
-                      className="no-drag flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-ok outline-none transition-colors hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                    >
-                      <Download size={16} strokeWidth={1.5} />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent>更新包已就绪，点「立即重启」安装</TooltipContent>
-                </Tooltip>
-              )}
-            </div>
-            {meta && (
-              <div className="px-2 py-2 text-[11px] text-disabled font-mono">
-                v{meta.version} · {meta.kernelMode}
-              </div>
+          <div className="mt-auto flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => {
+                setSettingsEntry(null);
+                setSettingsMode(true);
+              }}
+              className="no-drag flex h-9 flex-1 items-center gap-2.5 rounded-md px-3 text-sm text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            >
+              <Settings size={16} strokeWidth={1.5} />
+              <span>设置</span>
+            </button>
+            {update?.phase === "downloaded" && updatePolicy.onStartup && updatePolicy.autoDownload && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="更新包已下载完成，去关于页安装"
+                    onClick={() => {
+                      setSettingsEntry("about");
+                      setSettingsMode(true);
+                    }}
+                    className="no-drag flex h-9 w-9 shrink-0 items-center justify-center rounded-md text-ok outline-none transition-colors hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                  >
+                    <Download size={16} strokeWidth={1.5} />
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>更新包已就绪，点「立即重启」安装</TooltipContent>
+              </Tooltip>
             )}
           </div>
         </nav>
