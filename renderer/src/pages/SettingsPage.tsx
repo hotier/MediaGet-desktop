@@ -6,21 +6,12 @@
  */
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import {
-  ArrowLeft,
-  Cpu,
-  Download,
-  FolderOpen,
-  Info,
-  Palette,
-  RefreshCw,
-  SlidersHorizontal,
-  Trash2,
-} from "lucide-react";
+import { ArrowLeft, FolderOpen, RefreshCw, Trash2 } from "lucide-react";
 import { cn } from "~/lib/utils";
 import { api, BridgeError } from "../lib/bridge";
 import { fmtBytes } from "../lib/format";
 import { CACHE_ITEMS as SETTINGS_CACHE_ITEMS } from "../lib/cache-items";
+import { SETTINGS_GLYPHS, type AnimGlyph } from "../lib/nav-icons";
 import { setFontSize, setTheme, setThemeStyle, setFontFamily } from "../lib/theme";
 import {
   buildFilename,
@@ -37,6 +28,7 @@ import type {
 import { CONTRACT_VERSION } from "../../../types/ipc";
 import { PLATFORMS, displayName, isEnabled } from "../../../shared/platforms";
 import { usePlatformStore } from "../store/platforms";
+import { AnimIcon } from "../components/AnimIcon";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { UpdateActions } from "../components/Update";
 import { Button } from "../components/ui/button";
@@ -141,17 +133,19 @@ const SCALAR_SECTION: Partial<Record<keyof AppSettings, string>> = {
 };
 const SCALAR_FIELDS = Object.keys(SCALAR_SECTION) as (keyof AppSettings)[];
 
+/** 分类图标：动效字形登记在 `lib/nav-icons.ts` 的 SETTINGS_GLYPHS.categories（键 = id）；
+ *  九枚都是官方 shadcn registry 拉入仓的 vendored 组件（components/ui/*，见 nav-icons.ts 头注） */
 const CATEGORIES: Array<{
   id: string;
   label: string;
-  icon: typeof Download;
+  icon: AnimGlyph;
   sections: string[];
 }> = [
-  { id: "general", label: "通用", icon: SlidersHorizontal, sections: ["startup", "window", "notify", "clipboard", "cache", "log"] },
-  { id: "download", label: "下载", icon: Download, sections: ["dir", "name", "load", "proxy", "post"] },
-  { id: "appearance", label: "外观", icon: Palette, sections: ["theme", "font"] },
-  { id: "engine", label: "引擎", icon: Cpu, sections: ["fallback", "engines", ...COOKIE_ROWS.map((r) => r.key)] },
-  { id: "about", label: "关于", icon: Info, sections: ["about"] },
+  { id: "general", label: "通用", icon: SETTINGS_GLYPHS.categories.general, sections: ["startup", "window", "notify", "clipboard", "cache", "log"] },
+  { id: "download", label: "下载", icon: SETTINGS_GLYPHS.categories.download, sections: ["dir", "name", "load", "proxy", "post"] },
+  { id: "appearance", label: "外观", icon: SETTINGS_GLYPHS.categories.appearance, sections: ["theme", "font"] },
+  { id: "engine", label: "引擎", icon: SETTINGS_GLYPHS.categories.engine, sections: ["fallback", "engines", ...COOKIE_ROWS.map((r) => r.key)] },
+  { id: "about", label: "关于", icon: SETTINGS_GLYPHS.categories.about, sections: ["about"] },
 ];
 
 /** 数值档位下拉：常用选项 + 自定义（选中后下拉框变输入框）；min/max 与契约同区间 */
@@ -168,7 +162,7 @@ const LOG_LEVELS: Array<{ value: AppSettings["logLevel"]; label: string }> = [
   { value: "warn", label: "错误 + 警告" },
   { value: "info", label: "全部" },
 ];
-/** 保留天数：契约允许 1–90，常用四档 + 自定义 */
+/** 保留天数：契约允许 1–90，常用四档 + 自定义；默认 30 */
 const LOG_RETENTION_OPTIONS = [3, 7, 14, 30];
 
 /** 预览用的固定样例：不依赖真实解析数据，随时能看懂规则效果 */
@@ -187,7 +181,7 @@ const FILENAME_PRESETS: Array<{ value: FilenamePreset; label: string; sample: st
 ];
 
 /**
- * 缓存项文案与展示顺序见 `lib/cache-items.ts`（统计页报同一份占用，名字必须同源）。
+ * 缓存项文案与展示顺序见 `lib/cache-items.ts`（键 → 中文名的唯一落点，本卡是它唯一的消费方）。
  * clearable=false 的两项（update / records）只显示占用，不进清理名单。
  */
 const CACHE_ITEMS = SETTINGS_CACHE_ITEMS;
@@ -583,7 +577,6 @@ export default function SettingsPage({
       {CATEGORIES.map((cat) => {
         const active = cat.id === sel;
         const dot = catDirty(cat.id) > 0;
-        const Icon = cat.icon;
         return (
           <button
             key={cat.id}
@@ -596,7 +589,9 @@ export default function SettingsPage({
               active && "bg-secondary text-foreground font-medium"
             )}
           >
-            <Icon size={16} strokeWidth={1.5} />
+            {/* 进入设置页本身就是一次切换：定位到的那枚分类图标挂载即播（animateOnMount，
+                见 components/AnimIcon.tsx 头注） */}
+            <AnimIcon Icon={cat.icon} active={active} animateOnMount />
             <span>{cat.label}</span>
             {dot && <span className="ms-auto size-1.5 shrink-0 rounded-full bg-warn" aria-label="有未保存更改" />}
           </button>

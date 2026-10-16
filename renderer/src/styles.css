@@ -360,6 +360,14 @@ body {
   scrollbar-color: var(--line-strong) transparent;
 }
 
+/* 动效图标（导航四页 + 侧栏设置钮 + 设置页分类，均经 components/AnimIcon 或
+ * SETTINGS_GLYPHS 渲染，类名 "anim-icon"）：入仓动效字形把 stroke-width="2"
+ * 写死成 svg 的呈现属性，与全站（lucide-react 图标）的 1.5 笔重不一致 ——
+ * 呈现属性的优先级低于任何 CSS 规则，这条按元素规则把它压回 1.5。 */
+.anim-icon svg {
+  stroke-width: 1.5;
+}
+
 /* Sonner 浮空 toast 的进出轴与留白（业主指令 2026-10-15 两条：
  * ① 框内上下空白太大（上游 padding 16px 四周写死）；② 进场从右、退场回右 —— 进出同轴。
  *

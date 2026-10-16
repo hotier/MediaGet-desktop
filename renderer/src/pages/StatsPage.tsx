@@ -11,9 +11,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { RefreshCw, ScanSearch } from "lucide-react";
 import { api, BridgeError } from "../lib/bridge";
-import { cn } from "../lib/utils";
 import { HISTORY_WINDOW } from "../lib/local-limits";
-import { CACHE_ITEMS } from "../lib/cache-items";
 import { fmtBytes, fmtCount, fmtDuration, fmtPercent, fmtSpeed } from "../lib/format";
 import {
   TREND_WINDOWS,
@@ -34,7 +32,7 @@ import {
   type RankMetric,
   type TrendWindow,
 } from "../lib/stats";
-import type { CacheStatus, HistoryEntry, StatsSnapshot } from "../../../types/ipc";
+import type { HistoryEntry, StatsSnapshot } from "../../../types/ipc";
 import { displayName } from "../../../shared/platforms";
 import { EChart } from "../components/charts/EChart";
 import { rankHeight, rankOption, trendOption, histogramOption, heatOption, type RankDatum, type TrendMetric } from "../components/charts/options";
@@ -137,27 +135,24 @@ function Segment<T extends string | number>({
 }
 
 /** 概览里的一行：标签在左、数在右，同一档位不分级（与队列/历史页同口径） */
-function Stat({ label, value, dim }: { label: string; value: string; dim?: boolean }): React.ReactElement {
+/** 页头读数：标签与数值同排，图之外唯一的读数出口 */
+function Figure({ label, value }: { label: string; value: string }): React.ReactElement {
   return (
-    <div className="flex items-baseline gap-3 py-0.5">
-      <span className="text-muted-foreground">{label}</span>
-      <span className={cn("ms-auto tabular-nums font-medium", dim && "text-disabled")}>{value}</span>
+    <div className="flex items-baseline gap-2">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="text-sm font-medium tabular-nums">{value}</span>
     </div>
   );
 }
 
 export default function StatsPage({
   onNavPlatform,
-  onOpenCache,
 }: {
   /** 点平台榜的一行 → 历史页只看这个平台 */
   onNavPlatform: (platform: string) => void;
-  /** 存储卡的去清理 → 设置「通用」分类的缓存卡片 */
-  onOpenCache: () => void;
 }): React.ReactElement {
   const [snap, setSnap] = useState<StatsSnapshot | null>(null);
   const [list, setList] = useState<HistoryEntry[]>([]);
-  const [cache, setCache] = useState<CacheStatus | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [win, setWin] = useState<TrendWindow>(30);
@@ -168,14 +163,9 @@ export default function StatsPage({
   const load = useCallback(async (): Promise<void> => {
     setBusy(true);
     try {
-      const [s, rows, c] = await Promise.all([
-        api.stats.get(),
-        api.history.list({ limit: HISTORY_WINDOW }),
-        api.app.cacheStatus(),
-      ]);
+      const [s, rows] = await Promise.all([api.stats.get(), api.history.list({ limit: HISTORY_WINDOW })]);
       setSnap(s);
       setList(rows);
-      setCache(c);
       setError("");
     } catch (e) {
       setError(e instanceof BridgeError ? e.message : String(e));
@@ -291,7 +281,6 @@ export default function StatsPage({
             </Button>
           </div>
         </Card>
-        {cache && <StoragePanel cache={cache} onOpenCache={onOpenCache} />}
       </section>
     );
   }
@@ -304,33 +293,24 @@ export default function StatsPage({
         </Alert>
       )}
 
-      <Panel
-        title="累计"
-        desc={since ? `自 ${since.date} · 第 ${since.days} 天` : undefined}
-        end={
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => void load()}>
+      <div className="flex flex-col gap-1">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
+          <Figure label="成功率" value={fmtPercent(health.successRate, 1)} />
+          <Figure label="累计字节" value={fmtBytes(health.bytes)} />
+          <Figure label="平均速度" value={fmtSpeed(speed.avgBytesPerSec)} />
+          <Figure label="解析" value={`${fmtCount(parse.total)} 次`} />
+          <Figure label="计数" value={since ? `自 ${since.date} · 第 ${since.days} 天` : "—"} />
+          <Button size="sm" variant="outline" className="ms-auto" disabled={busy} onClick={() => void load()}>
             <RefreshCw />
             刷新
           </Button>
-        }
-      >
-        <div className="grid grid-cols-2 gap-x-6 lg:grid-cols-3">
-          <Stat label="下载成功" value={fmtCount(health.done)} />
-          <Stat label="失败" value={fmtCount(health.failed)} dim={health.failed === 0} />
-          <Stat label="取消" value={fmtCount(health.canceled)} dim={health.canceled === 0} />
-          <Stat label="成功率" value={fmtPercent(health.successRate, 1)} />
-          <Stat label="累计字节" value={fmtBytes(health.bytes)} />
-          <Stat label="平均速度" value={fmtSpeed(speed.avgBytesPerSec)} />
-          <Stat label="平均耗时" value={fmtDuration(speed.avgElapsedMs)} />
-          <Stat label="解析" value={`${fmtCount(parse.total)} 次`} />
-          <Stat label="解析成功率" value={fmtPercent(parse.successRate, 1)} />
         </div>
         {speed.sampled === 0 && (
-          <p className="mt-1 text-xs text-muted-foreground">
+          <p className="text-xs text-muted-foreground">
             平均速度与耗时还没有可比的样本：需要至少一条带耗时的完成记录（老记录不补这维度，不会追溯）。
           </p>
         )}
-      </Panel>
+      </div>
 
       <Panel
         title="趋势"
@@ -376,13 +356,6 @@ export default function StatsPage({
         </Panel>
       </div>
 
-      <Panel
-        title="活跃"
-        desc={heatData.peak ? `高峰 ${heatSlotLabel(heatData.peak.weekday, heatData.peak.hour)} · ${fmtCount(heatData.peak.value)} 次` : "尚无时段记录"}
-      >
-        <EChart option={heatOpt} height={172} ariaLabel="星期与小时的活跃热力图" />
-      </Panel>
-
       <div className="grid gap-3 xl:grid-cols-2">
         <Panel title="单文件体积" desc={`${fmtCount(hist.counted)} 个文件计入${hist.skipped > 0 ? ` · ${fmtCount(hist.skipped)} 条无字节记录未计` : ""}`}>
           <EChart option={histOpt} height={182} ariaLabel="单文件体积分布直方图" />
@@ -398,47 +371,22 @@ export default function StatsPage({
       </div>
 
       <Panel
+        title="活跃"
+        desc={heatData.peak ? `高峰 ${heatSlotLabel(heatData.peak.weekday, heatData.peak.hour)} · ${fmtCount(heatData.peak.value)} 次` : "尚无时段记录"}
+      >
+        <EChart option={heatOpt} height={172} ariaLabel="星期与小时的活跃热力图" />
+      </Panel>
+
+      <Panel
         title="常看作者"
         desc={`明细窗口 ${fmtCount(scope.files)} 个文件${scope.span ? ` · 跨度 ${fmtCount(Math.round((scope.span.to - scope.span.from) / 86_400_000) + 1)} 天` : ""}${authors.anonymous > 0 ? ` · ${fmtCount(authors.anonymous)} 条匿名未计` : ""}`}
       >
         {authorData.length ? <EChart option={authorOpt} height={rankHeight(authorData.length)} ariaLabel="作者文件数排行" /> : <Empty />}
       </Panel>
-
-      {cache && <StoragePanel cache={cache} onOpenCache={onOpenCache} />}
     </section>
   );
 }
 
 function Empty(): React.ReactElement {
   return <p className="py-4 text-center text-sm text-muted-foreground">这一档还没有记录。</p>;
-}
-
-/**
- * 存储卡：口径是「本机现在占了多少」，与上面两本账（累计、明细）都不同，
- * 所以它自己说明自己是按需扫描的结果。清理动作留在设置页 —— 这里只指路，不就地删文件。
- */
-function StoragePanel({ cache, onOpenCache }: { cache: CacheStatus; onOpenCache: () => void }): React.ReactElement {
-  return (
-    <Panel
-      title="本机占用"
-      desc={`共 ${fmtBytes(cache.totalBytes)} · 可清理 ${fmtBytes(cache.clearableBytes)}`}
-      end={
-        <Button size="sm" variant="outline" onClick={onOpenCache}>
-          去清理
-        </Button>
-      }
-    >
-      <ul className="grid grid-cols-2 gap-x-6 lg:grid-cols-3">
-        {CACHE_ITEMS.map((meta) => {
-          const bytes = cache.items.find((i) => i.key === meta.key)?.bytes ?? 0;
-          return (
-            <li key={meta.key} className="flex items-baseline gap-3 py-0.5">
-              <span className="text-muted-foreground">{meta.label}</span>
-              <span className={cn("ms-auto tabular-nums font-medium", bytes === 0 && "text-disabled")}>{fmtBytes(bytes)}</span>
-            </li>
-          );
-        })}
-      </ul>
-    </Panel>
-  );
 }

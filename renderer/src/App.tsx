@@ -7,7 +7,10 @@
  * 样式写在 utility 里，`styles.css` 只剩 Token 与少数无法 utility 化的规则（拖拽区、滚动条）。
  */
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { ChartColumn, Download, History, Home, ListOrdered, Settings } from "lucide-react";
+import { Download } from "lucide-react";
+import { useReducedMotion } from "motion/react";
+import { NAV_ITEMS, SETTINGS_GLYPHS, type AnimGlyphHandle, type NavKey } from "./lib/nav-icons";
+import { AnimIcon } from "./components/AnimIcon";
 import { api, BridgeError } from "./lib/bridge";
 import { setFontSize, setTheme, setThemeStyle, setFontFamily } from "./lib/theme";
 import { hydratePlatformSwitches } from "./store/platforms";
@@ -24,14 +27,8 @@ import { Skeleton } from "./components/ui/skeleton";
 import { Toaster } from "./components/ui/sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
 
-type Page = "home" | "downloads" | "history" | "stats";
-
-const PAGES: Array<{ key: Page; label: string; icon: React.ReactNode }> = [
-  { key: "home", label: "首页", icon: <Home size={16} strokeWidth={1.5} /> },
-  { key: "downloads", label: "队列", icon: <ListOrdered size={16} strokeWidth={1.5} /> },
-  { key: "history", label: "历史", icon: <History size={16} strokeWidth={1.5} /> },
-  { key: "stats", label: "统计", icon: <ChartColumn size={16} strokeWidth={1.5} /> },
-];
+/** 页面键与导航项的真源在 `lib/nav-icons.ts`（那张表的顺序就是 ⌃1–4 的映射顺序） */
+type Page = NavKey;
 
 export default function App(): React.ReactElement {
   const [page, setPage] = useState<Page>("home");
@@ -51,6 +48,9 @@ export default function App(): React.ReactElement {
   const [clipboardFill, setClipboardFill] = useState<{ url: string; platform: string; seq: number } | null>(null);
   const clipboardSeq = useRef(0);
   const workspaceInputRef = useRef<HTMLTextAreaElement | null>(null);
+  /** 设置钮字形的受控触发（悬停驱动，AnimIcon 只管导航那种 active 布尔） */
+  const settingsGlyphRef = useRef<AnimGlyphHandle>(null);
+  const reducedMotion = useReducedMotion();
 
   /** 队列行 → 历史页定位。稳定引用：DownloadsPage 的行是 memo 组件，内联箭头会让每行都被判「变了」 */
   const navToHistory = useCallback((target: "history", groupId: string) => {
@@ -66,12 +66,6 @@ export default function App(): React.ReactElement {
     setHistoryFocus(null);
     setPage("history");
   }, []);
-  /** 统计页存储卡的「去清理」：清理动作只在设置「通用」的缓存卡片里做 */
-  const openCacheSettings = useCallback(() => {
-    setSettingsEntry("general");
-    setSettingsMode(true);
-  }, []);
-
   /** 读更新策略两开关：启动一次，退出设置模式时再读（保存即影响侧栏下载图标显示条件） */
   const loadUpdatePolicy = () =>
     api.settings
@@ -145,7 +139,7 @@ export default function App(): React.ReactElement {
       const idx = ["1", "2", "3", "4"].indexOf(e.key);
       if (idx >= 0) {
         e.preventDefault();
-        setPage(PAGES[idx].key);
+        setPage(NAV_ITEMS[idx].key);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -178,17 +172,18 @@ export default function App(): React.ReactElement {
               于是首个导航项与右侧内容（带高 40 + main 的 p-4）都落在 56px 这条线上 */}
           <div className="mb-3 flex h-(--wco-h) items-center px-2 text-[15px] font-semibold tracking-wide">MediaGet</div>
 
-          {PAGES.map((p) => (
+          {NAV_ITEMS.map((it) => (
             <button
-              key={p.key}
+              key={it.key}
               type="button"
-              onClick={() => setPage(p.key)}
-              aria-current={page === p.key ? "page" : undefined}
+              onClick={() => setPage(it.key)}
+              aria-current={page === it.key ? "page" : undefined}
               className="no-drag flex h-9 items-center gap-2.5 rounded-md px-3 text-sm text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-[current=page]:bg-secondary aria-[current=page]:text-foreground aria-[current=page]:font-medium"
             >
-              {p.icon}
-              <span>{p.label}</span>
-              {p.key === "downloads" && running > 0 && (
+              {/* 切换那一下的入场动效由入仓组件自带（成为当前页时 AnimIcon 唤起，见 lib/nav-icons.ts） */}
+              <AnimIcon Icon={it.Icon} active={page === it.key} />
+              <span>{it.label}</span>
+              {it.key === "downloads" && running > 0 && (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Badge variant="ok" className="ms-auto">
@@ -208,9 +203,14 @@ export default function App(): React.ReactElement {
                 setSettingsEntry(null);
                 setSettingsMode(true);
               }}
+              onMouseEnter={() => {
+                if (!reducedMotion) settingsGlyphRef.current?.startAnimation();
+              }}
+              onMouseLeave={() => settingsGlyphRef.current?.stopAnimation()}
               className="no-drag flex h-9 flex-1 items-center gap-2.5 rounded-md px-3 text-sm text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
             >
-              <Settings size={16} strokeWidth={1.5} />
+              {/* 悬停驱动（挂 ref 后组件自身不响应 hover，见 components/AnimIcon.tsx）；离开即 stop——settings 是整枚回转，不复位也能复播，但与其他字形统一语义 */}
+              <SETTINGS_GLYPHS.entry ref={settingsGlyphRef} size={16} className="anim-icon" aria-hidden="true" />
               <span>设置</span>
             </button>
             {update?.phase === "downloaded" && updatePolicy.onStartup && updatePolicy.autoDownload && (
@@ -269,7 +269,7 @@ export default function App(): React.ReactElement {
                   </div>
                 }
               >
-                <StatsPage onNavPlatform={navToHistoryPlatform} onOpenCache={openCacheSettings} />
+                <StatsPage onNavPlatform={navToHistoryPlatform} />
               </Suspense>
             )}
           </main>

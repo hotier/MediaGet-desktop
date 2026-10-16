@@ -397,12 +397,13 @@ describe("IPC 信封与校验", () => {
         const r = await call(IPC.settingsGet);
         return r.ok ? (r.data as Record<string, unknown>) : null;
       };
-      // 默认：全级别记录、留 7 天（门槛每次写都重取，保存即生效不需重启）
-      expect(await get()).toMatchObject({ logLevel: "info", logRetentionDays: 7 });
+      // 默认：全级别记录、留 30 天（门槛每次写都重取，保存即生效不需重启）
+      expect(await get()).toMatchObject({ logLevel: "info", logRetentionDays: 30 });
 
-      const set = await call(IPC.settingsSet, { logLevel: "error", logRetentionDays: 30 });
+      // 写非默认值：与缺省相同的值证明不了 set 真的落盘
+      const set = await call(IPC.settingsSet, { logLevel: "error", logRetentionDays: 14 });
       expect(set.ok).toBe(true);
-      expect(store.loadConfig().settings).toMatchObject({ logLevel: "error", logRetentionDays: 30 });
+      expect(store.loadConfig().settings).toMatchObject({ logLevel: "error", logRetentionDays: 14 });
 
       // 越界/枚举外一律 bad-input（保留天数契约 1–90）
       const bad = await call(IPC.settingsSet, { logRetentionDays: 0 });
@@ -413,7 +414,7 @@ describe("IPC 信封与校验", () => {
       const raw = store.loadConfig();
       delete (raw.settings as { logLevel?: string }).logLevel;
       delete (raw.settings as { logRetentionDays?: number }).logRetentionDays;
-      expect(await get()).toMatchObject({ logLevel: "info", logRetentionDays: 7 });
+      expect(await get()).toMatchObject({ logLevel: "info", logRetentionDays: 30 });
     } finally {
       cleanup();
     }

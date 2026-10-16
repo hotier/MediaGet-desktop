@@ -228,6 +228,7 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 - **必须成套**（自绘或选单一开源集，MIT/ISC 许可，落地时 vendored 进 `renderer/src/icons.tsx`），禁止混用两套描边风格。
 - 关键图标清单（覆盖全部现有交互）：`download / pause / play / retry / cancel / folder-open / trash / more-horizontal / search / filter / check / alert-triangle / x-circle / info / moon / sun / clipboard / image / video / music / layers（图集）/ refresh（重新解析）/ keyboard`。
 - **禁止用 emoji 当 UI 图标**。现状 `已保存 ✓`、`已加入队列 ✓` 用了字符勾 —— 属于文本符号不是 emoji，可保留但建议替换为 `#icon-check`（跨字体渲染不稳）。
+- **2026-10-16 修订**：动效字形（侧栏四页 + 设置面五枚）改从 lucide-animated 官方 shadcn registry 逐枚拉平入仓（`renderer/src/components/ui/*.tsx`，业主定调「所有动态图标都可以用 `pnpm dlx shadcn add` 的方式导入」）——与 `lucide-react` 的静态图标同源同形，「成套」这条没破；npm 包 `lucide-animated` 试用后整体退役（整包把四百余枚图标当副作用打进 bundle，撤包实测启动 chunk 1,258→713 kB）。真源表、入仓契约与「三枚冻结」登记见 §10。
 
 ### 1.8 动效
 
@@ -243,7 +244,7 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 1. 主进程进度事件 **200ms 节流**（`downloader.ts:67 PROGRESS_THROTTLE_MS`）。进度条 CSS 过渡设 300ms 可把 5 帧/秒的离散跳变抹成连续滑动 —— 但**绝不能超过 400ms**，否则过渡时长 > 数据间隔，进度条会"追不上"造成回缩抖动。
 2. 全局必须包 `@media (prefers-reduced-motion: reduce) { *{animation-duration:.01ms!important; transition-duration:.01ms!important} }`，并且**进度条过渡在 reduce 下改为 0**（否则用户看到的是滞后的假进度）。现状 CSS 无任何 transition，加这段零风险。
 
-**只允许 `transform` / `opacity` 做动画**（Electron 合成器友好，避免 layout 抖动）。禁止 `width/height` 动画（进度条是唯一例外 —— 它已有 `width`，改为 `transform:scaleX()` + `transform-origin:left` 可省掉重排；这是 §4 里一个明确的微优化建议）。
+**只允许 `transform` / `opacity` 做动画**（Electron 合成器友好，避免 layout 抖动）。禁止 `width/height` 动画（进度条是唯一例外 —— 它已有 `width`，改为 `transform:scaleX()` + `transform-origin:left` 可省掉重排；这是 §4 里一个明确的微优化建议）。**2026-10-16 例外**：动效字形的补间改的是 `transform` 与 SVG 呈现属性（`rotate` / `translateY` / `scaleY`·`scaleX` / `x1`·`x2` / `pathLength` / `stroke-dashoffset`）——只重绘几何、不触发布局重排，代价与 transform 同级；机制与边界登记在 §10。
 
 ---
 
@@ -1041,18 +1042,17 @@ shadcn 的语义名与本仓角色**不能望文生义**，映射钉死如下：
 
 | 卡 | 口径来源 | 为什么只能用它 |
 | --- | --- | --- |
-| 累计（9 行读数）、趋势、平台榜、类型榜、活跃热力、解析通道 | 计数档 `stats:get`（自 `since` 累加，不随行数窗口截断） | 失败与取消**只活在这里**：history 只有 done 才追加，从明细算失败率永远是 100% |
+| 页头读数行、趋势、平台榜、类型榜、活跃热力、解析通道 | 计数档 `stats:get`（自 `since` 累加，不随行数窗口截断） | 失败与取消**只活在这里**：history 只有 done 才追加，从明细算失败率永远是 100% |
 | 单文件体积分布、常看作者 | 历史明细（`history:list` 取满 `HISTORY_WINDOW = 5000`，见 `lib/local-limits.ts` 单一来源） | 逐文件粒度与作者名只有明细给得出；计数档故意不带文件名与作者（ARCHITECTURE §6 第 8 条） |
-| 本机占用 | `app:cacheStatus` 六桶按需扫描 | 与累计/明细不同一条时间轴，所以它自己说明是扫描结果；清理动作留在设置页，这里只指路 |
 
-卡片顺序按「先结论后分布」：累计 → 趋势 → 平台/类型（xl 双列）→ 活跃 → 体积/解析（xl 双列）→ 常看作者 → 占用。「刷新」一次读三源（`Promise.all`），**不做每卡独立刷新**：五本数据要同一时刻才有可比性，且统计页不在热路径上。
+版面按「先结论后分布」，且**默认这一页只有图**：页头一行五个读数（成功率 / 累计字节 / 平均速度 / 解析次数 / 计数起点，「刷新」在这一行右侧）→ 趋势全宽 → 平台/类型（xl 双列）→ 体积/解析（xl 双列）→ 活跃热力 → 常看作者。原先那张「累计」纯文本卡（9 行读数）压成了页头一行 —— 业主指令「默认只显示统计图」；被压掉的五个读数（下载成功、失败、取消、平均耗时、解析成功率）不再单列，失败与取消回到趋势图的失败折线与 tooltip。「刷新」一次读两源（`Promise.all`），**不做每卡独立刷新**：两本账要同一时刻才有可比性，且统计页不在热路径上。
 
 ### 9.2 图表底座：裸 ECharts + 本地四件（业主选定方案 A）
 
 评估过 `@devstool/shadcn-echarts`，结论是包装层的三个卖点在本仓全都失灵，2026-10-16 业主选 A：直接依赖 `echarts@6`，本仓写薄适配器。
 
 1. **自动上色失灵**：它按 shadcn 惯例读 `.dark` 类判明暗，本仓是反向约定（`:root` 即暗，明暗走 `data-theme`、风格走 `data-style`）；且 token 是三层链，自定义属性的 computed value 只做 `var()` 替换、**不求值 `color-mix()`** —— 拿那串文本喂 canvas 解析不了。
-2. **体积要自己控**：`echarts/core` + 显式 `use([...])` 只注册用到的（Bar/Line/Heatmap + Grid/Tooltip/Legend/MarkLine/VisualMap + CanvasRenderer，另加一个 `echarts/features` 的 `LegacyGridContainLabel` —— v6 把 `grid.containLabel` 挪进 opt-in 兼容件，漏登记**不报错**、只把类目名静默裁掉，真窗口实测踩过）。本机实测：全量 1.10 MB / gzip 370 KB / Node eval 106 ms → 摇树 625 KB / eval 48 ms。再加整页 `React.lazy`，`vite build` 产物实测 **StatsPage chunk 620.7 kB / gzip 209.9 kB**，启动 chunk **513.2 kB / gzip 162.7 kB** 里 echarts 标记命中 **0 次** —— 不开统计页就一行 echarts 代码都不下载。
+2. **体积要自己控**：`echarts/core` + 显式 `use([...])` 只注册用到的（Bar/Line/Heatmap + Grid/Tooltip/Legend/MarkLine/VisualMap + CanvasRenderer，另加一个 `echarts/features` 的 `LegacyGridContainLabel` —— v6 把 `grid.containLabel` 挪进 opt-in 兼容件，漏登记**不报错**、只把类目名静默裁掉，真窗口实测踩过）。本机实测：全量 1.10 MB / gzip 370 KB / Node eval 106 ms → 摇树 625 KB / eval 48 ms。再加整页 `React.lazy`，`vite build` 产物实测 **StatsPage chunk 619.55 kB / gzip 210.42 kB**，启动 chunk **712.62 kB / gzip 227.62 kB**（较统计页上线时 513.2 kB 的增量主要是 §10 图标动效栈：`motion` + 九枚入仓字形）里 echarts 标记命中 **0 次** —— 不开统计页就一行 echarts 代码都不下载。
 3. **口径不许外包**：本仓的作图规矩（§9.3）恰恰长在 tooltip 内容与配色语义上，那些正是包装层替我决定的部分。
 
 `renderer/src/components/charts/` 四件各守一层，越界的都不写：
@@ -1074,16 +1074,55 @@ shadcn 的语义名与本仓角色**不能望文生义**，映射钉死如下：
 - 趋势两组按钮：窗口 `7 / 30 / 90 / 365` 天 + 口径 `次数 / 字节`。字节档换的是柱子的数据、轴标签格式化与刻度约束，失败折线不动。
 - 榜单口径 `次数 / 字节 / 失败 / 解析` **一组按钮同时驱动平台榜与类型榜**：两榜同口径才能横向对照，分开切会造出「平台按失败排、类型按字节排」这种不相干的两句。
 - **点平台榜一行 → 历史页只看这个平台**：App 层传 `platformFocus = { key, seq }`（`seq` 让重复点同平台可重触发，与剪贴板填入同一条手法），历史页收到即落筛选。跨页只传平台键，不传行 id。
-- 「去清理」→ 设置模式「通用」分类的缓存卡；统计页不就地删文件。
+- 本机占用不在这一页：六桶扫描结果与清理动作都在设置「通用」的缓存卡，统计页只摆上面两本账（2026-10-16 业主指令把这张卡从本页摘掉，占用是「当下快照」、与累计/明细不同一条时间轴，摆在一页里容易被读成第三本账）。
 - 悬浮层只做补充，不做唯一出口：趋势 tooltip 列「下载 / 字节 / 失败 / 解析」四项，榜单 tooltip 给失败率或作品数，热力给「周三 21:00 · 12 次」。
-- 键盘与读屏：图是冗余呈现，同一批数在卡片文本里也读得到；`EChart` 各带 `ariaLabel`（如「近 30 天逐日下载与失败趋势」）。
+- 键盘与读屏：图是冗余呈现，非图出口是页头那一行五个读数 + 各卡标题右边的合计（`EChart` 各带 `ariaLabel`，如「近 30 天逐日下载与失败趋势」）。压掉累计卡之后，失败与取消次数在这页只剩趋势的失败折线与逐日 tooltip，成功率仍在页头。
 
 ### 9.5 四态与验收边界
 
 - 加载：快照未到 → 三枚 `Skeleton`（28 / 56 / 44 高，占住大致版面）。
-- 空态：`isEmptyStats`（下载 + 失败 + 解析三者为 0）→ 居中 `ScanSearch` 引导「还没有可统计的记录 / 计数从安装这一刻起算」+ 重新读取按钮；**本机占用卡照给**（占用与计数无关，空态也有的看）。单张卡的档没记录用行内一句「这一档还没有记录」，不整页打空。
-- 错误：三源任一失败 → 顶部 destructive Alert 说清哪本读不出来，已到的数据照常渲染（不整页变白）。
+- 空态：`isEmptyStats`（下载 + 失败 + 解析三者为 0）→ 居中 `ScanSearch` 引导「还没有可统计的记录 / 计数从安装这一刻起算」+ 重新读取按钮。单张卡的档没记录用行内一句「这一档还没有记录」，不整页打空。
+- 错误：两源任一失败 → 顶部 destructive Alert 说清哪本读不出来，已到的数据照常渲染（不整页变白）。
 - 已验：`tests/stats-aggregation.test.ts`（18 例，聚合口径）+ `tests/stats-options.test.ts`（33 例：option 构造、取色换算、`fmtPercent`·`fmtDuration`·`fmtSpeed` 三个格式化出口，另三条目录纪律 —— echarts 只在登记点 import、`LegacyGridContainLabel` 在列、charts 目录内不写 hex）；四门绿；chunk 切分按 §9.2 实测数字核对（启动面不含 echarts）。
 - 已验（一次桌面级核对，dev 预览页 + mock 桥）：七张图全部挂载（`_echarts_instance_` 齐备、canvas 尺寸 = CSS 尺寸 × dpr 1.25）；喂进 canvas 的色确实是探针取回的 token 值（primary `rgb(37,99,235)`、bg-sunken `rgb(233,235,238)`、err `rgb(192,57,47)`、muted `rgb(89,96,106)`）；把 `data-theme` 从 light 翻到 dark，热力图主色随之从 `89,96,106` 变 `154,160,167` 再翻回 —— MutationObserver 那条路是活的；控制台无 warn。
 - **未验**：本机 in-app Browser 视口只有 338×570（远窄于应用 `minWidth: 820`），榜单在这种宽度下 grid 被挤到 62 px、类目轴不可读 —— 那是测试视口的产物，不代表真实窗口宽度下的形态；页面在真窗口的密度与观感待业主过一眼。
+
+---
+
+## 10. 导航与设置面图标动效（2026-10-16，业主指令：「我就要切换的时候图标有动态效果」；同日定调「所有动态图标都可以用 `pnpm dlx shadcn add` 的方式导入」）
+
+侧栏四枚页面图标在成为/退出当前页时补间一次，设置面五枚（侧栏底部设置钮、设置页五个一级分类）在悬停/激活时补间——**九枚字形全部经 lucide-animated 官方 shadcn registry 逐枚拉平入仓**（每枚一条 `pnpm dlx shadcn add @lucide-animated/<name>` → `renderer/src/components/ui/*.tsx`，registry 别名配在 `components.json` 的 `registries`）。九枚动作各异（home 的门 pathLength 展开、download 的箭头下弹、history 的指针回转、chart-line 的路径生长、settings 整枚回转、sliders 手柄滑动、cpu 引脚伸缩、palette 描边画线 + 圆点弹入、badge-percent 整枚回转），机制同源：**补间写 `transform` 与 SVG 呈现属性、几何一动不动**，所以「成套字形」与扫读识别性两条都保住（§1.7 当日修订）。
+
+真源表 `renderer/src/lib/nav-icons.ts` 两张：`NAV_ITEMS`（侧栏四页，数组顺序 = ⌃1–4 映射）与 `SETTINGS_GLYPHS`（`entry` + `categories`，分类键 = SettingsPage CATEGORIES 的 `id`，`satisfies` 钉住字面量键集合，漏登记是编译错误）；App 的导航渲染、设置钮与设置页分类都读它，`App.tsx` 里的 `PAGES` 已删。
+
+### 10.1 入仓契约 + npm 包退役
+
+**入仓组件形状（九枚同构）**：`"use client"` 头；外壳 `div` 承接 `className`（styles.css 的 `.anim-icon svg` 笔重规则依赖这一层——组件把 `stroke-width="2"` 硬编码为呈现属性，CSS 把它压回全站 1.5）；内为 `svg`（`stroke=currentColor`、24 视窗、尺寸走 `size`，这里传 16）；`forwardRef` 出 `{ startAnimation, stopAnimation }`——**挂上 ref 后组件自身不再响应 hover、触发权归调用方**（导航与设置页分类走 `components/AnimIcon`：成为当前项那一下 start、离开那一下 stop；设置钮是裸用 + 悬停驱动，见 App）。
+
+**stop 是快速平滑归位（0.15s 短补间）、不是整段回放、也不是瞬跳**：归位契约经三稿收敛——registry 原版 `stopAnimation` 是 `start("normal")` 整段回放式归位，History 的时针 -360°→0° 会可见地回转一整圈（业主 2026-10-16 真窗口报「点其他图标时 history 仍有一段动画」）；v2 改为瞬停（`controls.stop()` + `controls.set("normal")`）又被报「更生硬」；v3 定稿九枚统一 `controls.start("normal", { duration: 0.15, ease: "easeOut" })`——不播整段回程、也不瞬跳。唯一例外是 **History 的时针**（-360° 整圈回转 ≡ 0°，任何补间都会重演整圈回转）：独立一副 controls 瞬时写回，指针与分针走短补间；cpu 快照的 `normal` 另补了 `scaleY`/`scaleX`（归位若停在引脚伸缩半途会把引脚冻结在拉伸态）。`tests/nav-icons.test.ts` 有 10 条守卫防 registry 重新拉取覆盖修复。复位本身仍不可省：单值变体（History 的指针、Download 的箭头）落定后不回原位，不复位则二次激活时 start 的目标 == 当前值，动效静默失效（本机实测坐实）。系统「减弱动态效果」开着则整个跳过——动效是 JS 补间，§1.8 第 2 条的 CSS 规则管不到它（`useReducedMotion` 在 AnimIcon 与设置钮悬停驱动两处各拦一次）。
+
+**npm 包 `lucide-animated` 试用后退役**，三个死因：① 整包四百余枚图标当副作用打进 bundle（顶层 forwardRef 无 PURE 标注、无 sideEffects 声明），撤包实测启动 chunk **1,258.17 kB / gzip 283.01 → 712.62 kB / gzip 227.62**；② 包内缺 palette；③ 三枚字形停在旧画法（入仓版同样冻结，那是快照时点，见 10.2）。morphicons 时期试用的 `morphicons@2.0.0`、`lucide@1.57.0`（及 `pnpm-workspace.yaml` 两条对应 `minimumReleaseAgeExclude`）一并退役；**动效栈留下的 runtime 依赖只有 `motion@14.2.0`**（入仓组件从 `motion/react` import 的补间引擎）。`lucide-react@1.57.0` 照旧服务全站静态图标。
+
+### 10.2 漂移闸与「已知冻结」
+
+`tests/nav-icons.test.ts`（25 例）把入仓快照与 `lucide-react` 对照字形各自渲染成静态 SVG、抽线段/弧块/圆/矩形整块多重集比对（定点两位小数后比；morphicons 时期深路径读 `__iconData` 的写法已退场；受控停守卫 10 例见 10.1、10.4）：
+
+- **登记内的同类差异不算漂移**：元素拆分（下载箭头 polyline+line vs 规范化 path，历史指针拆两段各绕 (12,12) 转）与浮点噪声（`5.999` vs `6`）。
+- **三枚已知冻结**：settings 直齿（`M12.22 2h`，2 元素）、sliders-horizontal 导轨 y=4·12·20（9 元素）、cpu 8 针 + 6×6 内芯（10 元素）——registry 快照停在旧版 lucide 画法，与 `lucide-react` 现版（圆齿 / y=5·12·19 / 12 针）不同形。逐枚断言「**仍**不同形 + 图元数 + 画法指纹」，上游哪天追平或再变都会红，回来重新登记。
+- **palette 是 vendored 重绘**：轮廓为描边画线动画反向重绘、依赖 `stroke-dasharray="70"`，四枚圆点与 lucide-react 逐点一致——按「圆点集合相等 + 整体不同形 + dasharray 在」钉住。
+- **外壳契约**单独成例：currentColor 描边 / 无填充 / 24 视窗 / size 生效 / className 落在外壳 div；`SETTINGS_GLYPHS.categories` 键集合 = 设置页五个一级分类。
+
+### 10.3 动效边界（§1.8 的例外登记处）
+
+- **改的是 `transform` 与 SVG 呈现属性**（`rotate` / `translateY` / `scaleY`·`scaleX` / `x1`·`x2` / `pathLength` / `stroke-dashoffset`，另加 opacity）——只重绘几何、不触发布局重排，代价与 transform 同级；§1.8 的例外即为此开。
+- **设置钮（悬停驱动）与设置页分类（激活驱动）都参与**；设置页分类还带「挂载即播」——进设置页本身就是一次切换，定位到的那枚要播一次（`AnimIcon` 的 `animateOnMount`；业主同日报「点击设置转到设置页时定位到的那个图标没有动画」）。唯一不参与的是更新按钮——它根本不是动效字形（lucide-react 静态图标），出现/消失也是挂载/卸载（如实记账）。
+- **无障碍**：图标不传 `label`（同一行已有可见文字，同一句话不念两遍）→ 自动 `aria-hidden="true"`；选中态的对外出口仍是 `aria-current="page"`（侧栏与设置页分类选中样式都走它）。
+- **成本**：启动 chunk 713.28 kB / gzip 227.74 kB（含九枚字形与 motion；v3 归位契约后实测 +0.66 kB / gzip +0.12 kB，来自归位字面量与 cpu 变体补键）；CSS 55.31 kB / gzip 10.66 kB；产物内 lucide-animated 包体标记命中 0 次（死重清零）。
+
+### 10.4 验收边界
+
+- **已验（静态几何）**：`tests/nav-icons.test.ts` 25 例全绿（导航四枚逐段同形、三枚冻结指纹、palette 圆点对拍、外壳契约，另加 10 条「受控停 = 0.15s 短补间归位」的 vendored 偏差守卫，含 history 时针例外）；四门全绿（typecheck / lint / 684 例 / `verify:binaries:release`）；chunk 数字为上表实测。
+- **已修未验（业主真窗口报障两轮三件，2026-10-16）**：① 「点其他图标时 history 仍有一段动画」——受控 stop 从整段回放改为短补间归位（v3 定稿，九枚统一 + history 时针在独立 controls 上瞬停，理由见 10.1），带 10 条守卫断言；② 「点击设置转到设置页时定位到的那个图标没有动画」——`AnimIcon` 增 `animateOnMount`，设置页分类挂载即播一次；③ 「history 归位更生硬」——v2 瞬停的观感反馈，v3 短补间收敛（同一条 stop 契约）。三件的**运行时行为与观感仍以业主真窗口为准**（renderer 改动走 HMR，无需重启 Electron），本机未做浏览器复验。
+- **已验（历史档）**：npm 包 `lucide-animated` 时代曾在 dev renderer（mock 桥）手动泵帧核对过切换复播与复位（AnimIcon 的 start/stop 语义即那轮坐实的，见其头注）——但 vendored 版是逐枚拉入的重写，**运行时行为未在新版复验**（业主当日指令「不用你浏览器测试」免除）。
+- **未验**：动效的**观感**（弹簧手感、快慢节奏、真实帧率下的顺滑度）待业主真窗口过一眼（renderer 改动走 HMR，无需重启 Electron）。
 

@@ -214,7 +214,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   notifyOnError: true,
   clipboardWatch: false,
   logLevel: "info",
-  logRetentionDays: 7,
+  logRetentionDays: 30,
   updateOnStartup: true,
   updateAutoDownload: false,
   // 只存用户改过的平台；没改过的跟随注册表 enabledByDefault，
