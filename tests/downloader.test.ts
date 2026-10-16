@@ -460,3 +460,106 @@ describe("Downloader 正确性收口", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 });
+
+/**
+ * 队列卫生（契约 v4）。两件事一起验：清理只收终态且**不碰磁盘**，
+ * 以及同批改判的恢复语义 —— canceled 不再复活（用户已经明确放弃的行，重启后回来只会再问一次），
+ * paused/error 照旧回来等用户处置（它们带着可点的动作）。
+ */
+describe("Downloader 清理与恢复", () => {
+  const seeded = (id: string, status: PersistedQueueLike["status"]): PersistedQueueLike => ({
+    taskId: id,
+    groupId: "g-h",
+    url: `https://cdn.example.com/${id}.mp4`,
+    filename: `${id}.mp4`,
+    kind: "video",
+    received: 10,
+    total: 10,
+    createdAt: 1,
+    status,
+  });
+
+  /** ok 一次给完；bad 永远 404；hang 一块都不给，但听 abort（否则取消要等到空闲超时） */
+  function triFetch(): typeof fetch {
+    const bytes = new TextEncoder().encode("FULL");
+    return (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("bad")) return new Response(null, { status: 404 });
+      if (url.includes("hang"))
+        return new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              const bail = (): void => {
+                try {
+                  c.error(new Error("aborted"));
+                } catch {
+                  /* 已关闭 */
+                }
+              };
+              if (init?.signal?.aborted) bail();
+              else init?.signal?.addEventListener("abort", bail, { once: true });
+            },
+          }),
+          { status: 200, headers: { "content-length": "10" } }
+        );
+      return new Response(bytes as unknown as BodyInit, {
+        status: 200,
+        headers: { "content-length": "4" },
+      });
+    }) as typeof fetch;
+  }
+
+  const one = (filename: string) => [
+    { url: `https://cdn.example.com/${filename}`, filename, kind: "video" as const },
+  ];
+
+  it("清理带走终态、拒掉在途，removed 如实计数且文件不动", async () => {
+    const dir = makeTempDir();
+    // 单槽 + 超长空闲超时：hang 任务在整个断言期间稳定停在下载中/排队，不会自己变终态
+    const { dl, getPersisted } = makeDownloader(dir, triFetch(), 1, {
+      stallTimeoutMs: 100_000,
+      retryBaseDelayMs: 10,
+    });
+    const [doneId] = dl.enqueue(one("ok.mp4"), "g1");
+    await waitUntil(() => dl.list().some((t) => t.taskId === doneId && t.status === "done"), 8000);
+    const [errId] = dl.enqueue(one("bad.mp4"), "g2");
+    await waitUntil(() => dl.list().some((t) => t.taskId === errId && t.status === "error"), 8000);
+    const [cancelId] = dl.enqueue(one("hang-a.mp4"), "g3");
+    await waitUntil(() => dl.list().some((t) => t.taskId === cancelId && t.status === "downloading"), 8000);
+    dl.cancel(cancelId);
+    await waitUntil(() => dl.list().some((t) => t.taskId === cancelId && t.status === "canceled"), 8000);
+    const [runId, waitId] = dl.enqueue(one("hang-b.mp4").concat(one("hang-c.mp4")), "g4");
+    await waitUntil(() => dl.list().some((t) => t.taskId === runId && t.status === "downloading"), 8000);
+    expect(dl.list().find((t) => t.taskId === waitId)?.status).toBe("queued");
+    expect(dl.list()).toHaveLength(5);
+
+    expect(dl.clear([doneId, errId, cancelId, runId, waitId])).toBe(3);
+    expect(dl.list().map((t) => t.taskId).sort()).toEqual([runId, waitId].sort());
+    // 落盘快照跟着变短：清完的行不能重启后又回来
+    expect(getPersisted().map((t) => t.taskId)).not.toContain(doneId);
+    expect(getPersisted().map((t) => t.taskId)).not.toContain(errId);
+    // 「清理」是忘记，不是删文件
+    expect(existsSync(join(dir, "ok.mp4"))).toBe(true);
+
+    dl.cancel(runId);
+    dl.cancel(waitId); // 单槽：不掐掉 runId，waitId 会被 promote 成新的在途任务
+    rmSync(dir, { recursive: true, force: true });
+  }, 20000);
+
+  it("点名一颗不存在的 id 也算零（状态竞争下不谎报）", () => {
+    const dir = makeTempDir();
+    const { dl } = makeDownloader(dir, triFetch(), 1, { retryBaseDelayMs: 10 });
+    expect(dl.clear(["nope"])).toBe(0);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("restore：done 与 canceled 不复活，paused/error 留在队列", () => {
+    const dir = makeTempDir();
+    const { dl } = makeDownloader(dir, triFetch(), 1, { retryBaseDelayMs: 10 });
+    dl.restore([seeded("p1", "paused"), seeded("e1", "error"), seeded("x1", "canceled"), seeded("d1", "done")]);
+    const back = dl.list().map((t) => t.taskId);
+    expect(back).toEqual(["p1", "e1"]); // 顺序按 createdAt，这里同为 1 → 保持入参序
+    expect(dl.list().map((t) => t.status)).toEqual(["paused", "error"]);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});

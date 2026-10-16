@@ -16,6 +16,7 @@ import { PLATFORM_INFO, sanitizeFilename } from "@mediaget/parse-core";
 import {
   describeIssues,
   CacheClearInputSchema,
+  ClearTasksInputSchema,
   EnqueueInputSchema,
   FolderPathSchema,
   HistoryFilterSchema,
@@ -201,6 +202,10 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     ok: downloader.resume(taskId),
   }));
   wrap(IPC.downloadList, null, () => downloader.list());
+  // —— download:clear —— 队列卫生：终态行移出内存与落盘档（活跃任务由 downloader 拒删）
+  wrap(IPC.downloadClear, ClearTasksInputSchema, ({ taskIds }) => ({
+    removed: downloader.clear(taskIds),
+  }));
 
   // —— settings ——
   wrap<unknown, AppSettings>(IPC.settingsGet, null, () => {

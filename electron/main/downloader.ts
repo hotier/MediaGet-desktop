@@ -331,14 +331,34 @@ export class Downloader {
   }
 
   /**
+   * 把点名的任务移出行列（队列页「清理」与逐行移除共用一条通道）。
+   * 只删终态行：queued/downloading 要用户先取消，不做「点一下就掐断在途字节」的暗箱；
+   * 不碰磁盘 —— done 的产物在落地目录，error/canceled 的 .part 归 keepPartials 策略管。
+   */
+  clear(taskIds: string[]): number {
+    let removed = 0;
+    for (const id of taskIds) {
+      const t = this.tasks.get(id);
+      if (!t || t.status === "queued" || t.status === "downloading") continue;
+      this.tasks.delete(id);
+      const at = this.order.indexOf(id);
+      if (at >= 0) this.order.splice(at, 1);
+      removed += 1;
+    }
+    if (removed) this.persist();
+    return removed;
+  }
+
+  /**
    * 重启恢复（P2 验收「重启后队列/历史完整」）：
    * - queued / downloading → queued（.part+meta 在则续传）
-   * - paused / error / canceled → 保持原态，等用户手动 resume
-   * - done → 跳过（snapshot 已过滤，双保险）
+   * - paused / error → 保持原态，等用户手动 resume（error 可重试，是有效待办）
+   * - done → 跳过（落地目录才是真源）
+   * - canceled → 跳过（v4：用户明确作废的行不该每次启动都回来占位）
    */
   restore(saved: PersistedQueueLike[]): void {
     for (const s of saved) {
-      if (s.status === "done") continue;
+      if (s.status === "done" || s.status === "canceled") continue;
       const revived: DownloadStatus =
         s.status === "queued" || s.status === "downloading" ? "queued" : s.status;
       const t = {

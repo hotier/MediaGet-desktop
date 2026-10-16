@@ -112,6 +112,7 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
       cancel: () => true,
       pause: () => true,
       resume: () => true,
+      clear: () => 1,
       list: () => [TASK_VIEW],
     },
     store: {
@@ -194,6 +195,8 @@ const BAD_INPUT: Record<string, unknown> = {
   [IPC.downloadCancel]: { taskId: "" },
   [IPC.downloadPause]: { taskId: "" },
   [IPC.downloadResume]: { taskId: "" },
+  // 空数组＝「清理但一颗都不给」，那是调用方没算清可清理集，不该被执行（也不该被当成全清）
+  [IPC.downloadClear]: { taskIds: [] },
   [IPC.settingsSet]: { evilField: 1 },
   [IPC.historyList]: { limit: 0 },
   [IPC.appShowInFolder]: 1234,
@@ -217,6 +220,7 @@ const GOOD_INPUT: Record<string, unknown> = {
   [IPC.downloadCancel]: { taskId: "t-1" },
   [IPC.downloadPause]: { taskId: "t-1" },
   [IPC.downloadResume]: { taskId: "t-1" },
+  [IPC.downloadClear]: { taskIds: ["t-1"] },
   [IPC.settingsSet]: { throttleMs: 100 },
   [IPC.appShowInFolder]: "C:/Downloads/a.mp4",
   [IPC.appCacheClear]: { keys: ["net", "logs"] },
@@ -378,6 +382,25 @@ describe("作者快照（历史页作者列的数据源）", () => {
         meta: { author: { url: long } },
       }).success
     ).toBe(false);
+  });
+});
+
+describe("队列清理入参（download:clear 的两道闸门）", () => {
+  const clearIn = CONTRACT[IPC.downloadClear].in!;
+  const clearOut = CONTRACT[IPC.downloadClear].out!;
+  const ids = (n: number): string[] => Array.from({ length: n }, (_, i) => `t${i}`);
+
+  it("id 非空串、整批 1..500 颗（上限＝一次点完队列的规模，超出该分批而不是静默截断）", () => {
+    expect(clearIn.safeParse({ taskIds: ["a"] }).success).toBe(true);
+    expect(clearIn.safeParse({ taskIds: ids(500) }).success).toBe(true);
+    expect(clearIn.safeParse({ taskIds: ids(501) }).success).toBe(false);
+    expect(clearIn.safeParse({ taskIds: ["a", ""] }).success).toBe(false);
+  });
+
+  it("出参只认整数 removed（负数与小数都不可能是「被带走的颗数」）", () => {
+    expect(clearOut.safeParse({ removed: 0 }).success).toBe(true);
+    expect(clearOut.safeParse({ removed: -1 }).success).toBe(false);
+    expect(clearOut.safeParse({ removed: 1.5 }).success).toBe(false);
   });
 });
 

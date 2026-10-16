@@ -326,6 +326,21 @@ export const DownloadTaskViewSchema = z.object({
   finishedAt: z.number().optional(),
 });
 
+/**
+ * download:clear 入参：点名要移出行列的任务 id。
+ * 上限 500 与队列条数上限同量级 —— 一次「清理」最多吃掉整条队列，再多就是异常输入。
+ */
+export const ClearTasksInputSchema = z.object({
+  taskIds: z.array(STR.min(1)).min(1).max(500),
+});
+
+/**
+ * download:clear 出参：真正被移除的条数。
+ * 进行中/排队中的任务由主进程拒绝删除、不计入 removed —— UI 据此如实播报「移除了几条」，
+ * 而不是假设点名的都成功了。
+ */
+export const ClearTasksResultSchema = z.object({ removed: z.number().int().min(0) });
+
 /** history:list 项 */
 export const HistoryEntrySchema = z.object({
   id: STR,
@@ -487,6 +502,7 @@ export const CONTRACT = {
   [IPC.downloadPause]: invoke(TaskIdInputSchema, OkFlagSchema),
   [IPC.downloadResume]: invoke(TaskIdInputSchema, OkFlagSchema),
   [IPC.downloadList]: invoke(null, z.array(DownloadTaskViewSchema)),
+  [IPC.downloadClear]: invoke(ClearTasksInputSchema, ClearTasksResultSchema),
   [IPC.settingsGet]: invoke(null, AppSettingsSchema),
   [IPC.settingsSet]: invoke(SettingsPatchSchema, AppSettingsSchema),
   [IPC.historyList]: invoke(HistoryFilterSchema.optional(), z.array(HistoryEntrySchema)),

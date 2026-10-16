@@ -16,14 +16,18 @@
  * 筛选（UIUX-DESIGN §2.2）：状态分段 + 搜索 + 平台，全部是**渲染层过滤**（`download:list` 返回的就是全量，零契约变更）。
  * 筛选的单位是**作品（组）**：组里任一文件命中就出现在列表里，展开时只画命中的子行；组行的数值仍是整组的真实聚合
  * ——进度与 `完成/总数` 说的是这个作品，不是筛选结果。分段计数按「含 N 个此类文件的组」数，所以各段之和可以大于「全部」。
+ * 清理（契约 v4）：表头「清理已结束」与行菜单「从队列移除」都走 `download:clear`，只收终态（完成/失败/已取消）——
+ * 进行中就算被点名也由主进程二次拒绝，返回值 `removed` 少了即是拒绝掉的颗数，播报照它说，不报「清理完成」。
+ * 清理按钮的颗数跟搜索/平台走、不跟状态分段走：分段是「我在看哪一类」，清理是「这批结束的都要走」，两者不该互相牵制。
  */
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, ChevronRight, Copy, DownloadCloud, FolderOpen, Info, Pause, Play, RotateCcw, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, DownloadCloud, FolderOpen, Info, Pause, Play, RotateCcw, Trash2, X } from "lucide-react";
 import { api } from "../lib/bridge";
 import { cn } from "../lib/utils";
 import { fmtBytes, fmtCreated, fmtEta } from "../lib/format";
 import type { AppMeta, DownloadTaskView } from "../../../types/ipc";
 import { PlatformIcon } from "../components/PlatformIcon";
+import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { badgeVariants } from "../components/ui/badge";
 import { Card, CardContent } from "../components/ui/card";
@@ -96,6 +100,13 @@ const STATUS_FILTERS: Array<{ key: StatusFilter; label: string; match: (s: Downl
   { key: "canceled", label: "已取消", match: (s) => s === "canceled" },
 ];
 
+/** 「已结束」= 不会再自己变的状态，清理只针对它们（与行内 canCancel 互为反面） */
+const isTerminal = (s: DownloadTaskView["status"]): boolean =>
+  s === "done" || s === "error" || s === "canceled";
+
+/** 行级移除：clear 的入参是数组，单行也包一颗。模块级引用，不随渲染重建 */
+const clearOne = (id: string): Promise<unknown> => api.download.clear([id]);
+
 /**
  * table-fixed 下「文件」列不设宽 = 吃掉整行剩余宽度并在此截断；其余列必须显式定宽，
  * 否则会被均分（主线程行与子行同表，宽度由表头那一行决定，所以 th 与 td 共用这一组常量）。
@@ -139,6 +150,7 @@ export default function DownloadsPage({
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [query, setQuery] = useState("");
   const [platform, setPlatform] = useState("");
+  const [toast, setToast] = useState<string>("");
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -162,6 +174,12 @@ export default function DownloadsPage({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const h = setTimeout(() => setToast(""), 2400);
+    return () => clearTimeout(h);
+  }, [toast]);
 
   const nameOf = useCallback(
     (key?: string): string => (key && meta?.platforms.find((p) => p.key === key)?.name) || key || "",
@@ -187,7 +205,7 @@ export default function DownloadsPage({
   /** groupId → 上一次的视图；筛选条件与组内任务引用都没变就复用同一个对象 */
   const viewCache = useRef(new Map<string, { key: string; view: GroupView }>());
 
-  const { rows, counts } = useMemo(() => {
+  const { rows, counts, clearable } = useMemo(() => {
     const byId = new Map<string, DownloadTaskView[]>();
     for (const t of tasks) {
       const g = byId.get(t.groupId);
@@ -205,6 +223,7 @@ export default function DownloadsPage({
     const key = `${q}\u0000${statusFilter}\u0000${platform}\u0000${nameTag}`;
     const nextCounts = Object.fromEntries(STATUS_FILTERS.map((f) => [f.key, 0])) as Record<StatusFilter, number>;
     const nextRows: GroupView[] = [];
+    const nextClearable: string[] = [];
     const cache = viewCache.current;
     for (const [groupId, groupTasks] of byId) {
       const prev = cache.get(groupId);
@@ -216,11 +235,12 @@ export default function DownloadsPage({
       cache.set(groupId, { key, view });
       for (const f of STATUS_FILTERS)
         if (view.hits.some((t) => f.match(t.status))) nextCounts[f.key] += 1;
+      for (const t of view.hits) if (isTerminal(t.status)) nextClearable.push(t.taskId);
       if (view.visible.length > 0) nextRows.push(view);
     }
     // 队列里已经没有的组要从缓存退出去，否则清完队列缓存只进不出
     for (const id of [...cache.keys()]) if (!byId.has(id)) cache.delete(id);
-    return { rows: nextRows, counts: nextCounts };
+    return { rows: nextRows, counts: nextCounts, clearable: nextClearable };
   }, [tasks, statusFilter, query, platform, nameOf, nameTag]);
 
   function clearFilters(): void {
@@ -242,6 +262,21 @@ export default function DownloadsPage({
     }
   }, []);
 
+  /**
+   * 批量清理：给的是当前筛选视图里的终态任务。`removed` 才是真被带走的颗数——
+   * 进行中就算被点名也会被主进程拒掉，所以播报照 removed 说，不报「清理完成」。
+   */
+  async function clearTerminal(): Promise<void> {
+    if (clearable.length === 0) return;
+    try {
+      const { removed } = await api.download.clear(clearable);
+      setTasks(await api.download.list());
+      setToast(`已清理 ${removed} 项`);
+    } catch {
+      setToast("清理失败，请稍后再试");
+    }
+  }
+
   const toggleGroup = useCallback((groupId: string): void => {
     setExpanded((prev) => {
       const next = new Set(prev);
@@ -253,17 +288,21 @@ export default function DownloadsPage({
 
   if (tasks.length === 0) {
     return (
-      <section className="flex flex-col items-center gap-3 py-16 text-center">
-        <DownloadCloud className="size-11 text-faint" strokeWidth={1.5} aria-hidden="true" />
-        <div className="font-medium">暂无下载任务</div>
-        <p className="text-sm text-muted-foreground">解析成功后点「下载」即入队；批量图集会整组显示进度。</p>
-        <p className="text-sm text-muted-foreground">断点续传：重启后未完成任务自动恢复；.part 存在则 Range 续传。</p>
+      <section className="flex flex-col gap-3">
+        <ToastLine text={toast} />
+        <div className="flex flex-col items-center gap-3 py-16 text-center">
+          <DownloadCloud className="size-11 text-faint" strokeWidth={1.5} aria-hidden="true" />
+          <div className="font-medium">暂无下载任务</div>
+          <p className="text-sm text-muted-foreground">解析成功后点「下载」即入队；批量图集会整组显示进度。</p>
+          <p className="text-sm text-muted-foreground">断点续传：重启后未完成任务自动恢复；.part 存在则 Range 续传。</p>
+        </div>
       </section>
     );
   }
 
   return (
-    <section>
+    <section className="flex flex-col gap-3">
+      <ToastLine text={toast} />
       <Card className="py-0">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-2 py-1.5">
           {STATUS_FILTERS.map((f) => (
@@ -302,6 +341,16 @@ export default function DownloadsPage({
                 ))}
               </SelectContent>
             </Select>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-8 rounded-full px-3"
+              disabled={clearable.length === 0}
+              onClick={() => void clearTerminal()}
+            >
+              清理已结束
+              <span className="tabular-nums opacity-70">{clearable.length}</span>
+            </Button>
           </div>
         </div>
         <CardContent className="py-1">
@@ -324,6 +373,16 @@ export default function DownloadsPage({
         </CardContent>
       </Card>
     </section>
+  );
+}
+
+/** 页内播报（与首页/历史页同口径：一行 Alert，两秒多自动消失）。清空到最后一条也要报，所以两个分支都挂它 */
+function ToastLine({ text }: { text: string }): React.ReactElement | null {
+  if (!text) return null;
+  return (
+    <Alert>
+      <AlertDescription>{text}</AlertDescription>
+    </Alert>
   );
 }
 
@@ -684,6 +743,15 @@ const TaskRow = memo(function TaskRow({
             <ContextMenuItem variant="destructive" onSelect={() => void onAct(api.download.cancel, t.taskId)}>
               <X />
               取消下载
+            </ContextMenuItem>
+          </>
+        )}
+        {!canCancel && (
+          <>
+            <ContextMenuSeparator />
+            <ContextMenuItem variant="destructive" onSelect={() => void onAct(clearOne, t.taskId)}>
+              <Trash2 />
+              从队列移除
             </ContextMenuItem>
           </>
         )}

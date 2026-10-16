@@ -23,6 +23,8 @@ import type {
   CacheClearResultSchema,
   CacheItemSchema,
   CacheStatusSchema,
+  ClearTasksInputSchema,
+  ClearTasksResultSchema,
   DownloadItemSchema,
   DownloadTaskViewSchema,
   EngineHealthSchema,
@@ -76,9 +78,11 @@ export type InvokeResult<T> = InvokeOk<T> | InvokeErr;
 //     但不保证本机存在 → 回落，故按不兼容载荷形状变更升版）。
 // v3：新增 app:cacheStatus / app:cacheClear / app:openLogDir / app:log 四条通道
 //     （设置字段 logLevel、logRetentionDays 是纯新增可选键，不额外构成不兼容）。
+// v4：新增 download:clear 通道（队列卫生：把终态行移出队列与落盘档），并改判重启恢复
+//     语义 —— canceled 不再复活。落盘队列由此前的「只增不减」变成有上限、可清空。
 // ————————————————————————————————————————————————
 
-export const CONTRACT_VERSION = 3;
+export const CONTRACT_VERSION = 4;
 
 // ————————————————————————————————————————————————
 // channel 常量（preload/main/renderer 三方共用字面量，禁止散落拼写）
@@ -93,6 +97,7 @@ export const IPC = {
   downloadPause: "download:pause",
   downloadResume: "download:resume",
   downloadList: "download:list",
+  downloadClear: "download:clear",
   settingsGet: "settings:get",
   settingsSet: "settings:set",
   historyList: "history:list",
@@ -154,6 +159,10 @@ export type PersistedQueueTask = z.infer<typeof PersistedQueueTaskSchema>;
 
 /** download:progress 事件 / download:list 项 */
 export type DownloadTaskView = z.infer<typeof DownloadTaskViewSchema>;
+
+/** download:clear —— 点名移除 + 实际移除条数 */
+export type ClearTasksInput = z.infer<typeof ClearTasksInputSchema>;
+export type ClearTasksResult = z.infer<typeof ClearTasksResultSchema>;
 
 /** settings:get / settings:set —— 部分字段 set，返回全量生效配置 */
 export type AppSettings = z.infer<typeof AppSettingsSchema>;
@@ -254,6 +263,8 @@ export interface MgBridge {
     pause(taskId: string): Promise<InvokeResult<{ ok: boolean }>>;
     resume(taskId: string): Promise<InvokeResult<{ ok: boolean }>>;
     list(): Promise<InvokeResult<DownloadTaskView[]>>;
+    /** 把终态行移出队列（活跃任务不会被删）：返回实际移除条数 */
+    clear(taskIds: string[]): Promise<InvokeResult<ClearTasksResult>>;
     onProgress(cb: (t: DownloadTaskView) => void): () => void;
     onDone(cb: (t: DownloadTaskView) => void): () => void;
     onError(cb: (t: DownloadTaskView) => void): () => void;

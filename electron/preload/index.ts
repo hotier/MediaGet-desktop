@@ -26,6 +26,7 @@ const mg: MgBridge = {
     pause: (taskId) => invoke(IPC.downloadPause, { taskId }),
     resume: (taskId) => invoke(IPC.downloadResume, { taskId }),
     list: () => invoke(IPC.downloadList),
+    clear: (taskIds) => invoke(IPC.downloadClear, { taskIds }),
     onProgress: (cb) => on(IPC.evDownloadProgress, cb),
     onDone: (cb) => on(IPC.evDownloadDone, cb),
     onError: (cb) => on(IPC.evDownloadError, cb),

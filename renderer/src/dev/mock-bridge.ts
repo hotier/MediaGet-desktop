@@ -668,6 +668,17 @@ const mockBridge: MgBridge = {
       return ok({ ok: true });
     },
     list: async () => ok(tasks.map((t) => ({ ...t }))),
+    // 与主进程同语义：只移出终态行，queued/downloading 点名也不删
+    clear: async (taskIds) => {
+      const ids = new Set(taskIds);
+      const keep = tasks.filter(
+        (t) => !ids.has(t.taskId) || t.status === "queued" || t.status === "downloading"
+      );
+      const removed = tasks.length - keep.length;
+      tasks.length = 0;
+      tasks.push(...keep);
+      return ok({ removed });
+    },
     onProgress: (cb) => {
       events.progress.add(cb);
       return () => events.progress.delete(cb);

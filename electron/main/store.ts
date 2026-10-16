@@ -32,6 +32,13 @@ import {
 
 const HISTORY_MAX = 500;
 
+/**
+ * 落盘队列条数上限。快照里只剩待办（done 不进快照、canceled 不再恢复），
+ * 正常用量远到不了这条线；到了就说明用户不清理，那就丢最旧的，
+ * 而不是让 queue.json 无界增长（每次节流写盘都是整档重写）。
+ */
+const QUEUE_MAX = 200;
+
 /** 历史落盘合并窗口：批量下载连环完成时，一秒内几十次追加只重写一次整档 */
 const HISTORY_WRITE_DEBOUNCE_MS = 1000;
 
@@ -224,7 +231,8 @@ export class JsonStore {
   }
 
   saveQueue(tasks: PersistedQueueTask[]): void {
-    this.writeJson(this.path("queue"), tasks);
+    // 快照已是展示序（新在前），截断即丢最旧的，不再排序
+    this.writeJson(this.path("queue"), tasks.slice(0, QUEUE_MAX));
   }
 
   /**

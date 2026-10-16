@@ -268,6 +268,16 @@ describe("队列节流落盘（P2「重启后队列完整」回归）", () => {
     expect((s.loadQueue() as PersistedQueueTask[])[0].received).toBe(5);
   });
 
+  it("saveQueue 超过 QUEUE_MAX 丢的是最旧的（快照已是新在前，截断即尾部出局）", () => {
+    const s = new JsonStore(dir);
+    const many = Array.from({ length: 250 }, (_, i) => task(`t${i}`, i, "paused"));
+    s.saveQueue(many);
+    const saved = s.loadQueue() as PersistedQueueTask[];
+    expect(saved).toHaveLength(200);
+    expect(saved[0].taskId).toBe("t0");
+    expect(saved[saved.length - 1].taskId).toBe("t199");
+  });
+
   it("loadQueue 往返保持字段（含 referer/headers/status）", () => {
     const s = new JsonStore(dir);
     const t: PersistedQueueTask = {
