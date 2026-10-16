@@ -31,6 +31,9 @@ userData/
 download/
 Downloads/
 
+# Qoder session artifacts (canvas / credits reports), machine-local
+.qoder-credits/
+
 # editors / os
 .idea/
 .vscode/
