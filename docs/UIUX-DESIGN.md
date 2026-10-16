@@ -551,12 +551,12 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 开机自动启动        ☐
 显示托盘图标        ☑
 ─────────────
-退出即刻解析        Ctrl+Q     ← 唯一真正的退出入口
+退出即刻解析                  ← 唯一真正的退出入口
 ```
 
 **任务在飞时点"退出"** → 原生模态（主进程 `dialog.showMessageBox`，`type:'warning'`, `buttons:['仍然退出','取消并继续下载']`）：3 个下载未完成，退出后可从托盘恢复并断点续传。**不静默丢任务**。
 
-**应用菜单（菜单栏）**：`autoHideMenuBar:true`（`index.ts:204`）意味着 Alt 才出现 —— Win 用户几乎不知道有菜单。**建议**：保持隐藏，但把关键项搬到快捷键（§3.4），并在设置页"快捷键"分组里让这套表可见；否则用户无法发现 Ctrl+F/Ctrl+, 之外的功能。
+**应用菜单（菜单栏）**：**已删除**（`Menu.setApplicationMenu(null)`）。业主判定这套「文件/编辑/视图/窗口」在本应用里用不到，而 `autoHideMenuBar` 意味着 Alt 才出现 —— Win 用户既发现不了也用不上。菜单里的能力都有去处：编辑类（撤销/复制/粘贴/全选）由 Chromium 原生快捷键完成，不需要菜单注册；显示与退出走托盘；重载与开发者工具在 dev 由 detach 的 DevTools 承担。§3.4 的快捷键表因此是**唯一**的动作发现渠道，设置页"快捷键"分组必须让它可见。
 
 ### 3.4 快捷键
 
@@ -637,7 +637,7 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 | **P2 · 明暗主题可用（2 天，需小契约）** | `AppSettings.theme: "dark"\|"light"\|"system"`；设置页"外观"分组；主进程读 `nativeTheme` 并回传；托盘/任务栏图标双份预留 | `types/ipc.ts`（`AppSettings` 加**可选**字段 + `DEFAULT_SETTINGS`）→ `ipc.ts` zod → `SettingsPage.tsx` → `index.ts`（`nativeTheme` 监听）| **低**（加字段，非加 channel；`DEFAULT_SETTINGS` 兜底旧档）| 改系统主题 → 应用跟随；重启后保持；`tests/ipc.test.ts` 的 settings round-trip 不挂 |
 | **P3 · 下载页重构（3–4 天，**零契约**） | ① **按 `groupId` 分组 + 折叠**（数据已在 `DownloadTaskView.groupId`！）② 分段筛选/搜索（客户端过滤）③ 状态×动作矩阵（§3.2）④ error 徽标改红 + 图标 ⑤ ETA + tabular ⑥ done 行渲染层隐藏 + 「清理已完成」⑦ 批量选择条 ⑧ 全局底部下载栏（复用现有 `onProgress` 事件）| `DownloadsPage.tsx`、`App.tsx`（徽标+全局栏）、`styles.css`；新增 `components/DownloadRow.tsx / GroupRow.tsx / Toast.tsx` | **无**（`groupId` 与 `onProgress` 均已存在）| 30 图集 → 1 个组行 + 折叠；切页后进度仍可见；`npm run test`（`downloader.test.ts` 不受影响）|
 | **P4 · 结果卡补全（2–3 天，**零契约**）** | ① **清晰度选择器**（消费 `ParseData.qualities`/`videos[].qualities`，此前完全未被使用）② 图集缩略网格 + 预览模态 ③ `stat/avatar` 元数据行（含 `statsUnreliable` 警告）④ `embedUrl` → `[在浏览器打开]`（`<a target=_blank>` 走既有 `setWindowOpenHandler`）⑤ 直链时效提示 ⑥ `缓存命中` chip（`durationMs<50` 推断）⑦ 失败态 `[重试]` + `failType` 折叠 | `ResultCard.tsx`（+ 少量 `styles.css`）| **无**（契约字段早就有，是渲染层漏读）| 用 B站链接实测出现多清晰度可选；小红书出现缩略网格 |
-| **P5 · 托盘 + 窗口 + 快捷键（3–4 天，**零契约**，风险最高价值最大）** | `Tray` + 上下文菜单 + 关窗最小化到托盘 + 系统通知 + 应用菜单模板 + `globalShortcut`（2 个）+ renderer `useHotkeys`（L1 全部）+ 设置页"外观/快捷键"分组 | `electron/main/index.ts`（装配层，符合"业务逻辑不在这"的注释约束 —— 建议新开 `electron/main/tray.ts` + `menu.ts` + `shortcuts.ts` 三个装配件）、`App.tsx` | **无** | **核心验收**：下载中点 ✕ → 托盘仍在、任务继续、托盘恢复后状态完好；`Ctrl+Alt+V` 从任意应用唤起解析；`second-instance` 复用路径不退化 |
+| **P5 · 托盘 + 窗口 + 快捷键（3–4 天，**零契约**，风险最高价值最大）** | `Tray` + 上下文菜单 + 关窗最小化到托盘 + 系统通知 + `globalShortcut`（2 个）+ renderer `useHotkeys`（L1 全部）+ 设置页"外观/快捷键"分组 | `electron/main/index.ts`（装配层，符合"业务逻辑不在这"的注释约束 —— 建议新开 `electron/main/tray.ts` + `shortcuts.ts` 两个装配件）、`App.tsx` | **无** | **核心验收**：下载中点 ✕ → 托盘仍在、任务继续、托盘恢复后状态完好；`Ctrl+Alt+V` 从任意应用唤起解析；`second-instance` 复用路径不退化 |
 | **P6 · 需要新 channel / 字段的能力（按需，逐个评估）** | 见下表 | — | **高**（4 处联动 + zod + 测试） | — |
 
 #### P6 明细（把"想要的体验"和"必须付的契约成本"对齐，避免顺手加字段）

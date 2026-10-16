@@ -461,64 +461,6 @@ function quitApp(): void {
   app.quit();
 }
 
-/**
- * 中文应用菜单。Electron 自带的默认菜单是英文的，且塞着本应用没有语义的项（打印、
- * 强制重载）。这里一律用 `role` 而不是自实现：撤销/复制/粘贴这些编辑动作由 Chromium
- * 角色完成，自己拼 clipboard 调用只会和输入框的原生行为分叉。
- * 顶栏默认隐藏（`autoHideMenuBar`），Alt 唤出；应用内动作归页面，菜单不复制一份。
- * 重载与开发者工具只在 dev 出现 —— 打包版一次误触 Ctrl+R 就丢掉整页解析结果。
- */
-function createAppMenu(): Menu {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: "文件",
-      submenu: [
-        { label: "隐藏到托盘", accelerator: "CmdOrCtrl+H", click: () => mainWindow?.hide() },
-        { type: "separator" },
-        { label: "退出", accelerator: "CmdOrCtrl+Q", click: quitApp },
-      ],
-    },
-    {
-      label: "编辑",
-      submenu: [
-        { role: "undo", label: "撤销" },
-        { role: "redo", label: "重做" },
-        { type: "separator" },
-        { role: "cut", label: "剪切" },
-        { role: "copy", label: "复制" },
-        { role: "paste", label: "粘贴" },
-        { role: "selectAll", label: "全选" },
-      ],
-    },
-    {
-      label: "视图",
-      submenu: [
-        ...(isDev
-          ? ([
-              { role: "reload", label: "重新加载" },
-              { role: "forceReload", label: "强制重新加载" },
-              { role: "toggleDevTools", label: "开发者工具" },
-              { type: "separator" },
-            ] as Electron.MenuItemConstructorOptions[])
-          : []),
-        { role: "resetZoom", label: "实际大小" },
-        { role: "zoomIn", label: "放大" },
-        { role: "zoomOut", label: "缩小" },
-        { type: "separator" },
-        { role: "togglefullscreen", label: "全屏" },
-      ],
-    },
-    {
-      label: "窗口",
-      submenu: [
-        { role: "minimize", label: "最小化" },
-        { role: "close", label: "关闭窗口" },
-      ],
-    },
-  ];
-  return Menu.buildFromTemplate(template);
-}
-
 function createWindow(): void {
   const winIcon = iconFromFile("window.png");
   mainWindow = new BrowserWindow({
@@ -527,7 +469,6 @@ function createWindow(): void {
     minWidth: 820,
     minHeight: 560,
     show: false,
-    autoHideMenuBar: true,
     title: "即刻解析",
     icon: winIcon.isEmpty() ? undefined : winIcon,
     webPreferences: {
@@ -615,7 +556,10 @@ app.whenReady().then(() => {
   // core-adapter/config 注入，不经过 session cookie 库（隐私边界）。
   session.defaultSession.setPermissionRequestHandler((_wc, _p, cb) => cb(false));
 
-  Menu.setApplicationMenu(createAppMenu());
+  // 无应用菜单栏：Windows 用户不知道 Alt 后面是什么，菜单里的动作这里全有替代——
+  // 编辑类由 Chromium 原生快捷键完成，退出与显示由托盘完成，重载 dev 走 detach 的开发者工具。
+  // 设 null 而不是留个空 Menu：空 Menu 仍占一条菜单栏高度并把窗口往下推。
+  Menu.setApplicationMenu(null);
   createWindow();
   createTray();
   registerClipboardHotkey();

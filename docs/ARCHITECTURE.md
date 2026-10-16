@@ -36,7 +36,7 @@
 
 | 路径 | 放什么 | 不放什么 |
 | --- | --- | --- |
-| `electron/main/index.ts` | 应用生命周期、窗口、菜单、单实例锁、深链注册 | 业务逻辑 |
+| `electron/main/index.ts` | 应用生命周期、窗口、托盘、单实例锁、深链注册 | 业务逻辑 |
 | `electron/main/engine.ts` | 解析引擎装配：注入 `core-adapter`（cache/config/analytics）→ 调 parse-core 工件（§8）→ 暴露 `parse(textOrUrl)` / `identify(text)` | HTTP、窗口操作 |
 | `electron/main/ipc.ts` | 所有 `ipcMain.handle` 注册；入参按 `types/ipc-contract.ts` 的 in schema 校验（不可信输入才进内核），dev 构建再对出参过 out schema（漂移报 `contract-drift`） | 直接调平台解析器；在本文件重声明 schema |
 | `electron/main/downloader.ts` | 下载队列：并发上限、优先级、断点续传、Referer/UA 组装、进度事件、失败重试 | 解析逻辑 |
