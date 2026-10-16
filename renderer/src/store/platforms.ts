@@ -48,8 +48,3 @@ export const usePlatformStore = create<PlatformStore>((set, get) => ({
 export function hydratePlatformSwitches(switches: Record<string, PlatformSwitch>): void {
   usePlatformStore.getState().hydrate(switches);
 }
-
-/** 当前覆盖层（非 hook 场景：事件回调里判开关） */
-export function currentSwitches(): Record<string, PlatformSwitch> {
-  return usePlatformStore.getState().switches;
-}

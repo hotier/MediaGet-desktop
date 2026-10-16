@@ -229,7 +229,7 @@ export function createEngine(deps: EngineDeps) {
     if (platform && isRegistered(platform) && !isEnabled(platform, switches())) {
       return fail({
         code: 400,
-        msg: `${displayName(platform)}：解析已在设置里关闭（设置 → 引擎 → 平台能力）`,
+        msg: `${displayName(platform)}：解析已在设置里关闭（设置 → 引擎）`,
         platform,
       });
     }

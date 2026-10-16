@@ -461,7 +461,9 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 | **快捷键（新增）** | 只读速查表 + `[复制]` + 冲突提示 | 桌面用户最需要的是"粘贴即解析"。§3.4 全表 |
 | **高级/关于** | `BinaryStatusReport`（完整性）、`probe:engines`（体检）、版本、内核模式、`exportRedacted` 导出、日志目录 | ① 现状体检 chips **只有绿/橙两色，`detail` 藏在 `title` 里**（`SettingsPage.tsx:163`）—— 三种真相（本地已抽取 / 经线上回落 / **两者皆无 → 不可用**）用两色表达不完，`ipc.ts:249-258` 明确有三种 detail。改为**三态**：绿 `本地内核` / 蓝 `经线上回落` / 灰 `不可用`，且**默认展开当前平台清单表格**而非 chip 墙 ② 二进制完整性（`已校验/降级/已拒绝/未找到`）现状已渲染，保留，但"降级"必须给**可执行建议**（现状给的是 `node scripts/fetch-binaries.cjs` 命令行 —— 对终端用户无意义，应仅 dev 构建显示，prod 显示"请重新安装或下载最新版"） |
 
-**保存交互**：现状"底部 `保存设置` 全量提交 + `已保存 ✓` chip 2.5s"。**改为脏状态跟踪**：任一字段变更 → 底部条变 `--warning` tint + 「N 项未保存」+ `保存/放弃`；离开该分组/切页时若脏 → 确认弹层。切页丢设置是现状可复现的问题（`SettingsPage` 的 `s` 是局部 state，切页即卸载 → 未保存内容静默消失）。
+**保存交互**：现状"底部 `保存设置` 全量提交 + `已保存 ✓` chip 2.5s"。**改为脏状态跟踪**：任一字段变更 → 底部条变 `--warning` tint + 「N 项未保存」+ `保存/放弃`；离开该分组/切页时若脏 → 确认弹层。切页丢设置是现状可复现的问题（`SettingsPage` 的 `s` 是局部 state，切页即卸载 → 未保存内容静默消失）。**例外（2026-10-16 定稿）**：即时生效类不进脏计数——本地缓存统计/清理（读盘结果，不是设置草稿）与平台开关（`settings.platformSwitches` 自己走 `settings:set` 落盘）。它们改了不该让用户以为"还有东西没保存"，也不该被「放弃」撤回。
+
+**体检表 · 现行形态（2026-10-16 P3）**：`平台 / 提供 / Cookie / 通道` 四列。「提供」是注册表开关（`usePlatformStore.setEnabled`，乐观写 + 失败回滚 + 右上角 toast），翻转后立刻复检 `probe:engines`，「通道」徽标当场跟着变，界面说的和解析走的是同一条真相；`EngineHealth.detail`（三种真相）挂在徽标的**应用内 tooltip** 上，不再是 native `title`。
 
 ---
 
@@ -857,6 +859,7 @@ button:disabled{color:var(--text-disabled);border-color:var(--line);opacity:1} /
 | 骨架演示 | via=`mock` | `MG_KERNEL_MODE` |
 | 随包组件完整性 | binary integrity | `BinaryStatusView.integrity`（4 态）|
 | 解析引擎 | engines probe | `probe:engines` / `EngineHealth.detail`（3 种真相）|
+| 提供（平台开关）| `usePlatformStore.setEnabled` / `isEnabled` | `settings.platformSwitches`；界面只说「提供」，代码与契约里叫 switch，供给闸门在主进程 |
 
 ---
 

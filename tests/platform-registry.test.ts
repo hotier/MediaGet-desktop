@@ -160,6 +160,20 @@ describe("开关语义（主进程路由与渲染层 UI 共用这一个函数）
     expect(isEnabled("xhs", off)).toBe(false);
     expect(isEnabled("redbook", off)).toBe(false);
   });
+
+  /**
+   * 开关的界面纪律（2026-10-16 P3）：它是「落盘即生效」类，不是草稿字段。
+   * 挂进 SCALAR_SECTION 会同时坏两样——脏计数虚报「N 项未保存」，「放弃」还把已经生效的开关撤回。
+   */
+  it("设置页只经 store 读写开关，不进草稿/脏计数", () => {
+    const page = readFileSync(join(ROOT, "renderer", "src", "pages", "SettingsPage.tsx"), "utf8");
+    const scalar = page.slice(page.indexOf("const SCALAR_SECTION"), page.indexOf("const SCALAR_FIELDS"));
+    expect(scalar).not.toContain("platformSwitches");
+    expect(page).toContain("usePlatformStore");
+    // 预览用的假桥也必须过闸门，否则界面里关掉的平台在预览下照样能解（2026-10-16 实测踩过）
+    const mock = readFileSync(join(ROOT, "renderer", "src", "dev", "mock-bridge.ts"), "utf8");
+    expect(mock).toContain("isEnabled(");
+  });
 });
 
 describe("单一真源纪律", () => {

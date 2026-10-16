@@ -60,7 +60,7 @@
 | `types/ipc-contract.ts` | 载荷形状的唯一声明处（zod）：每通道 in/out schema + `CONTRACT`/`EVENTS` 注册表 | 运行时以外的东西；被 renderer 以值 import |
 | `types/ipc.ts` | 通道常量 `IPC`、`MgBridge` 面、`DEFAULT_SETTINGS`，以及从 contract 派生的类型 | 任何运行时值（须保持只 `import type`）|
 | `shared/platforms.ts` | 平台注册表：本项目「有哪些平台、叫什么、哪枚图标、哪个引擎能解、供不供」的唯一真源（零依赖，主进程与渲染进程 import 同一份，见 §9） | 解析算法、IPC、图标文件本体（SVG 在 `renderer/public/logos/`） |
-| `renderer/src/store/platforms.ts` | 平台开关的渲染层视图（本仓第一个 Zustand store）：乐观置态 → `settings:set` 整表提交 → 失败回滚 | 平台静态定义（在注册表）；持久化（在 `config.json` 的 `settings.platformSwitches`，主进程读这份而不是渲染层内存） |
+| `renderer/src/store/platforms.ts` | 平台开关的渲染层视图（本仓第一个 Zustand store）：乐观置态 → `settings:set` 整表提交 → 失败回滚。消费者 = 设置「引擎」体检表的「提供」列，开关即时生效、不进脏计数（§2 的 `probe:engines` 与它同源） | 平台静态定义（在注册表）；持久化（在 `config.json` 的 `settings.platformSwitches`，主进程读这份而不是渲染层内存） |
 | `resources/` | 第三方二进制（git-lfs 或 CI 拉取，**不入 git**） | 源码 |
 
 ## 3. IPC 契约（v0 草案）

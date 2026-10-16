@@ -31,7 +31,8 @@ import type {
   UpdateState,
 } from "../../../types/ipc";
 import { CONTRACT_VERSION } from "../../../types/ipc";
-import { PLATFORMS, displayName } from "../../../shared/platforms";
+import { PLATFORMS, displayName, isEnabled } from "../../../shared/platforms";
+import { usePlatformStore } from "../store/platforms";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { UpdateActions } from "../components/Update";
 import { Button } from "../components/ui/button";
@@ -40,7 +41,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Input } from "../components/ui/input";
 import { Skeleton } from "../components/ui/skeleton";
 import { Switch } from "../components/ui/switch";
-import { HintInfo } from "../components/ui/tooltip";
+import { HintInfo, Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import {
   Select,
   SelectContent,
@@ -81,6 +82,16 @@ const COOKIE_ROWS: Array<{ key: string; platform: string; note: string }> = [
   { key: "IG_COOKIE", platform: "instagram", note: "强烈建议：游客几乎必被风控" },
   { key: "QQMUSIC_COOKIE", platform: "qqmusic", note: "可选：source+id 试听 vkey" },
 ];
+
+/** 体检表列宽：table-fixed 下不设宽的「平台」列吃剩余；其余按 `1.5rem + Nem` 定宽（与队列/历史页同口径，跟字号档缩放） */
+const ENGINE_COL = {
+  /** max(开关 w-11, 「提供」二字 + info 图标) */
+  supply: "w-[calc(1.5rem+3.5em)]",
+  /** 最宽形态是徽标「未配置」 */
+  cookie: "w-[calc(1.5rem+4.2em)]",
+  /** 最宽形态是徽标「本地内核」 */
+  channel: "w-[calc(1.5rem+5.2em)]",
+} as const;
 
 /** 标量字段归属哪个设置区块（脏计数/放弃都以区块为粒度）；Cookie 字段的区块 id = 其 key */
 const SCALAR_SECTION: Partial<Record<keyof AppSettings, string>> = {
@@ -209,6 +220,12 @@ export default function SettingsPage({
   const [cacheConfirm, setCacheConfirm] = useState(false);
   const [notice, setNotice] = useState<{ id: number; text: string } | null>(null);
   const cacheScanned = useRef(false);
+  /**
+   * 平台开关活在 Zustand 而不是本页草稿：它即时落盘、即时生效，与「保存」无关，
+   * 所以不进脏计数（和上面「本地缓存」同一套语义）。
+   */
+  const switches = usePlatformStore((s) => s.switches);
+  const setPlatformEnabled = usePlatformStore((s) => s.setEnabled);
 
   useEffect(() => {
     void api.settings
@@ -364,6 +381,22 @@ export default function SettingsPage({
     if (!cookieKey) return;
     setCookieClears({ ...cookieClears, [cookieKey]: false });
     setCookieKey(null);
+  }
+
+  /**
+   * 平台开关：store 已做乐观写 + 失败回滚，这里只补两件事——
+   * 复检让「通道」列跟着开关变（关掉那行必须立刻显示「注册表已关闭」），失败如实 toast。
+   */
+  async function togglePlatform(key: string, enabled: boolean): Promise<void> {
+    try {
+      await setPlatformEnabled(key, enabled);
+      setEngines(await api.probe.engines());
+    } catch (e) {
+      setNotice({
+        id: Date.now(),
+        text: `${displayName(key)}：开关未能落盘，已回滚（${e instanceof BridgeError ? e.message : String(e)}）`,
+      });
+    }
   }
 
   /** Cookie 单元格：状态徽标即入口，点击开弹窗（体检表 Cookie 列） */
@@ -982,7 +1015,7 @@ export default function SettingsPage({
 
       case "engines":
         return (
-          <ItemCard title="解析引擎" desc="本地版体检：如实汇报每个平台的解析通道真相，不发抓取、不打平台风控。Cookie 列按平台点状态徽标，弹窗粘贴（仅存本机，风险自负）。">
+          <ItemCard title="解析引擎" desc="「提供」列是注册表开关：关掉后主进程在调用任何引擎之前就回绝该平台的解析请求，落盘即生效、不等「保存」。其余列只如实汇报本机体检真相，不发抓取、不打平台风控；Cookie 点徽标弹窗粘贴（仅存本机，风险自负）。">
             {engines.length === 0 ? (
               <p className="text-xs text-muted-foreground">未获取到体检数据。</p>
             ) : (
@@ -991,8 +1024,14 @@ export default function SettingsPage({
                   <TableHeader>
                     <TableRow>
                       <TableHead>平台</TableHead>
-                      <TableHead>Cookie</TableHead>
-                      <TableHead>通道</TableHead>
+                      <TableHead className={ENGINE_COL.supply}>
+                        <span className="flex items-center gap-1.5">
+                          提供
+                          <HintInfo text="关 = 该平台不再对外供给：解析请求在任何引擎被调用之前就被主进程回绝（已入队的下载不受影响）。即时生效，不需要点「保存」。" />
+                        </span>
+                      </TableHead>
+                      <TableHead className={ENGINE_COL.cookie}>Cookie</TableHead>
+                      <TableHead className={ENGINE_COL.channel}>通道</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -1006,15 +1045,32 @@ export default function SettingsPage({
                               {e.name}
                             </span>
                           </TableCell>
-                          <TableCell>
+                          <TableCell className={ENGINE_COL.supply}>
+                            <Switch
+                              aria-label={`提供 ${e.name} 解析`}
+                              checked={isEnabled(e.platform, switches)}
+                              onCheckedChange={(v) => void togglePlatform(e.platform, v)}
+                            />
+                          </TableCell>
+                          <TableCell className={ENGINE_COL.cookie}>
                             {cookie ? (
                               renderCookieCell(cookie.key)
                             ) : (
                               <span className="text-xs text-disabled">—</span>
                             )}
                           </TableCell>
-                          <TableCell>
-                            <EngineToneBadge e={e} />
+                          <TableCell className={ENGINE_COL.channel}>
+                            {/* 徽标只有一词，三种真相的完整说明挂在悬浮上（纯说明一瞥走 tooltip，带动作的说明才用弹窗） */}
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="inline-flex cursor-help outline-none">
+                                  <EngineToneBadge e={e} />
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent className="max-w-72 leading-relaxed">
+                                {e.detail ?? "无引擎汇报细节"}
+                              </TooltipContent>
+                            </Tooltip>
                           </TableCell>
                         </TableRow>
                       );

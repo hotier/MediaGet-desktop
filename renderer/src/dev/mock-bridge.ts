@@ -724,7 +724,7 @@ const mockBridge: MgBridge = {
       return ok<ParseRunOutcome>({
         result: {
           code: 400,
-          msg: `${displayName(key)}：解析已在设置里关闭（设置 → 引擎 → 平台能力）`,
+          msg: `${displayName(key)}：解析已在设置里关闭（设置 → 引擎）`,
           platform: key,
         },
         via: "local",
