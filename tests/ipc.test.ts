@@ -111,14 +111,14 @@ function harness() {
 }
 
 describe("IPC 信封与校验", () => {
-  it("app:getMeta 返回平台清单（来自内核）+ 信封 ok", async () => {
+  it("app:getMeta 返回版本 + 信封 ok（平台清单不再经 IPC 广播）", async () => {
     const { call, cleanup } = harness();
     const r = await call(IPC.appGetMeta);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      const meta = r.data as { version: string; platforms: unknown[] };
+      const meta = r.data as { version: string; platforms?: unknown[] };
       expect(meta.version).toBe("0.0.0-test");
-      expect(Array.isArray(meta.platforms)).toBe(true);
+      expect(meta.platforms).toBeUndefined();
     }
     cleanup();
   });

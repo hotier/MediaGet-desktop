@@ -16,7 +16,8 @@ import { api } from "../lib/bridge";
 import { buildPlan, buildQualityPlan, type QualityStrategy, summarize } from "../lib/download-plan";
 import { fmtCount, fmtDuration } from "../lib/format";
 import { buildAuthorSnapshot } from "../lib/work-info";
-import type { AppMeta, ParseRunOutcome } from "../../../types/ipc";
+import type { ParseRunOutcome } from "../../../types/ipc";
+import { displayName } from "../../../shared/platforms";
 import { PlatformIcon } from "./PlatformIcon";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
@@ -42,13 +43,11 @@ const PLAN_COLLAPSE_AT = 3;
 
 export function ResultCard({
   outcome,
-  meta,
   sourceUrl,
   onQueued,
   onRetry,
 }: {
   outcome: ParseRunOutcome;
-  meta?: AppMeta | null;
   /** 用户输入的分享链接（写历史用，非直链） */
   sourceUrl?: string;
   onQueued: (count: number) => void;
@@ -108,10 +107,7 @@ export function ResultCard({
   );
   const selected = useMemo(() => plan.filter((p) => !excluded.has(p.id)), [plan, excluded]);
 
-  const platformName = useMemo(() => {
-    if (!result.platform) return "";
-    return meta?.platforms.find((p) => p.key === result.platform)?.name ?? result.platform;
-  }, [meta, result.platform]);
+  const platformName = displayName(result.platform ?? "");
 
   async function enqueue(): Promise<void> {
     setErr("");

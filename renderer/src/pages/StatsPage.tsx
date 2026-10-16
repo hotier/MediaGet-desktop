@@ -34,7 +34,8 @@ import {
   type RankMetric,
   type TrendWindow,
 } from "../lib/stats";
-import type { AppMeta, CacheStatus, HistoryEntry, StatsSnapshot } from "../../../types/ipc";
+import type { CacheStatus, HistoryEntry, StatsSnapshot } from "../../../types/ipc";
+import { displayName } from "../../../shared/platforms";
 import { EChart } from "../components/charts/EChart";
 import { rankHeight, rankOption, trendOption, histogramOption, heatOption, type RankDatum, type TrendMetric } from "../components/charts/options";
 import { useChartPalette } from "../components/charts/palette";
@@ -146,11 +147,9 @@ function Stat({ label, value, dim }: { label: string; value: string; dim?: boole
 }
 
 export default function StatsPage({
-  meta,
   onNavPlatform,
   onOpenCache,
 }: {
-  meta: AppMeta | null;
   /** 点平台榜的一行 → 历史页只看这个平台 */
   onNavPlatform: (platform: string) => void;
   /** 存储卡的去清理 → 设置「通用」分类的缓存卡片 */
@@ -189,11 +188,6 @@ export default function StatsPage({
     void load();
   }, [load]);
 
-  const nameOf = useCallback(
-    (key: string): string => meta?.platforms.find((p) => p.key === key)?.name ?? key,
-    [meta]
-  );
-
   // —— 计数档口径 ——
   const base = snap ?? ZERO_SNAPSHOT;
   const points = useMemo(() => trendByDay(base, win), [base, win]);
@@ -214,7 +208,7 @@ export default function StatsPage({
   const platformData = useMemo<RankDatum[]>(
     () =>
       platformRows.map((r) => ({
-        label: nameOf(r.key),
+        label: displayName(r.key),
         value: r[rankMetric],
         share:
           rankMetric === "bytes"
@@ -226,7 +220,7 @@ export default function StatsPage({
                 : r.downloadShare,
         note: `失败 ${fmtCount(r.failures)} · 失败率 ${fmtPercent(r.failureRate, 1)}`,
       })),
-    [platformRows, rankMetric, nameOf, base]
+    [platformRows, rankMetric, base]
   );
   const kindData = useMemo<RankDatum[]>(
     () =>

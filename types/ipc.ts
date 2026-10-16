@@ -84,9 +84,13 @@ export type InvokeResult<T> = InvokeOk<T> | InvokeErr;
 // v5：新增 stats:get 通道（统计页：生命周期计数器快照，来自 userData/stats.json）。
 //     同时 history 窗口 500 → 5000（`history:list` 的 limit 上界随之放宽，载荷形状不变）。
 //     升号的理由是**通道集合增了**，不是存档形状变了：旧 stats.json 读不进来时按空档起算。
+// v6：平台清单的真源从内核 PLATFORM_INFO 移到本仓 `shared/platforms.ts`（业主定调：parse-core 只是
+//     引擎之一，「有哪些平台、提不提供」归本仓注册表 + 开关决定）。载荷侧两条不兼容变更：
+//     `app:getMeta` 去掉 `platforms`（两进程改为 import 同一模块，不再过 IPC 复制一张表），
+//     `settings` 新增 `platformSwitches`（每平台 enabled 覆盖，缺省跟随注册表默认）。
 // ————————————————————————————————————————————————
 
-export const CONTRACT_VERSION = 5;
+export const CONTRACT_VERSION = 6;
 
 // ————————————————————————————————————————————————
 // channel 常量（preload/main/renderer 三方共用字面量，禁止散落拼写）
@@ -204,6 +208,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   logRetentionDays: 7,
   updateOnStartup: true,
   updateAutoDownload: false,
+  // 只存用户改过的平台；没改过的跟随注册表 enabledByDefault，
+  // 于是内核加一个平台不需要写迁移就能出现在界面上
+  platformSwitches: {},
 };
 
 /** history:list */

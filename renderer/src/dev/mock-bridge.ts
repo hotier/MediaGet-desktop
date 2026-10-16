@@ -29,34 +29,11 @@ import {
   type StatsSnapshot,
   type UpdateState,
 } from "../../../types/ipc";
+import { PLATFORMS, canonicalKeys, displayName } from "../../../shared/platforms";
 
 const ok = <T,>(data: T): InvokeResult<T> => ({ ok: true, data });
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
-
-/** 平台名取自内核 PLATFORM_INFO 的真实字面量（mock 专用副本，只为预览有正确的中文标签） */
-const PLATFORMS: AppMeta["platforms"] = [
-  { key: "douyin", name: "抖音", nameEn: "Douyin", supportsIdParse: true },
-  { key: "kuaishou", name: "快手", nameEn: "Kuaishou", supportsIdParse: true },
-  { key: "xhs", name: "小红书", nameEn: "Xiaohongshu", supportsIdParse: false },
-  { key: "ppxia", name: "皮皮虾", nameEn: "Pipixia", supportsIdParse: false },
-  { key: "xigua", name: "西瓜视频", nameEn: "Xigua", supportsIdParse: false },
-  { key: "zuiyou", name: "最右", nameEn: "Zuiyou", supportsIdParse: false },
-  { key: "pipigx", name: "皮皮搞笑", nameEn: "Pipigx", supportsIdParse: false },
-  { key: "huya", name: "虎牙直播", nameEn: "Huya", supportsIdParse: false },
-  { key: "bilibili", name: "哔哩哔哩", nameEn: "Bilibili", supportsIdParse: true },
-  { key: "weibo", name: "微博", nameEn: "Weibo", supportsIdParse: false },
-  { key: "quanminkge", name: "全民K歌", nameEn: "QuanminKge", supportsIdParse: false },
-  { key: "sixroom", name: "六间房", nameEn: "Sixroom", supportsIdParse: false },
-  { key: "xinpianchang", name: "新片场", nameEn: "Xinpianchang", supportsIdParse: false },
-  { key: "haokan", name: "好看视频", nameEn: "Haokan", supportsIdParse: false },
-  { key: "acfun", name: "AcFun", nameEn: "AcFun", supportsIdParse: true },
-  { key: "twitter", name: "Twitter/X", nameEn: "Twitter", supportsIdParse: false },
-  { key: "tiktok", name: "TikTok", nameEn: "TikTok", supportsIdParse: false },
-  { key: "instagram", name: "Instagram", nameEn: "Instagram", supportsIdParse: false },
-  { key: "youtube", name: "YouTube", nameEn: "YouTube", supportsIdParse: true },
-  { key: "qqmusic", name: "QQ音乐", nameEn: "QQMusic", supportsIdParse: true },
-];
 
 const MB = 1024 * 1024;
 const KB = 1024;
@@ -129,8 +106,8 @@ export const FIXTURES: Record<string, { platform: string; data: ParseData }> = {
       tname: "影视剪辑",
     },
   },
-  xhs: {
-    platform: "xhs",
+  redbook: {
+    platform: "redbook",
     data: {
       type: "image",
       title: "秋日通勤穿搭｜九张图拆到单品",
@@ -216,7 +193,7 @@ function detectPlatform(text: string): string | null {
   const t = text.toLowerCase();
   const table: Array<[RegExp, string]> = [
     [/bilibili|b23\.tv/, "bilibili"],
-    [/xiaohongshu|xhslink/, "xhs"],
+    [/xiaohongshu|xhslink/, "redbook"],
     [/douyin|iesdouyin/, "douyin"],
     [/youtu\.?be/, "youtube"],
     [/y\.qq\.com|qqmusic/, "qqmusic"],
@@ -338,7 +315,7 @@ function mockStats(): StatsSnapshot {
   const DAY = 86_400_000;
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
-  const keys = PLATFORMS.map((p) => p.key);
+  const keys = canonicalKeys();
   const kinds = ["video", "image", "audio", "file"] as const;
   const pad = (n: number): string => String(n).padStart(2, "0");
   const keyOf = (at: number): string => {
@@ -480,7 +457,7 @@ function startTicker(): void {
 function seedQueue(): void {
   const input: EnqueueInput = {
     items: [],
-    meta: { platform: "xhs", title: "秋日通勤穿搭｜九张图拆到单品", sourceUrl: "https://xhslink.com/mock" },
+    meta: { platform: "redbook", title: "秋日通勤穿搭｜九张图拆到单品", sourceUrl: "https://xhslink.com/mock" },
   };
   const gid = "g-seed-1";
   const seedStates = ["done", "done", "error", "downloading", "queued"] as const;
@@ -700,15 +677,14 @@ function mockCacheStatus(): CacheStatus {
 }
 
 const mockBridge: MgBridge = {
-  getMeta: async () =>
-    ok<AppMeta>({ version: "0.1.0", electron: "34.0.0 (mock)", kernelMode: "local", platforms: PLATFORMS }),
+  getMeta: async () => ok<AppMeta>({ version: "0.1.0", electron: "34.0.0 (mock)", kernelMode: "local" }),
 
   identify: async ({ text }) => {
     const platform = detectPlatform(text);
     const url = text.match(URL_RE)?.[0] ?? null;
     return ok<IdentifyOutcome>({
       platform: platform ?? "",
-      platformName: PLATFORMS.find((p) => p.key === platform)?.name ?? "",
+      platformName: displayName(platform),
       url,
       kind: url ? (text.trim() === url ? "url" : "share-text") : "unknown",
     });
@@ -739,7 +715,7 @@ const mockBridge: MgBridge = {
       result: { code: 200, msg: "解析成功", platform: fx.platform, data: structuredClone(fx.data) },
       via: online ? "online" : "local",
       fallbackReason: online ? "本地解析器未取得 vkey，已转线上回落通道" : undefined,
-      durationMs: online ? 2140 : key === "xhs" ? 38 : 168,
+      durationMs: online ? 2140 : key === "redbook" ? 38 : 168,
     });
   },
 
@@ -841,7 +817,7 @@ const mockBridge: MgBridge = {
   },
 
   probe: {
-    // 全量平台（与真核 probe:engines 一致返回 engine.platforms()）：Cookie 列要覆到 instagram/qqmusic 等尾部平台
+    // 全量平台取自注册表（真核这里返回 engine.platforms()，P2 改为注册表 × 引擎矩阵后两处同源）
     engines: async () =>
       ok<EngineHealth[]>(
         PLATFORMS.map((p, i) => ({

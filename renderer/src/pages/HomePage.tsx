@@ -13,7 +13,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUpRight, Download, FileUp, Info, Loader2 } from "lucide-react";
 import { api, BridgeError } from "../lib/bridge";
 import type {
-  AppMeta,
   DownloadTaskView,
   HistoryEntry,
   IdentifyOutcome,
@@ -104,14 +103,12 @@ function fmtHitHint(hits: ParsedHit[]): string {
 
 export default function HomePage({
   tasks,
-  meta,
   inputRef,
   onNav,
   clipboardFill,
   onClipboardFillDone,
 }: {
   tasks: DownloadTaskView[];
-  meta: AppMeta | null;
   /** App 层 Ctrl+K 用的输入框 ref：聚焦首页工作台 */
   inputRef: React.RefObject<HTMLTextAreaElement | null>;
   onNav: (p: Page) => void;
@@ -477,7 +474,6 @@ export default function HomePage({
             <ResultCard
               key={item.id}
               outcome={item.outcome}
-              meta={meta}
               sourceUrl={item.sourceUrl}
               onRetry={() => void parseOne(item.id, item.text, true)}
               onQueued={(count) =>

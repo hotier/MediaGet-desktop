@@ -16,7 +16,6 @@
  */
 import {
   identifyPlatform,
-  getPlatformName,
   PLATFORM_INFO,
   extractUrlFromShareText,
   isBlockedText,
@@ -27,6 +26,7 @@ import {
   PARSE_CORE_VERSION,
 } from "@mediaget/parse-core";
 import type { ParseResult } from "../../types/ipc";
+import { displayName } from "../../shared/platforms";
 import { createResultCache } from "../../core-adapter/cache";
 import { createNoopAnalytics } from "../../core-adapter/analytics";
 import { createConfigSource } from "../../core-adapter/config";
@@ -169,7 +169,9 @@ export function createEngine(deps: EngineDeps) {
       : (identifyPlatform(url) ?? "");
     return {
       platform,
-      platformName: platform ? getPlatformName(platform) : "",
+      // 显示名取本仓注册表：内核那份 PLATFORM_INFO 只是 parse-core 一个引擎的自述，
+      // 名字/图标的项目边界归注册表（qsmusic 就是内核没登记、我们有登记的那个）
+      platformName: platform ? displayName(platform) : "",
       url,
       kind,
     };

@@ -10,6 +10,7 @@ import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react"
 import { ChartColumn, Download, History, Home, ListOrdered, Settings } from "lucide-react";
 import { api, BridgeError } from "./lib/bridge";
 import { setFontSize, setTheme, setThemeStyle, setFontFamily } from "./lib/theme";
+import { hydratePlatformSwitches } from "./store/platforms";
 import type { AppMeta, DownloadTaskView, UpdateState } from "../../types/ipc";
 import DownloadsPage from "./pages/DownloadsPage";
 import HistoryPage from "./pages/HistoryPage";
@@ -90,6 +91,8 @@ export default function App(): React.ReactElement {
         setThemeStyle(s.themeStyle);
         setFontSize(s.fontSizePx);
         setFontFamily(s.fontFamily);
+        // 平台开关覆盖层复用这一次读，不再多打一遍 IPC
+        hydratePlatformSwitches(s.platformSwitches);
       })
       .catch(() => {});
     void loadUpdatePolicy();
@@ -241,15 +244,14 @@ export default function App(): React.ReactElement {
             {page === "home" && (
               <HomePage
                 tasks={tasks}
-                meta={meta}
                 inputRef={workspaceInputRef}
                 onNav={setPage}
                 clipboardFill={clipboardFill}
                 onClipboardFillDone={() => setClipboardFill(null)}
               />
             )}
-            {page === "downloads" && <DownloadsPage meta={meta} onNav={navToHistory} />}
-            {page === "history" && <HistoryPage meta={meta} focusKey={historyFocus} platformFocus={historyPlatform} />}
+            {page === "downloads" && <DownloadsPage onNav={navToHistory} />}
+            {page === "history" && <HistoryPage focusKey={historyFocus} platformFocus={historyPlatform} />}
             {page === "stats" && (
               <Suspense
                 fallback={
@@ -259,7 +261,7 @@ export default function App(): React.ReactElement {
                   </div>
                 }
               >
-                <StatsPage meta={meta} onNavPlatform={navToHistoryPlatform} onOpenCache={openCacheSettings} />
+                <StatsPage onNavPlatform={navToHistoryPlatform} onOpenCache={openCacheSettings} />
               </Suspense>
             )}
           </main>

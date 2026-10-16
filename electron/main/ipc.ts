@@ -13,6 +13,7 @@
 import { z } from "zod";
 import { shell } from "electron";
 import { PLATFORM_INFO, sanitizeFilename } from "@mediaget/parse-core";
+import { resolveKey } from "../../shared/platforms";
 import {
   describeIssues,
   CacheClearInputSchema,
@@ -168,7 +169,6 @@ export function registerIpc(deps: IpcRegistryDeps): void {
       version: meta.version,
       electron: meta.electron,
       kernelMode: deps.kernelMode(),
-      platforms: engine.platforms(),
     };
   });
 
@@ -186,7 +186,8 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     });
     deps.stats.parse({
       at,
-      platform: outcome.result.platform ?? parsed.platformHint ?? "",
+      // 归一到契约键后落盘：否则 `xhs` 与 `redbook` 会在平台榜上算成两个平台
+      platform: resolveKey(outcome.result.platform ?? parsed.platformHint ?? ""),
       via: outcome.via,
       ok: outcome.result.code === 200,
       durationMs: outcome.durationMs,
@@ -271,6 +272,9 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     if (patch.logRetentionDays !== undefined) next.settings.logRetentionDays = patch.logRetentionDays;
     if (patch.updateOnStartup !== undefined) next.settings.updateOnStartup = patch.updateOnStartup;
     if (patch.updateAutoDownload !== undefined) next.settings.updateAutoDownload = patch.updateAutoDownload;
+    // 整表替换：渲染层 store 每次提交完整开关快照，"关掉默认开"要落显式 false，"恢复默认"靠删键——
+    // 逐键合并会让删键无法表达，语义上等价于两套真源。
+    if (patch.platformSwitches !== undefined) next.settings.platformSwitches = { ...patch.platformSwitches };
     if (patch.cookies) {
       const entries = Object.entries(patch.cookies) as [string, string][];
       for (const [k, v] of entries) {

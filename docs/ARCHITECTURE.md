@@ -58,6 +58,8 @@
 | `core-adapter/` | 内核的本地注入件（cache/analytics/config/ratelimit） | 任何解析算法 |
 | `types/ipc-contract.ts` | 载荷形状的唯一声明处（zod）：每通道 in/out schema + `CONTRACT`/`EVENTS` 注册表 | 运行时以外的东西；被 renderer 以值 import |
 | `types/ipc.ts` | 通道常量 `IPC`、`MgBridge` 面、`DEFAULT_SETTINGS`，以及从 contract 派生的类型 | 任何运行时值（须保持只 `import type`）|
+| `shared/platforms.ts` | 平台注册表：本项目「有哪些平台、叫什么、哪枚图标、哪个引擎能解、供不供」的唯一真源（零依赖，主进程与渲染进程 import 同一份，见 §9） | 解析算法、IPC、图标文件本体（SVG 在 `renderer/public/logos/`） |
+| `renderer/src/store/platforms.ts` | 平台开关的渲染层视图（本仓第一个 Zustand store）：乐观置态 → `settings:set` 整表提交 → 失败回滚 | 平台静态定义（在注册表）；持久化（在 `config.json` 的 `settings.platformSwitches`，主进程读这份而不是渲染层内存） |
 | `resources/` | 第三方二进制（git-lfs 或 CI 拉取，**不入 git**） | 源码 |
 
 ## 3. IPC 契约（v0 草案）
@@ -236,5 +238,5 @@ mediaGet（已有，web 仓）                     mediaGet-desktop（本仓）
 | 内核版本 | 以 npm semver 版本号声明依赖（离线/审计场景可指 Release tarball URL）；`about` 页展示当前 parse-core 版本；dev 可临时 `file:` 链接 |
 | 抽取进度跟踪 | mediaGet 仓 `docs/DESKTOP-PLAN.md`（若存在）；P0 未完成前本仓只实现骨架 + mock 内核，避免等阻塞 |
 | 分叉防线 | 本仓不写平台解析；若某天必须临时补，标 `// DIVERGENCE:` 并在 issue 跟踪回流上游 |
-| 域名/平台清单 | 一律来自内核 `PLATFORM_INFO`，客户端不复制表 |
+| 域名/平台清单 | **以 `shared/platforms.ts` 注册表为真源**（2026-10-16 业主改口，此前写「一律来自内核 `PLATFORM_INFO`」）。理由：parse-core 只是引擎之一（还有 yt-dlp、后续更多），引擎决定「能不能解」，注册表决定「供不供」；若以内核为真源，换引擎或关平台都得等上游发版，产品边界就不归我们管。内核那份降级为**引擎侧事实**，由 `tests/platform-registry.test.ts` 逐键对账（名称/域名/短链/ID 模式 + 有本地 parser 才可声明 `parseCore: ready`），漂移即红叉。 |
 | 契约类型 | `normalize-result` 的输出结构是唯一真源，在 `types/ipc-contract.ts` 以 zod 镜像并注明来源；`types/ipc.ts` 只做 `z.infer` 派生 |

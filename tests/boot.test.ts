@@ -1,7 +1,7 @@
 /**
  * 主进程入口装配冒烟（headless 可验证的全部）：
  * 真实 GUI 启动需要桌面会话（本环境无），但「import index.js 不崩、
- * IPC 全 channel 注册、顶层生命周期挂齐、getMeta 直通内核」是纯 Node 可测的。
+ * IPC 全 channel 注册、顶层生命周期挂齐、getMeta 通路」是纯 Node 可测的。
  * electron 走 tests/stubs 桩：whenReady 永不 resolve → 不建窗口。
  *
  * 机制说明：index.ts 顶层装配只跑一次（不做 resetModules —— 重 import 会拿到
@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { beforeAll, afterAll, describe, expect, it } from "vitest";
 import { IPC, type UpdateState } from "../types/ipc";
 import { CONTRACT } from "../types/ipc-contract";
+import { canonicalKeys } from "../shared/platforms";
 import { app as stubApp, ipcMain as stubIpcMain } from "./stubs/electron";
 
 const dir = mkdtempSync(join(tmpdir(), "mg-boot-"));
@@ -57,18 +58,20 @@ describe("main/index.ts 装配冒烟", () => {
     expect(listeners).toContain("will-quit");
   });
 
-  it("app:getMeta 端到端（假 ipcMain 直调 handler）返回内核平台清单", async () => {
+  it("app:getMeta 端到端只回版本与内核模式（平台清单已移交 shared/platforms 注册表）", async () => {
     const handler = stubIpcMain._handlers.get(IPC.appGetMeta);
     expect(typeof handler).toBe("function");
     const res = (await handler!({}, undefined)) as {
       ok: boolean;
-      data: { version: string; platforms: { key: string }[]; kernelMode: string };
+      data: { version: string; kernelMode: string };
       error?: { code: string; message: string };
     };
     expect(res, `getMeta 信封：${JSON.stringify(res?.error)}`).toHaveProperty("ok", true);
     expect(res.data.version).toBe("0.0.0-test");
-    expect(res.data.platforms.map((p) => p.key)).toContain("douyin");
     expect(["local", "online", "mock"]).toContain(res.data.kernelMode);
+    // 反证：getMeta 不再带平台清单——带了就意味着两套平台真源又并存了
+    expect(res.data).not.toHaveProperty("platforms");
+    expect(canonicalKeys()).toContain("douyin");
   });
 
   it("before-quit 触发队列快照落盘路径不抛", () => {

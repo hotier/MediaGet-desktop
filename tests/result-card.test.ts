@@ -21,7 +21,7 @@ function outcome(data: ParseRunOutcome["result"]["data"], extra: Partial<ParseRu
 
 const render = (o: ParseRunOutcome): string =>
   renderToStaticMarkup(
-    createElement(TooltipProvider, null, createElement(ResultCard, { outcome: o, meta: null, onQueued: () => {} }))
+    createElement(TooltipProvider, null, createElement(ResultCard, { outcome: o, onQueued: () => {} }))
   );
 
 describe("ResultCard 三层结构", () => {
@@ -95,7 +95,6 @@ describe("ResultCard 三层结构", () => {
     const html = renderToStaticMarkup(
       createElement(ResultCard, {
         outcome: { result: { code: 500, msg: "风控拦截", failType: "bot-gated" }, via: "local", durationMs: 80 },
-        meta: null,
         onQueued: () => {},
         onRetry: () => {},
       })

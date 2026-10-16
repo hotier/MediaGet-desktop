@@ -31,6 +31,7 @@ import type {
   UpdateState,
 } from "../../../types/ipc";
 import { CONTRACT_VERSION } from "../../../types/ipc";
+import { PLATFORMS, displayName } from "../../../shared/platforms";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { UpdateActions } from "../components/Update";
 import { Button } from "../components/ui/button";
@@ -68,12 +69,17 @@ import {
 } from "../components/ui/table";
 import { Textarea } from "../components/ui/textarea";
 
-const COOKIE_ROWS: Array<{ key: string; platform: string; label: string; note: string }> = [
-  { key: "BILIBILI_COOKIE", platform: "bilibili", label: "哔哩哔哩", note: "强烈建议：提升大会员清晰度与风控通过率" },
-  { key: "DOUYIN_COOKIE", platform: "douyin", label: "抖音", note: "可选：仅增强" },
-  { key: "XHS_COOKIE", platform: "xhs", label: "小红书", note: "可选" },
-  { key: "IG_COOKIE", platform: "instagram", label: "Instagram", note: "强烈建议：游客几乎必被风控" },
-  { key: "QQMUSIC_COOKIE", platform: "qqmusic", label: "QQ音乐", note: "可选：source+id 试听 vkey" },
+/**
+ * Cookie 行：只有「哪个环境变量对哪个平台」这一件新信息 ——
+ * 平台名一律查注册表（displayName），不再在这里手抄第二遍；
+ * 键必须是**契约键**（`redbook` 而非上游路由别名 `xhs`），否则与体检行的 platform 对不上。
+ */
+const COOKIE_ROWS: Array<{ key: string; platform: string; note: string }> = [
+  { key: "BILIBILI_COOKIE", platform: "bilibili", note: "强烈建议：提升大会员清晰度与风控通过率" },
+  { key: "DOUYIN_COOKIE", platform: "douyin", note: "可选：仅增强" },
+  { key: "XHS_COOKIE", platform: "redbook", note: "可选" },
+  { key: "IG_COOKIE", platform: "instagram", note: "强烈建议：游客几乎必被风控" },
+  { key: "QQMUSIC_COOKIE", platform: "qqmusic", note: "可选：source+id 试听 vkey" },
 ];
 
 /** 标量字段归属哪个设置区块（脏计数/放弃都以区块为粒度）；Cookie 字段的区块 id = 其 key */
@@ -378,7 +384,7 @@ export default function SettingsPage({
       <button
         type="button"
         onClick={() => openCookie(rowKey)}
-        aria-label={`设置 ${row.label} Cookie`}
+        aria-label={`设置 ${displayName(row.platform)} Cookie`}
         className="cursor-pointer rounded-md outline-none transition-opacity hover:opacity-80 focus-visible:ring-[3px] focus-visible:ring-ring/50"
       >
         <Badge variant={badge.variant} className="font-normal">
@@ -1064,7 +1070,7 @@ export default function SettingsPage({
               </Row>
               <Row label="内核版本" end>
                 <span className="pt-2 font-mono text-sm">
-                  {meta ? `${meta.kernelMode} · ${meta.platforms.length} 平台` : "—"}
+                  {meta ? `${meta.kernelMode} · ${PLATFORMS.length} 平台` : "—"}
                 </span>
               </Row>
             </ItemCard>
@@ -1269,7 +1275,7 @@ export default function SettingsPage({
         {cookieRow && (
           <DialogContent className="max-w-md">
             <DialogHeader>
-              <DialogTitle>{cookieRow.label} Cookie</DialogTitle>
+              <DialogTitle>{displayName(cookieRow.platform)} Cookie</DialogTitle>
               <DialogDescription>
                 {cookieRow.note}。浏览器登录该平台后 F12 → Application/存储 → Cookies 复制整串；仅存本机，风险自负。
               </DialogDescription>
@@ -1282,7 +1288,7 @@ export default function SettingsPage({
                   value={cookieDraft}
                   onChange={(e) => setCookieDraft(e.target.value)}
                   placeholder="粘贴 Cookie 整串"
-                  aria-label={`${cookieRow.label} Cookie`}
+                  aria-label={`${displayName(cookieRow.platform)} Cookie`}
                   className="min-h-24 font-mono text-xs"
                 />
                 {cookieConfigured && (

@@ -27,7 +27,7 @@ export function buildAuthorSnapshot(data?: ParseData | null): AuthorSnapshot | u
 
 export interface WorkInfoInput {
   title: string;
-  /** 平台显示名（来自 meta.platforms，不直出契约 key） */
+  /** 平台显示名（注册表 displayName 的结果，不直出契约 key） */
   platformName?: string;
   kindLabel?: string;
   fileCount?: number;

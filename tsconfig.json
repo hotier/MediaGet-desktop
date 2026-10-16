@@ -25,6 +25,7 @@
   },
   "include": [
     "types/**/*.ts",
+    "shared/**/*.ts",
     "core-adapter/**/*.ts",
     "electron/**/*.ts",
     "renderer/src/**/*.ts",

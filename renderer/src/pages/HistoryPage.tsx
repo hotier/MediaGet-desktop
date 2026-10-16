@@ -18,10 +18,11 @@
  * 平台选项池来自**未过滤**的这份数据：从前按 platform 回源再拿结果去重当选项，选过一个平台就切不回别的。
  * 首次空与过滤空是两种空态：后者保留工具栏 + 「没有符合条件的记录」+ 清除筛选。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Clock3, Copy, ExternalLink, FolderOpen } from "lucide-react";
 import { api } from "../lib/bridge";
-import type { AppMeta, AuthorSnapshot, HistoryEntry } from "../../../types/ipc";
+import type { AuthorSnapshot, HistoryEntry } from "../../../types/ipc";
+import { displayName } from "../../../shared/platforms";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { cn } from "../lib/utils";
 import { buildWorkInfoText } from "../lib/work-info";
@@ -117,11 +118,9 @@ interface Row {
 }
 
 export default function HistoryPage({
-  meta,
   focusKey,
   platformFocus,
 }: {
-  meta: AppMeta | null;
   focusKey?: string | null;
   /** 统计页平台榜带过来的意图：seq 变一次就应用一次（同值复点也要生效） */
   platformFocus?: { key: string; seq: number } | null;
@@ -171,11 +170,6 @@ export default function HistoryPage({
     return () => clearTimeout(h);
   }, [toast]);
 
-  const nameOf = useCallback(
-    (key?: string): string => (key && meta?.platforms.find((p) => p.key === key)?.name) || key || "",
-    [meta]
-  );
-
   const { rows, platforms } = useMemo(() => {
     // store 返回新在前；按首次出现序聚组即保持倒序
     const byGroup = new Map<string, HistoryEntry[]>();
@@ -211,7 +205,7 @@ export default function HistoryPage({
       (platform === "" || r.platform === platform) &&
       within(r.createdAt, now) &&
       (q === "" ||
-        `${r.title} ${r.authorName ?? ""} ${r.platform ?? ""} ${nameOf(r.platform)} ${r.files.join(" ")} ${r.sourceUrl ?? ""}`
+        `${r.title} ${r.authorName ?? ""} ${r.platform ?? ""} ${displayName(r.platform)} ${r.files.join(" ")} ${r.sourceUrl ?? ""}`
           .toLowerCase()
           .includes(q));
     return {
@@ -219,7 +213,7 @@ export default function HistoryPage({
       // 选项池来自**未过滤**的聚合结果：跟着 rows 走会让选过一个平台后切不回别的
       platforms: Array.from(new Set(all.map((r) => r.platform).filter((p): p is string => Boolean(p)))),
     };
-  }, [list, platform, timeRange, query, nameOf]);
+  }, [list, platform, timeRange, query]);
 
   function clearFilters(): void {
     setPlatform("");
@@ -241,7 +235,7 @@ export default function HistoryPage({
   function copyInfo(r: Row): void {
     const text = buildWorkInfoText({
       title: r.title,
-      platformName: nameOf(r.platform),
+      platformName: displayName(r.platform),
       kindLabel: r.kind ? kindLabel(r.kind) : undefined,
       fileCount: r.count,
       createdAt: r.createdAt,
@@ -291,7 +285,7 @@ export default function HistoryPage({
               <SelectItem value={ALL}>全部平台</SelectItem>
               {platforms.map((p) => (
                 <SelectItem key={p} value={p}>
-                  {nameOf(p)}
+                  {displayName(p)}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -440,7 +434,7 @@ export default function HistoryPage({
             <DialogDescription>下载那一刻解析到的作者信息，之后不会自动更新。</DialogDescription>
           </DialogHeader>
           {authorRow && (
-            <AuthorCard row={authorRow} platformName={nameOf(authorRow.platform)} />
+            <AuthorCard row={authorRow} platformName={displayName(authorRow.platform)} />
           )}
         </DialogContent>
       </Dialog>

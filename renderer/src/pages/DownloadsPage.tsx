@@ -25,7 +25,8 @@ import { ChevronDown, ChevronRight, Copy, DownloadCloud, FolderOpen, Info, Pause
 import { api } from "../lib/bridge";
 import { cn } from "../lib/utils";
 import { fmtBytes, fmtCreated, fmtEta } from "../lib/format";
-import type { AppMeta, DownloadTaskView } from "../../../types/ipc";
+import type { DownloadTaskView } from "../../../types/ipc";
+import { displayName } from "../../../shared/platforms";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
@@ -137,13 +138,7 @@ const COL = {
 
 const TABLE_MIN_W = "min-w-[86em]";
 
-export default function DownloadsPage({
-  meta,
-  onNav,
-}: {
-  meta: AppMeta | null;
-  onNav: OnNav;
-}): React.ReactElement {
+export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactElement {
   const [tasks, setTasks] = useState<DownloadTaskView[]>([]);
   // 主线程默认收起：记住的是「谁被展开了」，而不是「谁被折叠了」——后者要给每个新组预填 id
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -181,25 +176,12 @@ export default function DownloadsPage({
     return () => clearTimeout(h);
   }, [toast]);
 
-  const nameOf = useCallback(
-    (key?: string): string => (key && meta?.platforms.find((p) => p.key === key)?.name) || key || "",
-    [meta]
-  );
-
+  // 显示名直接查本仓注册表（模块常量，不经 getMeta 异步到达）——
+  // 平台名不再需要参与缓存键：以前要加那一维，是因为名字表来自 getMeta、比任务晚到
   // 选项池来自**未过滤**的队列：跟着结果走会让选过一个平台后切不回别的（历史页 §2.3 的那个 bug）
   const platforms = useMemo(
     () => Array.from(new Set(tasks.map((t) => t.platform).filter((p): p is string => Boolean(p)))),
     [tasks]
-  );
-
-  /**
-   * meta 里的平台名映射进缓存键：`inScope` 会拿中文名参与搜索匹配，
-   * 而 meta（平台表）是启动后才到的 —— 不加这一维，先到先算的视图会带着
-   * 「还没有中文名可搜」的旧结论一直复用下去。
-   */
-  const nameTag = useMemo(
-    () => (meta?.platforms ?? []).map((p) => `${p.key}=${p.name}`).join("|"),
-    [meta]
   );
 
   /** groupId → 上一次的视图；筛选条件与组内任务引用都没变就复用同一个对象 */
@@ -217,10 +199,10 @@ export default function DownloadsPage({
     const inScope = (t: DownloadTaskView): boolean =>
       (platform === "" || t.platform === platform) &&
       (q === "" ||
-        `${t.filename} ${t.title ?? ""} ${t.platform ?? ""} ${nameOf(t.platform)} ${t.url} ${t.sourceUrl ?? ""}`
+        `${t.filename} ${t.title ?? ""} ${t.platform ?? ""} ${displayName(t.platform)} ${t.url} ${t.sourceUrl ?? ""}`
           .toLowerCase()
           .includes(q));
-    const key = `${q}\u0000${statusFilter}\u0000${platform}\u0000${nameTag}`;
+    const key = `${q}\u0000${statusFilter}\u0000${platform}`;
     const nextCounts = Object.fromEntries(STATUS_FILTERS.map((f) => [f.key, 0])) as Record<StatusFilter, number>;
     const nextRows: GroupView[] = [];
     const nextClearable: string[] = [];
@@ -241,7 +223,7 @@ export default function DownloadsPage({
     // 队列里已经没有的组要从缓存退出去，否则清完队列缓存只进不出
     for (const id of [...cache.keys()]) if (!byId.has(id)) cache.delete(id);
     return { rows: nextRows, counts: nextCounts, clearable: nextClearable };
-  }, [tasks, statusFilter, query, platform, nameOf, nameTag]);
+  }, [tasks, statusFilter, query, platform]);
 
   function clearFilters(): void {
     setStatusFilter("all");
@@ -336,7 +318,7 @@ export default function DownloadsPage({
                 <SelectItem value={ALL}>全部平台</SelectItem>
                 {platforms.map((p) => (
                   <SelectItem key={p} value={p}>
-                    {nameOf(p)}
+                    {displayName(p)}
                   </SelectItem>
                 ))}
               </SelectContent>

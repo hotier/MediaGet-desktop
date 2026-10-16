@@ -99,7 +99,7 @@ describe("无媒体形态", () => {
   });
 
   it("图集夹具逐张成项", () => {
-    const { data } = FIXTURES.xhs;
+    const { data } = FIXTURES.redbook;
     const entries = buildPlan(data);
     expect(entries).toHaveLength(9);
     expect(entries.every((e) => e.kind === "image")).toBe(true);

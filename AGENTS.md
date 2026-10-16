@@ -3,7 +3,7 @@
 MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet 仓，本仓只消费它的版本化工件 `@mediaget/parse-core`。
 
 深层依据不在此文件，按需要读：
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— §1 三条硬约束、§6 安全红线、§7 构建与发布、§8 分仓与同步（改架构前先读 §8）
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— §1 三条硬约束、§6 安全红线、§7 构建与发布、§8 分仓与同步（改架构前先读 §8）、§9 耦合治理（平台清单的归属在这里定过）
 - [docs/UIUX-DESIGN.md](docs/UIUX-DESIGN.md) —— Token 分层与视觉语义真源；§7 覆盖 §1–2；§9 定统计页与图表底座（ECharts 唯一登记点、取色探针、作图三规）
 - [README.md](README.md) —— 当前进度台账与命令表
 
@@ -27,6 +27,15 @@ MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet
 1. **单一代码源**：解析逻辑只在 `packages/parse-core/` 维护一份，本仓 import 工件、不复制。同步成本就是一个版本号——白名单外的符号（如 `createTtlCache`）在 `core-adapter/` 本地复刻，需要更多能力时让上游加进 exports 再发版，伸手拿内部实现会把升级变成定期冲突。
 2. **依赖边界**：renderer 只能经 IPC 拿数据；全仓不 import route 层与 Next.js 运行时模块。
 3. **零敏感资产入包**：运维 Cookie（`BILIBILI_COOKIE`、`IG_COOKIE`）等站点资产绝不打包、绝不硬编码；客户端只接受用户自配。
+
+## 平台清单只有一个真源：`shared/platforms.ts`
+
+「有哪些平台、叫什么、哪枚图标、哪个引擎能解、供不供」只写在这张零依赖表里，主进程与渲染进程 import 同一份。加平台 = 改这一处 + 放一枚 `renderer/public/logos/*.svg`，五页自动跟上；**再抄一份平台名或图标映射就是缺陷**——`tests/platform-registry.test.ts` 把「图标文件不存在」「与内核 `PLATFORM_INFO` 逐字段漂移」「声明 `parseCore: ready` 却没有本地 parser」「renderer 里手抄平台名」都变成红叉。
+
+- **引擎与供给解耦**（2026-10-16 业主定调）：parse-core 只是引擎之一（还有 yt-dlp、后续更多）。`engines` 记覆盖度 `ready`/`declared`/`unknown`，`enabledByDefault` 由 ready 推出；内核那份降级成引擎侧事实，不再当产品边界。
+- **契约键 vs 别名**：上游路由目录名（`xhs`、`ppxia`）只许活在 `legacyKeys`；写进 history/stats 前一律 `resolveKey()` 归一，未登记键原样回吐、不进界面——注册表不许改写盘上历史。
+- **开关**：持久化在 `settings.platformSwitches`（只存用户改过的，缺省跟 `enabledByDefault`），渲染层经 `renderer/src/store/platforms.ts` 乐观置态并整表提交；主进程读持久值，不读渲染层内存。
+- `AppMeta.platforms` 已随契约 v6 删除：平台名不再经 IPC 广播。
 
 ## 隐私红线（写日志/存储前先核这一节）
 

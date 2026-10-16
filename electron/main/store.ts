@@ -31,6 +31,7 @@ import {
   type PersistedQueueTask,
   type StatsSnapshot,
 } from "../../types/ipc";
+import { resolveKey } from "../../shared/platforms";
 
 /**
  * 历史窗口。5000 是给统计页的「逐文件粒度」用的：作者榜、单文件大小分布、
@@ -138,6 +139,10 @@ export class JsonStore {
         ...(raw.settings ?? {}),
         // 深拷 cookies：避免 settings 缺省时与 DEFAULT_SETTINGS 的共享引用被写穿（污染模块级常量）
         cookies: { ...(raw.settings?.cookies ?? {}) },
+        // 同一条理由，且值本身是对象：逐键拷，不给 DEFAULT_SETTINGS 留可改的内层引用
+        platformSwitches: Object.fromEntries(
+          Object.entries(raw.settings?.platformSwitches ?? {}).map(([k, v]) => [k, { ...v }])
+        ),
       },
       kernel: raw.kernel ?? {},
     };
@@ -191,10 +196,14 @@ export class JsonStore {
    * 返回的是新表（新在前）；退出前 `flush()` 会把最后一次写补上。
    */
   appendHistory(entry: HistoryEntry): HistoryEntry[] {
+    // 别名归一（xhs → redbook）在唯一的写入口做：历史页与统计页因此不可能看到同一个平台的两个名字
+    const normalized: HistoryEntry = entry.platform
+      ? { ...entry, platform: resolveKey(entry.platform) }
+      : entry;
     const list = this.loadHistory();
-    const next = [entry, ...list].slice(0, HISTORY_MAX);
+    const next = [normalized, ...list].slice(0, HISTORY_MAX);
     this.historyCache = next;
-    this.historyPending = [entry, ...this.historyPending].slice(0, HISTORY_MAX);
+    this.historyPending = [normalized, ...this.historyPending].slice(0, HISTORY_MAX);
     this.scheduleHistoryWrite();
     return next;
   }

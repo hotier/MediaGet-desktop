@@ -13,6 +13,7 @@
  * 批量下载收尾时一秒内几十次累加，不该钉几十次整档重写。
  */
 import type { StatsSnapshot } from "../../types/ipc";
+import { resolveKey } from "../../shared/platforms";
 
 /** byDay 保留的自然日数：再多就丢最旧的（趋势图最长要看的就是这一年） */
 export const STATS_DAY_RETENTION = 366;
@@ -119,7 +120,9 @@ export function createStats(opts: StatsOptions): StatsRecorder {
     patch: (p: StatsSnapshot["byPlatform"][string]) => void
   ): void => {
     if (!platform) return;
-    const row = cur!.byPlatform[platform] ?? {
+    // 别名归一到契约键后计数：同一平台的旧名与新名并排两行，平台榜就是错的
+    const key = resolveKey(platform);
+    const row = cur!.byPlatform[key] ?? {
       downloads: 0,
       failures: 0,
       bytes: 0,
@@ -127,7 +130,7 @@ export function createStats(opts: StatsOptions): StatsRecorder {
       parseFailures: 0,
     };
     patch(row);
-    cur!.byPlatform[platform] = row;
+    cur!.byPlatform[key] = row;
   };
 
   const commit = (): void => {

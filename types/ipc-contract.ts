@@ -173,6 +173,12 @@ export const EnqueueInputSchema = z.object({
 
 export const TaskIdInputSchema = z.object({ taskId: STR.min(1).max(64) });
 
+/**
+ * 单平台开关覆盖。
+ * 只有 `enabled`：引擎优先级是 P2 的事，届时加 `engineOrder` 是纯新增可选键，不必再升契约号。
+ */
+export const PlatformSwitchSchema = z.object({ enabled: z.boolean() }).strict();
+
 /** 全量生效配置（settings:get / settings:set 的出参） */
 export const AppSettingsSchema = z.object({
   /** 下载目录（绝对路径；空串 = 系统下载目录） */
@@ -225,6 +231,12 @@ export const AppSettingsSchema = z.object({
   updateOnStartup: z.boolean(),
   /** 更新策略：检测到新版本后自动下载（静默下载）；关=横幅手动确认，不偷家庭带宽 */
   updateAutoDownload: z.boolean(),
+  /**
+   * 平台解析能力开关（真源 = 本仓 `shared/platforms.ts` 注册表，这里只存用户覆盖）。
+   * 缺键 = 跟随该平台 `enabledByDefault`；写进档的只有用户明确改过的平台，
+   * 所以注册表增删平台不需要动存档形状。键是契约键（别名在写入侧已归一）。
+   */
+  platformSwitches: z.record(STR, PlatformSwitchSchema),
   // 安装策略固定为「手动重启安装」：setup 包做不了无感静默安装，`autoInstallOnAppQuit` 恒 false，
   // 安装只由关于页流式下载弹窗的「立即重启」触发，不作为开关暴露
 });
@@ -271,10 +283,8 @@ export const AppMetaSchema = z.object({
   version: STR,
   electron: STR,
   kernelMode: z.enum(["local", "online", "mock"]),
-  /** 平台清单来自内核 PLATFORM_INFO，renderer 不复制 */
-  platforms: z.array(
-    z.object({ key: STR, name: STR, nameEn: STR, supportsIdParse: z.boolean() })
-  ),
+  // v6 起不再带 `platforms`：平台清单的真源是本仓 `shared/platforms.ts`，
+  // 两进程 import 同一模块即可，过 IPC 复制一张表正是这次要消灭的并行真源
 });
 
 export const IdentifyOutcomeSchema = z.object({
