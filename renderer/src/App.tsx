@@ -1,13 +1,13 @@
 /**
  * 应用外壳（shadcn/ui + Tailwind 基线，2026-10-14 对标 Motrix v2）：
  * 侧栏 208 / 主内容两区，导航与状态件走组件库（Button/Badge/Tooltip）。
- * renderer 不引 react-router —— 桌面固定四页，state 路由足够。
+ * renderer 不引 react-router —— 桌面固定五页，state 路由足够。
  * 解析工作台已并入首页（2026-10-14）：首页 Textarea 是唯一输入面，
  * Ctrl+K 跳首页并聚焦它；顶栏已移除（页面标题不再占一行）。
  * 样式写在 utility 里，`styles.css` 只剩 Token 与少数无法 utility 化的规则（拖拽区、滚动条）。
  */
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Download, History, Home, ListOrdered, Settings } from "lucide-react";
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { ChartColumn, Download, History, Home, ListOrdered, Settings } from "lucide-react";
 import { api, BridgeError } from "./lib/bridge";
 import { setFontSize, setTheme, setThemeStyle, setFontFamily } from "./lib/theme";
 import type { AppMeta, DownloadTaskView, UpdateState } from "../../types/ipc";
@@ -15,16 +15,20 @@ import DownloadsPage from "./pages/DownloadsPage";
 import HistoryPage from "./pages/HistoryPage";
 import SettingsPage from "./pages/SettingsPage";
 import HomePage from "./pages/HomePage";
+// 统计页懒加载：ECharts 摇树后仍有 ~625 KB（Node 侧 eval 48 ms），只在用户真打开第 5 页时才进渲染进程
+const StatsPage = lazy(() => import("./pages/StatsPage"));
 import { Badge } from "./components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
+import { Skeleton } from "./components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
 
-type Page = "home" | "downloads" | "history";
+type Page = "home" | "downloads" | "history" | "stats";
 
 const PAGES: Array<{ key: Page; label: string; icon: React.ReactNode }> = [
   { key: "home", label: "首页", icon: <Home size={16} strokeWidth={1.5} /> },
   { key: "downloads", label: "队列", icon: <ListOrdered size={16} strokeWidth={1.5} /> },
   { key: "history", label: "历史", icon: <History size={16} strokeWidth={1.5} /> },
+  { key: "stats", label: "统计", icon: <ChartColumn size={16} strokeWidth={1.5} /> },
 ];
 
 export default function App(): React.ReactElement {
@@ -50,6 +54,20 @@ export default function App(): React.ReactElement {
   const navToHistory = useCallback((target: "history", groupId: string) => {
     setHistoryFocus(groupId);
     setPage(target);
+  }, []);
+  /** 统计页平台榜 → 历史页只看这个平台。seq 让「连着点同一个平台」也能重放这次意图 */
+  const [historyPlatform, setHistoryPlatform] = useState<{ key: string; seq: number } | null>(null);
+  const historyPlatformSeq = useRef(0);
+  const navToHistoryPlatform = useCallback((platform: string) => {
+    historyPlatformSeq.current += 1;
+    setHistoryPlatform({ key: platform, seq: historyPlatformSeq.current });
+    setHistoryFocus(null);
+    setPage("history");
+  }, []);
+  /** 统计页存储卡的「去清理」：清理动作只在设置「通用」的缓存卡片里做 */
+  const openCacheSettings = useCallback(() => {
+    setSettingsEntry("general");
+    setSettingsMode(true);
   }, []);
 
   /** 读更新策略两开关：启动一次，退出设置模式时再读（保存即影响侧栏下载图标显示条件） */
@@ -112,7 +130,7 @@ export default function App(): React.ReactElement {
         setSettingsMode(true);
         return;
       }
-      if (settingsMode) return; // 设置模式下 ⌃1–3 不生效：退出必须走 返回/Esc（脏状态有确认把关）
+      if (settingsMode) return; // 设置模式下 ⌃1–4 不生效：退出必须走 返回/Esc（脏状态有确认把关）
       if (e.key === "k") {
         e.preventDefault();
         // 唯一输入面在首页：不在首页先切页，等这一帧渲染完再聚焦
@@ -120,7 +138,7 @@ export default function App(): React.ReactElement {
         setTimeout(() => workspaceInputRef.current?.focus(), 0);
         return;
       }
-      const idx = ["1", "2", "3"].indexOf(e.key);
+      const idx = ["1", "2", "3", "4"].indexOf(e.key);
       if (idx >= 0) {
         e.preventDefault();
         setPage(PAGES[idx].key);
@@ -231,7 +249,19 @@ export default function App(): React.ReactElement {
               />
             )}
             {page === "downloads" && <DownloadsPage meta={meta} onNav={navToHistory} />}
-            {page === "history" && <HistoryPage meta={meta} focusKey={historyFocus} />}
+            {page === "history" && <HistoryPage meta={meta} focusKey={historyFocus} platformFocus={historyPlatform} />}
+            {page === "stats" && (
+              <Suspense
+                fallback={
+                  <div className="flex flex-col gap-3">
+                    <Skeleton className="h-28" />
+                    <Skeleton className="h-64" />
+                  </div>
+                }
+              >
+                <StatsPage meta={meta} onNavPlatform={navToHistoryPlatform} onOpenCache={openCacheSettings} />
+              </Suspense>
+            )}
           </main>
         </div>
           </>

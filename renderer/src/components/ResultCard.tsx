@@ -14,7 +14,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
 import { api } from "../lib/bridge";
 import { buildPlan, buildQualityPlan, type QualityStrategy, summarize } from "../lib/download-plan";
-import { fmtCount } from "../lib/format";
+import { fmtCount, fmtDuration } from "../lib/format";
 import { buildAuthorSnapshot } from "../lib/work-info";
 import type { AppMeta, ParseRunOutcome } from "../../../types/ipc";
 import { PlatformIcon } from "./PlatformIcon";
@@ -485,10 +485,6 @@ function buildStatItems(data?: {
   push("投稿", data.videoCount);
   push("获赞", data.totalFavorited);
   return out;
-}
-
-function fmtDuration(ms: number): string {
-  return ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)}s`;
 }
 
 function ViaBadge({ via }: { via: "local" | "online" | "mock" }): React.ReactElement {

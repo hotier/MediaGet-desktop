@@ -20,12 +20,12 @@ import {
 import { cn } from "~/lib/utils";
 import { api, BridgeError } from "../lib/bridge";
 import { fmtBytes } from "../lib/format";
+import { CACHE_ITEMS as SETTINGS_CACHE_ITEMS } from "../lib/cache-items";
 import { setFontSize, setTheme, setThemeStyle, setFontFamily } from "../lib/theme";
 import type {
   AppMeta,
   AppSettings,
   BinaryStatusReport,
-  CacheItemKey,
   CacheStatus,
   EngineHealth,
   UpdateState,
@@ -136,17 +136,10 @@ const LOG_LEVELS: Array<{ value: AppSettings["logLevel"]; label: string }> = [
 const LOG_RETENTION_OPTIONS = [3, 7, 14, 30];
 
 /**
- * 缓存项文案与展示顺序（主进程按扫描顺序返回，此处是 UI 的真源）。
+ * 缓存项文案与展示顺序见 `lib/cache-items.ts`（统计页报同一份占用，名字必须同源）。
  * clearable=false 的两项（update / records）只显示占用，不进清理名单。
  */
-const CACHE_ITEMS: Array<{ key: CacheItemKey; label: string; hint: string }> = [
-  { key: "net", label: "网络缓存", hint: "解析与线上回落留下的 HTTP 副本；清掉只是让下次重新拉取，不动本机文件" },
-  { key: "partials", label: "孤儿断点", hint: "下载目录里没人认领的 .part 续传文件；进行中的下载会被避让，不会被打断" },
-  { key: "junk", label: "临时残留", hint: "配置原子写的半成品与坏档备份，正常路径下应为 0" },
-  { key: "logs", label: "日志文件", hint: "见下方「日志」卡片；清理即删除当前文件与轮转出的历史分片" },
-  { key: "update", label: "更新包缓存", hint: "自动更新的下载落点，由更新流程自管，这里只报占用" },
-  { key: "records", label: "本机记录", hint: "设置 / 队列 / 历史是用户数据不是缓存，永不清理" },
-];
+const CACHE_ITEMS = SETTINGS_CACHE_ITEMS;
 
 /** 主题风格（= 完整主题色带，styles.css 层 1.5 的真源；这里只登记顺序、文案与色点类） */
 const THEME_STYLES: Array<{ id: AppSettings["themeStyle"]; label: string; dot: string }> = [

@@ -14,7 +14,7 @@
  * 主信息（作品标题、浮层「标题」值）`font-medium` + 前景色，
  * 元数据常规 + muted，数字列 tabular-nums；字体族一律 UI 栈（不混等宽）。
  * 筛选（与队列页同一套交互）：搜索 + 平台 + 时间窗，全部是**渲染层过滤**（§2.3），零契约变更。
- * 一次取满 500 条（= 主进程 store 的 HISTORY_MAX 上限），所以渲染层过滤看到的就是全部记录 ——
+ * 一次取满 5000 条（= 主进程 store 的 HISTORY_MAX 上限），所以渲染层过滤看到的就是全部记录 ——
  * 平台选项池来自**未过滤**的这份数据：从前按 platform 回源再拿结果去重当选项，选过一个平台就切不回别的。
  * 首次空与过滤空是两种空态：后者保留工具栏 + 「没有符合条件的记录」+ 清除筛选。
  */
@@ -25,7 +25,8 @@ import type { AppMeta, AuthorSnapshot, HistoryEntry } from "../../../types/ipc";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { cn } from "../lib/utils";
 import { buildWorkInfoText } from "../lib/work-info";
-import { fmtBytes, fmtCount, fmtCreated } from "../lib/format";
+import { fmtBytes, fmtCount, fmtCreated, kindLabel } from "../lib/format";
+import { HISTORY_WINDOW } from "../lib/local-limits";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Alert, AlertDescription } from "../components/ui/alert";
@@ -62,18 +63,11 @@ import {
 } from "../components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger, TruncatedTooltip } from "../components/ui/tooltip";
 
-const KIND_LABEL: Record<string, string> = {
-  video: "视频",
-  image: "图集",
-  audio: "音频",
-  file: "文件",
-};
-
 /** Radix Select 不接受空串作为 value，「全部平台」用一个不会与平台 key 撞车的哨兵 */
 const ALL = "__all__";
 
 /** 一次取满：与主进程 store 的 HISTORY_MAX 同值，渲染层过滤因而覆盖全部记录 */
-const HISTORY_LIMIT = 500;
+const HISTORY_LIMIT = HISTORY_WINDOW;
 
 type TimeRange = "all" | "today" | "7d" | "30d";
 
@@ -122,7 +116,16 @@ interface Row {
   bytes?: number;
 }
 
-export default function HistoryPage({ meta, focusKey }: { meta: AppMeta | null; focusKey?: string | null }): React.ReactElement {
+export default function HistoryPage({
+  meta,
+  focusKey,
+  platformFocus,
+}: {
+  meta: AppMeta | null;
+  focusKey?: string | null;
+  /** 统计页平台榜带过来的意图：seq 变一次就应用一次（同值复点也要生效） */
+  platformFocus?: { key: string; seq: number } | null;
+}): React.ReactElement {
   const [list, setList] = useState<HistoryEntry[]>([]);
   const [platform, setPlatform] = useState<string>("");
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
@@ -144,6 +147,11 @@ export default function HistoryPage({ meta, focusKey }: { meta: AppMeta | null; 
   useEffect(() => {
     void api.history.list({ limit: HISTORY_LIMIT }).then(setList).catch(() => {});
   }, []);
+
+  // 统计页点榜 → 本页筛到那个平台。平台选项池来自全量数据，所以榜上的键一定在这页可选
+  useEffect(() => {
+    if (platformFocus) setPlatform(platformFocus.key);
+  }, [platformFocus]);
 
   // Ctrl+F 聚焦本页搜索框（§3.4 L1）
   useEffect(() => {
@@ -234,7 +242,7 @@ export default function HistoryPage({ meta, focusKey }: { meta: AppMeta | null; 
     const text = buildWorkInfoText({
       title: r.title,
       platformName: nameOf(r.platform),
-      kindLabel: r.kind ? KIND_LABEL[r.kind] ?? r.kind : undefined,
+      kindLabel: r.kind ? kindLabel(r.kind) : undefined,
       fileCount: r.count,
       createdAt: r.createdAt,
       sourceUrl: r.sourceUrl,
@@ -363,7 +371,7 @@ export default function HistoryPage({ meta, focusKey }: { meta: AppMeta | null; 
                     )}
                   </TableCell>
                   <TableCell className="text-muted-foreground">
-                    {r.kind ? KIND_LABEL[r.kind] ?? r.kind : "—"}
+                    {kindLabel(r.kind)}
                   </TableCell>
                   <TableCell className="tabular-nums text-muted-foreground">
                     {r.count} 个
@@ -625,7 +633,7 @@ function WorkDetail({
           </button>
         </Field>
       )}
-      {row.kind && <Field label="类型">{KIND_LABEL[row.kind] ?? row.kind}</Field>}
+      {row.kind && <Field label="类型">{kindLabel(row.kind)}</Field>}
       <Field label="文件数">{row.count} 个{row.bytes != null ? ` · ${fmtBytes(row.bytes)}` : ""}</Field>
       <Field label="创建时间">{fmtCreated(row.createdAt)}</Field>
       {row.sourceUrl && (
