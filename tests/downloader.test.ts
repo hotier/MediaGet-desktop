@@ -2,7 +2,7 @@
  * 下载器核心行为测试（断点续传 / Range / Referer / 冲突命名 / 失败隔离 / SSRF 闸门）
  * 用注入 fetchImpl 完全离线。
  */
-import { mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, existsSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, basename } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -18,7 +18,12 @@ function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "mg-dl-test-"));
 }
 
-function makeDownloader(dir: string, fetchImpl: typeof fetch, maxConcurrent = 3) {
+function makeDownloader(
+  dir: string,
+  fetchImpl: typeof fetch,
+  maxConcurrent = 3,
+  tuning?: { stallTimeoutMs?: number; retryBaseDelayMs?: number }
+) {
   const events: DownloadTaskView[] = [];
   const history: { groupTask: DownloadTaskView; files: string[] }[] = [];
   let persisted: PersistedQueueLike[] = [];
@@ -29,6 +34,7 @@ function makeDownloader(dir: string, fetchImpl: typeof fetch, maxConcurrent = 3)
     getKeepPartials: () => false,
     defaultUserAgent: "UA-TEST",
     fetchImpl,
+    ...tuning,
     events: {
       progress: (t) => events.push(t),
       done: (t) => events.push(t),
@@ -306,6 +312,151 @@ describe("Downloader 流式落盘", () => {
       5000
     );
     expect(readFileSync(join(dir, "slow.mp4"), "utf8")).toBe("PARTONE2");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/**
+ * 正确性收口（2026-10-16）：这四条都是「用户会当成程序有 bug」的形态——
+ * 半个文件标完成、磁盘写不进时整个应用消失、僵死连接永久占槽、下载期间覆盖别人的文件。
+ * 全部离线：假 fetch + 把 .part 位置占成目录 + 显式 content-length 与实发字节数不一致。
+ */
+describe("Downloader 正确性收口", () => {
+  it("上游提前 EOF（声明 12 字节只给 8）→ 不 rename、不标完成，报「不完整」且留断点", async () => {
+    const dir = makeTempDir();
+    // Response 必须每次新建：ReadableStream 是一次性消费品，重试复用同一个会拿到
+    // "body should not be disturbed"，那就变成在测假 fetch 而不是测下载器。
+    const { dl } = makeDownloader(
+      dir,
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              c.enqueue(new TextEncoder().encode("12345678"));
+              c.close(); // 谎称 12 字节却提前收尾
+            },
+          }),
+          { status: 200, headers: { "content-length": "12" } }
+        ),
+      3,
+      { retryBaseDelayMs: 10 }
+    );
+    const [taskId] = dl.enqueue(
+      [{ url: "https://cdn.example.com/short.mp4", filename: "short.mp4", kind: "video" }],
+      "c1"
+    );
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "error"), 8000);
+    const t = dl.list().find((x) => x.taskId === taskId);
+    expect(t?.error).toMatch(/不完整|12/);
+    expect(existsSync(join(dir, "short.mp4"))).toBe(false); // 半个文件不许冒充成品
+    expect(existsSync(join(dir, "short.mp4.part"))).toBe(true); // 断点留着，重试接着下
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("写流报错（.part 位置被目录占住）→ 错误进任务状态，不外泄成未捕获异常", async () => {
+    const dir = makeTempDir();
+    const partDir = join(dir, "broken.mp4.part");
+    mkdirSync(partDir); // createWriteStream 在这个路径上必然异步 error
+    const uncaught: unknown[] = [];
+    const onUncaught = (e: unknown) => uncaught.push(e);
+    process.on("uncaughtException", onUncaught);
+    try {
+      const { dl } = makeDownloader(
+        dir,
+        async () => fakeResponse(new TextEncoder().encode("DATA")),
+        3,
+        { retryBaseDelayMs: 10 }
+      );
+      const [taskId] = dl.enqueue(
+        [{ url: "https://cdn.example.com/broken.mp4", filename: "broken.mp4", kind: "video" }],
+        "c2"
+      );
+      await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "error"), 8000);
+      const t = dl.list().find((x) => x.taskId === taskId);
+      expect(t?.error).toMatch(/写入|EPERM|EISDIR|目录/);
+      expect(existsSync(join(dir, "broken.mp4"))).toBe(false);
+      expect(uncaught).toEqual([]); // 主进程不该看见裸的 stream error
+    } finally {
+      process.off("uncaughtException", onUncaught);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("连接僵死（一块字节后再不推进）→ 空闲超时报错并释放执行槽", async () => {
+    const dir = makeTempDir();
+    const { dl } = makeDownloader(
+      dir,
+      async (_input, init) => {
+        const url = String(_input);
+        if (url.includes("stall")) {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              start(c) {
+                c.enqueue(new TextEncoder().encode("HEAD")); // 首块之后永不推进
+                const bail = () => {
+                  try {
+                    c.error(new Error("aborted"));
+                  } catch {
+                    /* 已关闭 */
+                  }
+                };
+                if (init?.signal?.aborted) bail();
+                else init?.signal?.addEventListener("abort", bail, { once: true });
+              },
+            }),
+            { status: 200, headers: { "content-length": "1000" } }
+          );
+        }
+        return fakeResponse(new TextEncoder().encode("AFTER"));
+      },
+      1, // 单槽：不释放就永远卡死
+      { stallTimeoutMs: 150, retryBaseDelayMs: 10 }
+    );
+    const [stallId] = dl.enqueue(
+      [{ url: "https://cdn.example.com/stall.mp4", filename: "stall.mp4", kind: "video" }],
+      "c3a"
+    );
+    await waitUntil(() => dl.list().some((t) => t.taskId === stallId && t.status === "error"), 8000);
+    expect(dl.list().find((t) => t.taskId === stallId)?.error).toMatch(/超时|无数据/);
+
+    const [nextId] = dl.enqueue(
+      [{ url: "https://cdn.example.com/after.mp4", filename: "after.mp4", kind: "video" }],
+      "c3b"
+    );
+    await waitUntil(() => dl.list().some((t) => t.taskId === nextId && t.status === "done"), 5000);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("下载期间目标被外部创建 → 落地时避让序号，不覆盖别人的文件", async () => {
+    const dir = makeTempDir();
+    const bytes = new TextEncoder().encode("MINE");
+    const { dl } = makeDownloader(
+      dir,
+      async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(c) {
+              // 外部程序在下载途中落了同名文件。放在 body 构造里而不是测试开头：
+              // ReadableStream 于 fetchImpl 内构造，时机在 pickTargetPath 之后，
+              // 这样测到的是「落地改名避让」，而不是入队时那套避让。
+              if (!existsSync(join(dir, "exist.mp4"))) writeFileSync(join(dir, "exist.mp4"), "SOMEONE-ELSE");
+              c.enqueue(bytes);
+              c.close();
+            },
+          }),
+          { status: 200, headers: { "content-length": String(bytes.byteLength) } }
+        ),
+      3,
+      { retryBaseDelayMs: 10 }
+    );
+    const [taskId] = dl.enqueue(
+      [{ url: "https://cdn.example.com/exist.mp4", filename: "exist.mp4", kind: "video" }],
+      "c4"
+    );
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "done"), 8000);
+    expect(dl.list().find((t) => t.taskId === taskId)?.filename).toBe("exist (2).mp4");
+    expect(readFileSync(join(dir, "exist.mp4"), "utf8")).toBe("SOMEONE-ELSE");
+    expect(readFileSync(join(dir, "exist (2).mp4"), "utf8")).toBe("MINE");
     rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -10,6 +10,10 @@
  *   PLATFORM_INFO 域名映射组装），本模块不复制域名表
  * - 进度事件 ~200ms 节流（emitter 注入，vitest 可直接测，不依赖 electron）
  * - 队列快照节流持久化（重启恢复由 index.ts 调 restore）
+ * - 完整性闸门：上游声明过 content-length 却没收满 = 提前 EOF，保留 `.part` 报失败，
+ *   绝不把半截文件改名成「完成」的成品
+ * - 无进展看门狗（默认 30s）：僵死连接中止并重试，不会一直占着执行槽；
+ *   写流 'error' 当场接住（磁盘满/EPERM 报任务失败），不外泄成未捕获异常
  *
  * 依赖边界（§1）：core/downloader 不 import electron；IO 走 Node fetch + fs。
  */
@@ -55,6 +59,13 @@ export interface DownloaderOptions {
   getKeepPartials: () => boolean;
   /** 默认 UA（主进程出网统一带浏览器 UA，照抄内核 UA 治理，不私自加码） */
   defaultUserAgent: string;
+  /**
+   * 无进展看门狗：连续多少毫秒收不到一个新字节就判定连接僵死（默认 30s）。
+   * 做成参数而不是常量，是为了让离线测试不必真的等 30 秒。
+   */
+  stallTimeoutMs?: number;
+  /** 重试退避基数（默认 1s；同上，测试要能压缩时间） */
+  retryBaseDelayMs?: number;
   events: DownloaderEvents;
   fetchImpl?: typeof fetch;
 }
@@ -70,6 +81,12 @@ interface InternalTask extends DownloadTaskView {
 
 const PROGRESS_THROTTLE_MS = 200;
 const RETRY_BASE_DELAY_MS = 1000;
+/**
+ * 无进展看门狗默认值。30s 的依据：CDN 直链的抖动通常几秒内恢复，超过 30s 不推进
+ * 基本是连接僵死——而僵死的 fetch 会一直占着执行槽（旧实现只有 pause/cancel 能中止），
+ * 用户视角就是「队列卡死，只能重启应用」。
+ */
+const DEFAULT_STALL_TIMEOUT_MS = 30_000;
 
 /**
  * SSRF 面治理（§6.3）：只放行 http/https，拒私网/回环/链路本地/元数据地址。
@@ -399,6 +416,21 @@ export class Downloader {
     this.removePartFiles(this.partPath(t));
   }
 
+  /**
+   * 落地改名。Windows 的 renameSync 带 REPLACE_EXISTING：下载期间目标若被外部创建
+   * （用户另存、别的程序写同名），直接改名会静默覆盖别人的文件 → 先探一次，占着就换
+   * 序号名，与入队时的避让共用 resolveConflictPath 这一套规则。
+   */
+  private landFile(part: string, t: InternalTask): void {
+    const target = this.targetPath(t);
+    if (existsSync(target)) {
+      const alt = resolveConflictPath(this.opts.getDownloadDir(), basename(target));
+      t.filePath = alt;
+      t.filename = basename(alt);
+    }
+    renameSync(part, this.targetPath(t));
+  }
+
   private pump(): void {
     const max = Math.max(1, this.opts.getMaxConcurrent());
     if (this.running >= max) return;
@@ -481,7 +513,33 @@ export class Downloader {
 
     let lastEmit = 0;
     let stream: ReturnType<typeof createWriteStream> | null = null;
+    /** 写流错误（磁盘满 / EPERM / 路径被占）——必须自己接住，见下面的 once("error") */
+    let streamErr: Error | null = null;
+    const stallTimeoutMs = this.opts.stallTimeoutMs ?? DEFAULT_STALL_TIMEOUT_MS;
+    const retryBaseDelayMs = this.opts.retryBaseDelayMs ?? RETRY_BASE_DELAY_MS;
+    const stallError = () =>
+      new Error(`下载超时：${Math.max(1, Math.round(stallTimeoutMs / 1000))} 秒没有收到新数据`);
+    /**
+     * 无进展看门狗：每收到一块就重新计时，超时即 abort。
+     * 僵死的连接不该一直占着执行槽（旧实现只有用户 pause/cancel 能中止，
+     * 上游半死不活时队列会永久卡住，用户唯一的出路是重启应用）。
+     * `stalled` 用来把「看门狗中止」与「用户中止」分开——后者不该报错。
+     */
+    let stalled = false;
+    let stallTimer: ReturnType<typeof setTimeout> | undefined;
+    const armStall = () => {
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        stalled = true;
+        t.signal?.abort();
+      }, stallTimeoutMs);
+    };
+    const clearStall = () => {
+      if (stallTimer) clearTimeout(stallTimer);
+      stallTimer = undefined;
+    };
     try {
+      armStall();
       const resp = await fetchImpl(t.url, { headers, signal: t.signal.signal, redirect: "follow" });
       if (!resp.ok && resp.status !== 206) {
         throw new Error(`HTTP ${resp.status}`);
@@ -497,25 +555,46 @@ export class Downloader {
 
       stream = createWriteStream(part, supportsRange && start > 0 ? { flags: "a" } : { flags: "w" });
       const activeStream = stream;
+      // 写流的 'error' 必须当场挂监听：Node 对无人监听的 error 事件抛未捕获异常，
+      // 磁盘满 / 杀软占用 / 路径被占 时整个主进程消失。closeStream 只在收尾挂，太晚。
+      // 顺带立刻 abort，别让后续字节白读白丢。
+      const streamDied = new Promise<void>((res) => {
+        activeStream.once("error", (e) => {
+          streamErr = e instanceof Error ? e : new Error(String(e));
+          t.signal?.abort();
+          res();
+        });
+      });
       if (!resp.body) throw new Error("响应无 body");
       const reader = resp.body.getReader();
       let prevBytes = t.received;
       let prevTime = Date.now();
       for (;;) {
         const { done, value } = await reader.read();
+        if (streamErr) throw streamErr;
+        if (stalled) throw stallError();
         if (done) break;
         const live = st();
         if (live === "canceled" || live === "paused") {
+          clearStall();
           await Downloader.closeStream(activeStream); // flush 已收字节
           stream = null;
           if (live === "canceled" && !this.opts.getKeepPartials()) this.removePartFiles(part);
           return;
         }
-        // 背压：write 返回 false 时等 drain，避免大文件灌满内存
+        // 背压：write 返回 false 时等 drain，避免大文件灌满内存；
+        // 流已死就永远等不到 drain，用 streamDied 兜住这个 await。
         if (!activeStream.write(value)) {
-          await new Promise<void>((res) => activeStream.once("drain", () => res()));
+          await Promise.race([
+            new Promise<void>((res) => activeStream.once("drain", () => res())),
+            streamDied,
+          ]);
         }
+        // 写入失败的那些字节不算已收：received 必须等于 .part 的真实长度，
+        // 否则续传时 Range 起点会跳过一段没落盘的数据。
+        if (streamErr) throw streamErr;
         t.received += value.byteLength;
+        armStall();
         const now = Date.now();
         if (now - lastEmit >= PROGRESS_THROTTLE_MS) {
           const dt = (now - prevTime) / 1000;
@@ -526,10 +605,17 @@ export class Downloader {
           this.opts.events.progress(toView(t));
         }
       }
+      clearStall();
       await Downloader.closeStream(activeStream);
       stream = null;
-
-      renameSync(part, this.targetPath(t));
+      // flush 期间才浮出来的写错误（缓冲推到磁盘才发现写不进去）
+      if (streamErr) throw streamErr;
+      // 完整性闸门：上游声明过总长却没收满，就是提前 EOF。
+      // 半截文件改名成正式文件名并标「完成」是最坏结局——用户以为下好了，打开才发现播不了。
+      if (t.total > 0 && t.received < t.total) {
+        throw new Error(`传输不完整（${t.received}/${t.total} 字节），已保留断点`);
+      }
+      this.landFile(part, t);
       try {
         rmSync(metaPathFor(part), { force: true }); // 身份使命完成
       } catch {
@@ -546,7 +632,11 @@ export class Downloader {
       });
       this.persist();
     } catch (e) {
+      clearStall();
       const live = st();
+      // 归因优先于表面异常：看门狗与写流错误都表现为 AbortError / 静默丢字节，
+      // "This operation was aborted" 对用户没有信息量，要说清是谁按下的中止。
+      const cause = streamErr ?? (stalled ? stallError() : e);
       if (stream) {
         // 中断（pause/cancel/网络错）都先 flush：.part 内容始终等于「已确认收到的字节」
         if (live === "paused" || live === "canceled") {
@@ -569,7 +659,7 @@ export class Downloader {
       const maxAttempts = Math.min(4, Math.max(1, this.opts.getRetryTimes() + 1));
       if (t.attempts < maxAttempts) {
         // 指数退避重试
-        await sleep(RETRY_BASE_DELAY_MS * 2 ** (t.attempts - 1));
+        await sleep(retryBaseDelayMs * 2 ** (t.attempts - 1));
         const live2 = st();
         if (live2 === "canceled") {
           if (!this.opts.getKeepPartials()) this.removePartFiles(part);
@@ -578,8 +668,10 @@ export class Downloader {
         if (live2 === "paused") return;
         return this.runOne(t);
       }
+      // 重试耗尽才落地成 error。完整性/超时/写流都保留 .part：
+      // 磁盘满、连接僵死都是会过去的状况，续传比重下一遍对用户诚实得多。
       t.status = "error";
-      t.error = e instanceof Error ? e.message : String(e);
+      t.error = cause instanceof Error ? cause.message : String(cause);
       this.opts.events.error(toView(t));
       this.persist();
     }
