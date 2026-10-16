@@ -1,36 +1,51 @@
 /**
  * 解析引擎宿主（docs/ARCHITECTURE.md §2 engine.ts）
  *
- * 职责：装配 core-adapter（cache/config/analytics/ratelimit）+ 解析内核，
- * 暴露 identify(text) / parse(textOrUrl) 两个纯异步方法。不做 HTTP、不碰窗口。
+ * 职责：装配 core-adapter（cache/config/analytics/ratelimit）+ 引擎 runner 层（engines.ts），
+ * 暴露 identify(text) / parse(textOrUrl) / health() 三个方法。不做 HTTP、不碰窗口。
  *
- * 内核三态：
- * - local：只引用上游整解析核心 @mediaget/parse-core 的统一入口（unifiedParseLocal）。
- *   黑名单/识别/平台分发/全部平台解析器/快手兜底/直链验证/ID 模式都在核心内完成，
- *   本仓不再自维护平台解析器表 —— 覆盖清单由核心 localParserKeys() 如实给出。
- * - online：核心未覆盖或本地异常且设置开启回落时，经 fallback.ts 调线上 /api/parse
- *   （上游改版风暴时的逃生通道，不再是主通道）。
- * - mock：离线开发/测试用假内核（MG_KERNEL_MODE=mock 或两者皆不可用时兜底）。
+ * 两条判定分开放（2026-10-16 业主定调「引擎与供给解耦」）：
+ * - **供不供**：`shared/platforms.ts` 注册表 + 用户开关（`settings.platformSwitches`）。
+ *   关掉的平台在任何引擎被调用之前就回绝，不落网络请求。
+ * - **能不能解**：引擎 runner 的 `covers()`（注册表能力位 ∧ 引擎自报覆盖）。
+ *   顺序是本地内核 → 线上 API，前者失败才换后者；yt-dlp 今天仍埋在 parse-core 内部
+ *   （只服务 tiktok），所以注册表记它 `declared` 而不是 ready，本文件不为它编一个假 runner。
+ *
+ * `via` 契约枚举保持 local/online/mock：它答的是「结果从本机还是线上来」，不是「哪个引擎解的」。
  *
  * 铁律 2（依赖边界）：本文件只 import `@mediaget/parse-core` 公开入口，永不跨界 web 侧 route。
  */
 import {
   identifyPlatform,
-  PLATFORM_INFO,
   extractUrlFromShareText,
   isBlockedText,
-  normalizeResult,
-  unifiedParseLocal,
-  localParserKeys,
   setKernelConfig,
   PARSE_CORE_VERSION,
+  unifiedParseLocal,
+  localParserKeys,
 } from "@mediaget/parse-core";
-import type { ParseResult } from "../../types/ipc";
-import { displayName } from "../../shared/platforms";
+import type { EngineHealth, ParseResult } from "../../types/ipc";
+import {
+  type PlatformSwitch,
+  displayName,
+  isEnabled,
+  isRegistered,
+  platformDef,
+} from "../../shared/platforms";
 import { createResultCache } from "../../core-adapter/cache";
 import { createNoopAnalytics } from "../../core-adapter/analytics";
 import { createConfigSource } from "../../core-adapter/config";
 import { createThrottle } from "../../core-adapter/ratelimit";
+import {
+  type CoreEntry,
+  type ParseEngine,
+  buildHealth,
+  createOnlineApiEngine,
+  createParseCoreEngine,
+  viaOf,
+} from "./engines";
+
+export type { CoreEntry } from "./engines";
 
 export type KernelMode = "local" | "online" | "mock";
 
@@ -53,50 +68,26 @@ export interface EngineDeps {
   readKernelConfig: (key: string) => string | undefined;
   /** 节流毫秒（设置页实时值） */
   getThrottleMs: () => number;
-  /** 线上回落执行器（fallback.ts 注入；缺省视为关闭） */
+  /** 线上 API 执行器（fallback.ts 注入；缺省视为该引擎不在场） */
   onlineFallback?: (
     url: string,
     opts: { cookie?: string; source?: string; id?: string }
   ) => Promise<ParseResult | null>;
-  /** 是否允许线上回落（设置页开关） */
+  /** 是否允许线上 API 参与解析（设置页开关） */
   isFallbackEnabled: () => boolean;
+  /**
+   * 平台供给开关（读持久值，不读渲染层内存）：每次解析与体检各读一次，
+   * 所以设置页改完不必重启也不用等 IPC 回灌。缺省（测试）= 全表空 = 跟随注册表默认。
+   */
+  getPlatformSwitches?: () => Record<string, PlatformSwitch>;
   /** 强制模式（测试/内测），auto 按能力降级 */
   forceMode?: KernelMode;
-  /** 核心入口加载器覆盖（测试注入假核；缺省惰性 import 真 parse-core） */
+  /** 核心入口加载器覆盖（测试注入假核；缺省惰性取真 parse-core） */
   coreLoader?: () => Promise<CoreEntry>;
 }
 
-/**
- * 本地解析内核 = 上游整解析核心（parse-core）的统一入口，本仓不再自维护平台解析器表。
- * unifiedParseLocal 内含：黑名单 / 平台识别 / 全 21 平台解析器注册表 / 快手 17change
- * 兜底 / 直链有效性验证 / source+id 模式 —— 覆盖清单由核心 localParserKeys() 给出。
- *
- * ⚠️ 为什么惰性加载（P3-1 原样成立）：
- * 内核多个模块在**模块作用域**读取 process.env（ytDlpClient.js 的 `YTDLP_BIN`、
- * instagram.js 的 `IG_COOKIE`、youtube.js 的 `YOUTUBE_API_KEY`、
- * qqmusic-id.js 的 `QQMUSIC_COOKIE`、xhsCore 的 `XHS_COOKIE`、twitterCore 的
- * `TWITTER_FIXER_SERVICES` …），只在模块首次求值那一刻固化。注册表静态引满全部
- * 平台核，任何一处静态 import 都会把它们的 env 在 require 瞬间定死 —— 那时资源
- * 定位（resources.locate）与用户 Cookie 注入（settings.cookies）都还没铺进
- * process.env。推迟到**第一次真正解析**，此时 index.ts 的 publishKernelEnv()
- * 已执行完毕。esbuild/tsup 的 cjs 产物会把 `await import()` 编译成惰性 thunk，语义一致。
- */
-export type CoreEntry = {
-  unifiedParseLocal: (
-    input: string,
-    options?: { source?: string; id?: string }
-  ) => Promise<object>;
-  localParserKeys: () => string[];
-};
+const loadRealCore = (): Promise<CoreEntry> => Promise.resolve({ unifiedParseLocal, localParserKeys });
 
-let coreEntry: Promise<CoreEntry> | null = null;
-function loadCore(): Promise<CoreEntry> {
-  if (!coreEntry) {
-    // 直接返回上游导出的统一入口（已注入配置的 parse-core 工件）
-    coreEntry = Promise.resolve({ unifiedParseLocal, localParserKeys });
-  }
-  return coreEntry;
-}
 export function createEngine(deps: EngineDeps) {
   console.log(`[engine] parse-core v${PARSE_CORE_VERSION} loaded`);
 
@@ -125,30 +116,23 @@ export function createEngine(deps: EngineDeps) {
     ytdlpTimeoutMs: Number(config.get("ytdlpTimeoutMs") || ""),
   });
 
-  const coreLoader = deps.coreLoader ?? loadCore;
+  const parseCoreEngine = createParseCoreEngine(deps.coreLoader ?? loadRealCore);
+  const onlineEngine = createOnlineApiEngine({
+    call: (url, o) => deps.onlineFallback!(url, o),
+  });
 
-  /** 平台清单（来自内核 PLATFORM_INFO，renderer 不复制） */
-  function platforms() {
-    return Object.entries(PLATFORM_INFO).map(([key, info]) => ({
-      key,
-      name: info.name,
-      nameEn: info.nameEn,
-      supportsIdParse: info.supportsIdParse,
-    }));
+  /** 当下在场的引擎，按优先顺序（设置只影响「在不在场」，不影响能力判定） */
+  function availableEngines(opts: { forceOnline?: boolean }): ParseEngine[] {
+    if (deps.forceMode === "mock") return [];
+    const list: ParseEngine[] = [];
+    if (deps.forceMode !== "online" && !opts.forceOnline) list.push(parseCoreEngine);
+    if (deps.forceMode !== "local" && deps.isFallbackEnabled() && deps.onlineFallback) {
+      list.push(onlineEngine);
+    }
+    return list;
   }
 
-  /** 核心注册表平台清单（probe:engines 如实汇报覆盖率用；首次调用会触发内核惰性求值） */
-  async function localCoverage(): Promise<string[]> {
-    return (await coreLoader()).localParserKeys();
-  }
-
-  /**
-   * 线上回落当前是否真的可用（与 parse 的通道 2 判定同源，
-   * probe:engines 据此汇报，避免 UI 体检与实际走线不一致）。
-   */
-  function fallbackAvailable(): boolean {
-    return deps.isFallbackEnabled() && !!deps.onlineFallback;
-  }
+  const switches = (): Record<string, PlatformSwitch> => deps.getPlatformSwitches?.() ?? {};
 
   /** 纯本地识别：不发起任何网络请求 */
   function identify(text: string): IdentifyOutcomeLite {
@@ -169,8 +153,8 @@ export function createEngine(deps: EngineDeps) {
       : (identifyPlatform(url) ?? "");
     return {
       platform,
-      // 显示名取本仓注册表：内核那份 PLATFORM_INFO 只是 parse-core 一个引擎的自述，
-      // 名字/图标的项目边界归注册表（qsmusic 就是内核没登记、我们有登记的那个）
+      // 显示名取注册表：内核那份 PLATFORM_INFO 只是 parse-core 一个引擎的自述，
+      // 名字的项目边界归注册表（qsmusic 就是内核没登记、我们有登记的那个）
       platformName: platform ? displayName(platform) : "",
       url,
       kind,
@@ -186,7 +170,7 @@ export function createEngine(deps: EngineDeps) {
       data: {
         type: "video",
         title: `mock · ${platform} · 演示结果`,
-        desc: `来源 ${sourceUrl || "（无链接）"} —— 骨架期 mock 输出。本地内核（parse-core 统一入口）与线上回落均不可用时才走到这里。`,
+        desc: `来源 ${sourceUrl || "（无链接）"} —— 骨架期 mock 输出。所有在场引擎都不覆盖这条链接时才走到这里。`,
         author: "mock-author",
         cover: "",
         url: "https://example.com/mock/video.mp4",
@@ -203,214 +187,116 @@ export function createEngine(deps: EngineDeps) {
   ): Promise<ParseOutcomeLite> {
     const t0 = Date.now();
     const input = (rawInput ?? "").trim();
+    const fail = (result: ParseResult, via: KernelMode = "local"): ParseOutcomeLite => ({
+      result,
+      via,
+      durationMs: Date.now() - t0,
+    });
 
     // —— 黑名单（本地即时判定，与内核 unified-parser 同源）——
     const blockedName = isBlockedText(input);
     if (blockedName) {
-      return {
-        result: {
-          code: 400,
-          msg: `暂不支持解析${blockedName}的内容（会员/付费/DRM 保护）`,
-        },
-        via: "local",
-        durationMs: Date.now() - t0,
-      };
+      return fail({
+        code: 400,
+        msg: `暂不支持解析${blockedName}的内容（会员/付费/DRM 保护）`,
+      });
     }
 
-    // —— source+id 模式：依赖 supportsIdParse（识别层本地判定）——
+    // —— source+id 模式：supportsIdParse 取注册表（项目边界），不再问内核 ——
     if (!input && source && id) {
-      const info = (PLATFORM_INFO as Record<string, { name: string; supportsIdParse: boolean }>)[
-        source.toLowerCase()
-      ];
-      if (!info) {
-        return { result: { code: 400, msg: `未知平台: ${source}` }, via: "local", durationMs: Date.now() - t0 };
+      const def = platformDef(source);
+      if (!def) {
+        return fail({ code: 400, msg: `未知平台: ${source}` });
       }
-      if (!info.supportsIdParse) {
-        return {
-          result: { code: 400, msg: `${info.name} 平台不支持通过 ID 解析，请使用分享链接` },
-          via: "local",
-          durationMs: Date.now() - t0,
-        };
+      if (!def.supportsIdParse) {
+        return fail({ code: 400, msg: `${def.name} 平台不支持通过 ID 解析，请使用分享链接` });
       }
     }
 
     const found = identify(input);
     if (!found.url && !(source && id)) {
-      return {
-        result: { code: 400, msg: "未能从分享文案中提取到有效链接，请确认文案中包含视频分享链接" },
-        via: "local",
-        durationMs: Date.now() - t0,
-      };
+      return fail({
+        code: 400,
+        msg: "未能从分享文案中提取到有效链接，请确认文案中包含视频分享链接",
+      });
     }
     const url = found.url ?? "";
     // platformHint 仅在内核识别失败时作为兜底（不覆盖识别结果，避免指鹿为马）
     const platform = found.platform || opts.platformHint || source || "";
 
+    // —— 供给闸门：注册表关掉的平台，在任何引擎被调用之前就回绝 ——
+    // 未登记的键不拦（自由串照旧交给引擎判定），注册表不许改写盘上认不出的东西
+    if (platform && isRegistered(platform) && !isEnabled(platform, switches())) {
+      return fail({
+        code: 400,
+        msg: `${displayName(platform)}：解析已在设置里关闭（设置 → 引擎 → 平台能力）`,
+        platform,
+      });
+    }
+
     // —— 本地缓存（LRU 24h；key 用归一后的 url 或 source+id）——
     const cacheKey = url || `${source}:${id}`;
     const cached = opts.forceOnline ? undefined : cache.get(cacheKey);
     if (cached && deps.forceMode !== "mock") {
-      return {
-        result: cached as ParseResult,
-        via: "local",
-        durationMs: Date.now() - t0,
-      };
+      return { result: cached as ParseResult, via: "local", durationMs: Date.now() - t0 };
     }
 
     await throttle.acquire();
 
-    // —— 通道 1：本地内核（parse-core 统一入口，注册表覆盖全平台）——
-    if (deps.forceMode !== "mock" && deps.forceMode !== "online" && !opts.forceOnline) {
-      const core = await coreLoader();
-      const covered = new Set(core.localParserKeys());
-      const localEligible = url
-        ? covered.has(platform)
-        : !!source && covered.has(String(source).toLowerCase());
-      if (localEligible) {
-        try {
-          const raw = url
-            ? await core.unifiedParseLocal(url)
-            : await core.unifiedParseLocal("", { source, id });
-          const result = normalizeResult(raw) as unknown as ParseResult;
-          // 核心未给出契约结果（解析器返回 undefined / 异形）= 本地失败，
-          // 不能把 null 直接递给 renderer（UI 只会显示空错误）；沿用旧「本地失败 → 回落」语义。
-          if (!result || typeof result.code !== "number") {
-            const reason = "本地内核未返回有效解析结果";
-            if (deps.isFallbackEnabled() && deps.onlineFallback) {
-              return await viaOnlineFallback(
-                url || input,
-                platform,
-                reason,
-                t0,
-                deps,
-                cache,
-                analytics,
-                url ? undefined : { source, id, cacheKey }
-              );
-            }
-            return {
-              result: { code: 500, msg: `${reason}（${platform}）`, platform, failType: "script-error" },
-              via: "local",
-              durationMs: Date.now() - t0,
-            };
-          }
-          if (result.code === 200) {
-            result.platform = result.platform || platform;
-            cache.set(cacheKey, result);
-          } else if (!url && deps.isFallbackEnabled() && deps.onlineFallback) {
-            // ID 模式本地未命中（核心解析器未挂 parseVideoId）→ 沿用旧行为给线上兜底
-            return await viaOnlineFallback(
-              url,
-              platform,
-              "本地内核 ID 解析未命中",
-              t0,
-              deps,
-              cache,
-              analytics,
-              { source, id, cacheKey }
-            );
-          }
-          analytics.track("parse", { platform, via: "local", ok: result.code === 200 });
-          return { result, via: "local", durationMs: Date.now() - t0 };
-        } catch (e) {
-          // 本地失败 → 继续走回落，不吞错
-          const reason = e instanceof Error ? e.message : String(e);
-          if (!deps.isFallbackEnabled() || !deps.onlineFallback) {
-            return {
-              result: { code: 500, msg: `本地解析失败：${reason}`, platform, failType: "script-error" },
-              via: "local",
-              durationMs: Date.now() - t0,
-            };
-          }
-          return await viaOnlineFallback(
-            url || input,
-            platform,
-            reason,
-            t0,
-            deps,
-            cache,
-            analytics,
-            url ? undefined : { source, id, cacheKey }
-          );
-        }
+    // —— 引擎轮询：在场 ∧ 覆盖才调用，失败就带着理由换下一个 ——
+    const notes: string[] = [];
+    let lastFailed: ParseEngine | undefined;
+    let lastResult: ParseResult | undefined;
+    for (const engine of availableEngines(opts)) {
+      if (!(await engine.covers(platform))) {
+        notes.push(`${engine.label}未覆盖该平台`);
+        continue;
       }
+      const out = await engine.run({ platform, url, source, id });
+      if (out.ok) {
+        const result = out.result;
+        if (result.code === 200) {
+          result.platform = result.platform || platform;
+          cache.set(cacheKey, result);
+        }
+        const via = viaOf(engine.id);
+        analytics.track("parse", { platform, via, ok: result.code === 200 });
+        const reason = notes.join("；") || undefined;
+        return { result, via, fallbackReason: reason, durationMs: Date.now() - t0 };
+      }
+      notes.push(out.reason);
+      lastFailed = engine;
+      lastResult = out.result;
     }
 
-    if (deps.forceMode === "mock") {
-      return { result: mockResult(url, platform || "mock"), via: "mock", durationMs: Date.now() - t0 };
+    if (lastFailed && lastResult) {
+      // 没有下一个引擎了：把最后一个引擎的失败答复如实交给 renderer，不拿 mock 冒充成功
+      const via = viaOf(lastFailed.id);
+      analytics.track("parse", { platform, via, ok: false });
+      return { result: lastResult, via, fallbackReason: notes.join("；"), durationMs: Date.now() - t0 };
     }
 
-    // —— 通道 2：线上回落（核心未覆盖平台 / 强制线上时的逃生通道；README「失败回落」决策）——
-    if (deps.isFallbackEnabled() && deps.onlineFallback) {
-      return await viaOnlineFallback(
-        url,
-        platform,
-        url ? "本地内核注册表未覆盖该平台" : "source+id 模式经线上入口解析",
-        t0,
-        deps,
-        cache,
-        analytics,
-        url ? undefined : { source, id, cacheKey }
-      );
-    }
+    // —— 没有引擎在场/覆盖：强制 mock 或 mock 兜底（离线演示，来源如实标注）——
+    return fail(mockResult(url, platform || "unknown"), "mock");
+  }
 
-    // —— 通道 3：mock 兜底（离线骨架演示，明确标注来源不骗人）——
-    return { result: mockResult(url, platform || "unknown"), via: "mock", durationMs: Date.now() - t0 };
+  /** 平台能力体检：注册表 × 在场引擎 × 用户开关（probe:engines 与设置页矩阵共用） */
+  async function health(): Promise<EngineHealth[]> {
+    return buildHealth(availableEngines({}), switches());
+  }
+
+  /** 本地内核自报的覆盖清单（保留给测试与将来的引擎对比用） */
+  async function localCoverage(): Promise<string[]> {
+    return (await (deps.coreLoader ?? loadRealCore)()).localParserKeys();
   }
 
   return {
     identify,
     parse,
-    platforms,
+    health,
     localCoverage,
-    fallbackEnabled: fallbackAvailable,
     config,
     cache,
     analytics,
   };
-}
-
-async function viaOnlineFallback(
-  url: string,
-  platform: string,
-  reason: string,
-  t0: number,
-  deps: EngineDeps,
-  cache: ReturnType<typeof createResultCache>,
-  analytics: ReturnType<typeof createNoopAnalytics>,
-  sid?: { source?: string; id?: string; cacheKey?: string }
-): Promise<ParseOutcomeLite> {
-  try {
-    const online = await deps.onlineFallback!(url, {
-      source: sid?.source,
-      id: sid?.id,
-    });
-    const cacheKey = sid?.cacheKey || url;
-    if (online && online.code === 200) {
-      const result = normalizeResult(online) as ParseResult;
-      result.platform = result.platform || platform;
-      cache.set(cacheKey, result);
-      analytics.track("parse", { platform, via: "online", ok: true });
-      return { result, via: "online", fallbackReason: reason, durationMs: Date.now() - t0 };
-    }
-    return {
-      result: online ?? { code: 502, msg: "线上回落无结果", platform, failType: "sources-down" },
-      via: "online",
-      fallbackReason: reason,
-      durationMs: Date.now() - t0,
-    };
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return {
-      result: {
-        code: 502,
-        msg: `线上回落失败：${msg}`,
-        platform,
-        failType: "sources-down",
-      },
-      via: "online",
-      fallbackReason: reason,
-      durationMs: Date.now() - t0,
-    };
-  }
 }

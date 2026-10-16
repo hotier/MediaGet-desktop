@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { createEngine, type CoreEntry } from "../electron/main/engine";
+import { PLATFORMS } from "../shared/platforms";
 import type { ParseResult } from "../types/ipc";
 
 /** 零覆盖假核：本地通道永不 Eligible → 走线只可能 online/mock */
@@ -216,12 +217,93 @@ describe("本地通道（注入可控假核，零网络）", () => {
   });
 });
 
-describe("platforms 清单（来自内核 PLATFORM_INFO，不复制表）", () => {
-  it("非空且含主力平台", () => {
-    const e = makeEngine();
-    const keys = e.platforms().map((p) => p.key);
-    expect(keys).toEqual(expect.arrayContaining(["douyin", "bilibili", "kuaishou", "redbook"]));
-    expect(e.platforms().length).toBeGreaterThanOrEqual(18);
+describe("供给闸门（注册表开关在引擎被调用之前生效）", () => {
+  it("关掉的平台：任何引擎都不许被调用，答复里给出去哪儿开", async () => {
+    let online = 0;
+    let coreLoads = 0;
+    let coreRuns = 0;
+    const e = makeEngine({
+      getPlatformSwitches: () => ({ douyin: { enabled: false } }),
+      coreLoader: async () => {
+        coreLoads++;
+        return {
+          unifiedParseLocal: async () => {
+            coreRuns++;
+            return { code: 200, msg: "不该被解", data: { url: "x" } };
+          },
+          localParserKeys: () => ["douyin"],
+        };
+      },
+      onlineFallback: async () => {
+        online++;
+        return { code: 200, msg: "ok" };
+      },
+    });
+    const r = await e.parse("https://v.douyin.com/off/");
+    expect(r.result.code).toBe(400);
+    expect(r.result.msg).toContain("已在设置里关闭");
+    expect(r.result.platform).toBe("douyin");
+    expect(r.via).toBe("local");
+    // 闸门在引擎层之前：内核模块不该被求值，更不该发抓取
+    expect(coreLoads).toBe(0);
+    expect(coreRuns).toBe(0);
+    expect(online).toBe(0);
+  });
+
+  it("默认开：同一个链接照解（开关表为空 = 跟随注册表）", async () => {
+    const e = makeEngine({
+      getPlatformSwitches: () => ({}),
+      coreLoader: async () => ({
+        unifiedParseLocal: async () => ({ code: 200, msg: "解析成功", data: { url: "https://x/a.mp4" } }),
+        localParserKeys: () => ["douyin"],
+      }),
+    });
+    expect((await e.parse("https://v.douyin.com/on/")).result.code).toBe(200);
+  });
+
+  it("未登记的键不被闸门拦下，也不被注册表改写：交给引擎判定，判定不了就 mock", async () => {
+    const e = makeEngine({ isFallbackEnabled: () => false });
+    const r = await e.parse("https://nowhere.example/v/1", undefined, undefined, {
+      platformHint: "brandNewPlatform",
+    });
+    expect(r.via).toBe("mock");
+    expect(r.result.platform).toBe("brandNewPlatform");
+  });
+});
+
+describe("health 矩阵（注册表 × 在场引擎 × 开关）", () => {
+  it("假核只覆盖 kuaishou + 回落关：kuaishou 可解、douyin 无引擎、关掉的平台另说", async () => {
+    const e = makeEngine({
+      isFallbackEnabled: () => false,
+      coreLoader: async () => ({
+        unifiedParseLocal: async () => ({}),
+        localParserKeys: () => ["kuaishou"],
+      }),
+      getPlatformSwitches: () => ({ bilibili: { enabled: false } }),
+    });
+    const rows = await e.health();
+    const by = Object.fromEntries(rows.map((r) => [r.platform, r]));
+    expect(by.kuaishou.ok).toBe(true);
+    expect(by.kuaishou.detail).toContain("本地内核");
+    expect(by.douyin.ok).toBe(false);
+    expect(by.douyin.detail).toContain("无引擎");
+    expect(by.bilibili.detail).toContain("已关闭");
+    // 行集 = 注册表全量（内核 PLATFORM_INFO 没有的 qsmusic 也在表上）
+    expect(rows.map((r) => r.platform)).toEqual(expect.arrayContaining(["redbook", "qsmusic"]));
+    expect(rows.length).toBe(PLATFORMS.length);
+  });
+
+  it("回落在场时线上 API 计入可解引擎（注册表 onlineApi=ready 的平台）", async () => {
+    const e = makeEngine({
+      coreLoader: async () => ({ unifiedParseLocal: async () => ({}), localParserKeys: () => [] }),
+    });
+    const rows = await e.health();
+    const dy = rows.find((r) => r.platform === "douyin");
+    expect(dy?.ok).toBe(true);
+    expect(dy?.detail).toContain("线上 API");
+    const qsm = rows.find((r) => r.platform === "qsmusic");
+    // 汽水音乐：本地有 parser（假核没覆盖所以这里不算），线上通道注册表是 unknown → 不可解
+    expect(qsm?.ok).toBe(false);
   });
 
   it("localCoverage 至少含 kuaishou（真核注册表冒烟，导入不发网络）", async () => {

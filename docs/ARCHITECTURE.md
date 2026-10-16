@@ -9,7 +9,7 @@
 ```
 用户在 renderer 粘贴分享文案
   → preload: bridge.parse(text)  → IPC invoke "parse:run"
-  → main/engine.ts: 装配 parse-core 工件（§8）identifyPlatform → parseCore(url)
+  → main/engine.ts: 供给闸门（注册表 × 开关）→ main/engines.ts 引擎轮询 → parse-core 工件（§8）
   → main 归一化结果 → 返回 renderer 渲染结果卡
   → 用户点「下载」 → IPC "download:enqueue" → downloader.ts 流式落盘（Referer/Range/重试）
 ```
@@ -37,7 +37,8 @@
 | 路径 | 放什么 | 不放什么 |
 | --- | --- | --- |
 | `electron/main/index.ts` | 应用生命周期、窗口、托盘、单实例锁、深链注册 | 业务逻辑 |
-| `electron/main/engine.ts` | 解析引擎装配：注入 `core-adapter`（cache/config/analytics）→ 调 parse-core 工件（§8）→ 暴露 `parse(textOrUrl)` / `identify(text)` | HTTP、窗口操作 |
+| `electron/main/engine.ts` | 解析引擎宿主：装配 `core-adapter`（cache/config/analytics）与引擎列表，先过**供给闸门**（`shared/platforms.ts` × `settings.platformSwitches`，关掉的平台在引擎被调用之前就 400），再按顺序轮询引擎；暴露 `identify(text)` / `parse(textOrUrl)` / `health()` | HTTP、窗口操作、单个平台的解析算法 |
+| `electron/main/engines.ts` | 引擎 runner 层：`ParseEngine { id, label, covers(), run() }`。`covers()` = 注册表能力位 ∧ 引擎自报覆盖；`run()` 的 `ok:false` 表示「可以换下一个引擎」并携带没得换时的最终答复。加引擎 = 加列表项，选路与开关判定不动（§9「引擎与供给解耦」） | 产品开关（在注册表与 settings）、HTTP 之外的副作用 |
 | `electron/main/ipc.ts` | 所有 `ipcMain.handle` 注册；入参按 `types/ipc-contract.ts` 的 in schema 校验（不可信输入才进内核），dev 构建再对出参过 out schema（漂移报 `contract-drift`） | 直接调平台解析器；在本文件重声明 schema |
 | `electron/main/downloader.ts` | 下载队列：并发上限、优先级、断点续传、Referer/UA 组装、进度事件、失败重试 | 解析逻辑 |
 | `electron/main/resources.ts` | yt-dlp/ffmpeg 定位：dev 用本地路径，prod 首启从 `resources/` 释放到 `userData/bin/` 并校验哈希 | — |
@@ -85,7 +86,7 @@
 | `app:openLogDir` / `app:log` | — / `{ level, message }` | `{ ok }` | 渲染层未捕获异常经 `app:log` 落进同一份文件日志（上限 50 条/次会话） |
 | `history:list` / `history:clear` | `{ filter?, limit? }`（`limit` 上限 = 窗口 `HISTORY_MAX` = 5000） | `HistoryEntry[]` | 只存平台/标题/作者快照/时间/落地路径，**不存媒体直链**（时效与隐私）；作者主页与头像是公开页面，2026-10-14 业主批准入档 |
 | `stats:get` | — | `StatsSnapshot` | 统计页真源（契约 v5，2026-10-16）：`totals` + `parse` + `byDay`/`byPlatform`/`byKind`/`byHour`。只有计数、字节、时长，**没有 url 与文件名**；失败与取消只在这份档里（history 只有成功记录，从它算失败率永远是 100%） |
-| `probe:engines` | — | `EngineHealth[]` | 本地版体检：逐平台跑固定样例，替代线上 `/api/engines` |
+| `probe:engines` | — | `EngineHealth[]` | 本地版体检 = 注册表全量 × 在场引擎能力位 × 用户开关（`engine.health()`），不发抓取、不打平台风控；与解析路由同源，所以界面说「不可解」的平台真的不会被解 |
 | `update:state` | — | `UpdateState` | 当前更新快照（renderer 挂载时先取一次，补上窗口未建期间丢掉的事件） |
 | `update:check` / `update:download` | — | `UpdateState` | 主动检查 / 显式下载；失败不外抛，收敛进快照的 `phase=error` |
 | `update:install` | — | `{ ok }` | 仅 `downloaded` 阶段有效，触发 `quitAndInstall`（进程随即退出） |
@@ -239,4 +240,5 @@ mediaGet（已有，web 仓）                     mediaGet-desktop（本仓）
 | 抽取进度跟踪 | mediaGet 仓 `docs/DESKTOP-PLAN.md`（若存在）；P0 未完成前本仓只实现骨架 + mock 内核，避免等阻塞 |
 | 分叉防线 | 本仓不写平台解析；若某天必须临时补，标 `// DIVERGENCE:` 并在 issue 跟踪回流上游 |
 | 域名/平台清单 | **以 `shared/platforms.ts` 注册表为真源**（2026-10-16 业主改口，此前写「一律来自内核 `PLATFORM_INFO`」）。理由：parse-core 只是引擎之一（还有 yt-dlp、后续更多），引擎决定「能不能解」，注册表决定「供不供」；若以内核为真源，换引擎或关平台都得等上游发版，产品边界就不归我们管。内核那份降级为**引擎侧事实**，由 `tests/platform-registry.test.ts` 逐键对账（名称/域名/短链/ID 模式 + 有本地 parser 才可声明 `parseCore: ready`），漂移即红叉。 |
+| 引擎选路 | 选路不在 `engine.ts` 写 if-else，改为 `engines.ts` 的 `ParseEngine` 列表轮询（本地内核 → 线上 API）。上游工件因此只是列表上的一项，不再是解析面的全部：接 yt-dlp 直连或新增兜底引擎 = 加一项 + 在注册表把该平台的能力位改成 `ready`，`tests/engine.test.ts` 的「供给闸门 / health 矩阵」两组用例保证开关与体检说的、解析做的三件事一致。 |
 | 契约类型 | `normalize-result` 的输出结构是唯一真源，在 `types/ipc-contract.ts` 以 zod 镜像并注明来源；`types/ipc.ts` 只做 `z.infer` 派生 |

@@ -212,6 +212,26 @@ describe("老档兼容", () => {
     expect(s.parse).toEqual(emptyStats(AT).parse);
   });
 
+  it("盘上的老键并到契约键：xhs 与 redbook 是同一个平台，计数相加而不是摆两行", () => {
+    const row = (n: number) => ({
+      downloads: n,
+      failures: 0,
+      bytes: n * 10,
+      parses: n,
+      parseFailures: 0,
+    });
+    const old = {
+      ...emptyStats(AT),
+      byPlatform: { xhs: row(3), redbook: row(2), ppxia: row(1), nowhere: row(4) },
+    };
+    const s = createStats({ load: () => old, save: () => {} }).snapshot();
+    expect(s.byPlatform.redbook).toEqual(row(5));
+    expect(s.byPlatform.pipixia).toEqual(row(1));
+    // 注册表认不出的键原样留着：注册表不许改写盘上看不懂的东西
+    expect(s.byPlatform.nowhere).toEqual(row(4));
+    expect(Object.keys(s.byPlatform)).not.toContain("xhs");
+  });
+
   it("byHour 长度不合（老版本桶数不同）→ 截断或补零到 168", () => {
     const short = { ...emptyStats(AT), byHour: [1, 2, 3] };
     expect(createStats({ load: () => short, save: () => {} }).snapshot().byHour).toHaveLength(

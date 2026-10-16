@@ -14,7 +14,7 @@ import { createLogger } from "../electron/main/logger";
 import { JsonStore } from "../electron/main/store";
 import { createStats } from "../electron/main/stats";
 import { createUpdater } from "../electron/main/updater";
-import { IPC, type InvokeResult } from "../types/ipc";
+import { IPC, type EngineHealth, type InvokeResult, type ParseResult } from "../types/ipc";
 
 type Handler = (event: unknown, input: unknown) => Promise<InvokeResult<unknown>>;
 
@@ -33,6 +33,8 @@ function harness() {
     getThrottleMs: () => store.loadConfig().settings.throttleMs,
     isFallbackEnabled: () => false, // 测试全离线
     onlineFallback: async () => null,
+    // 开关读持久值（与 index.ts 同接线）：这条链路是 P2 的验收面，下面有用例钉它
+    getPlatformSwitches: () => store.loadConfig().settings.platformSwitches,
     // 假内核：只声明 kuaishou 覆盖，探测/解析通道全部离线可控
     coreLoader: async () => ({
       localParserKeys: () => ["kuaishou"],
@@ -499,6 +501,34 @@ describe("IPC 信封与校验", () => {
       expect(ks?.ok).toBe(true); // 假内核声明覆盖
       expect(dy?.ok).toBe(false); // 未覆盖且回落关（harness isFallbackEnabled=false）
     }
+    cleanup();
+  });
+
+  it("平台开关：settings:set 落盘 → 解析路由被切断 → 体检如实标红（P2 全链路）", async () => {
+    const { call, cleanup } = harness();
+    const text = "https://v.kuaishou.com/abc";
+    const run = async (): Promise<ParseResult> => {
+      const r = await call(IPC.parseRun, { text });
+      if (!r.ok) throw new Error(`parse:run 应当受理，实际 ${JSON.stringify(r)}`);
+      return (r.data as { result: ParseResult }).result;
+    };
+    expect((await run()).code).toBe(200);
+
+    await call(IPC.settingsSet, { platformSwitches: { kuaishou: { enabled: false } } });
+    // 同一条链接照搬：闸门排在结果缓存之前，缓存里的成功结果不许替关掉的平台放行
+    const off = await run();
+    expect(off.code).toBe(400);
+    expect(off.msg).toContain("已在设置里关闭");
+
+    const probe = await call(IPC.probeEngines);
+    if (probe.ok) {
+      const ks = (probe.data as EngineHealth[]).find((x) => x.platform === "kuaishou");
+      expect(ks?.ok).toBe(false);
+      expect(ks?.detail).toContain("已关闭");
+    }
+
+    await call(IPC.settingsSet, { platformSwitches: { kuaishou: { enabled: true } } });
+    expect((await run()).code).toBe(200);
     cleanup();
   });
 

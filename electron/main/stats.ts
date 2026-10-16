@@ -37,6 +37,27 @@ function hourSlot(at: number): number {
   return d.getDay() * 24 + d.getHours();
 }
 
+/**
+ * 读侧迁移：`byPlatform` 里的老键（上游 web 的路由目录名 `xhs`/`ppxia`）并到契约键上、计数相加。
+ * 写入口归一只管得住今后，盘上存量必须在这里归一 —— 否则平台榜会把同一个平台摆成两行。
+ */
+function migratePlatformKeys(rows: StatsSnapshot["byPlatform"]): StatsSnapshot["byPlatform"] {
+  const zero = { downloads: 0, failures: 0, bytes: 0, parses: 0, parseFailures: 0 };
+  const out: StatsSnapshot["byPlatform"] = {};
+  for (const [raw, row] of Object.entries(rows)) {
+    const key = resolveKey(raw);
+    const acc = out[key] ?? zero;
+    out[key] = {
+      downloads: acc.downloads + (row.downloads ?? 0),
+      failures: acc.failures + (row.failures ?? 0),
+      bytes: acc.bytes + (row.bytes ?? 0),
+      parses: acc.parses + (row.parses ?? 0),
+      parseFailures: acc.parseFailures + (row.parseFailures ?? 0),
+    };
+  }
+  return out;
+}
+
 export function emptyStats(now: number): StatsSnapshot {
   return {
     schema: 1,
@@ -154,7 +175,7 @@ export function createStats(opts: StatsOptions): StatsRecorder {
       totals: { ...blank.totals, ...loaded.totals },
       parse: { ...blank.parse, ...loaded.parse },
       byDay: { ...loaded.byDay },
-      byPlatform: { ...loaded.byPlatform },
+      byPlatform: migratePlatformKeys(loaded.byPlatform ?? {}),
       byKind: { ...loaded.byKind },
       byHour: loaded.byHour.slice(0, STATS_HOUR_SLOTS),
     };

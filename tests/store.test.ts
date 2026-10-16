@@ -144,6 +144,20 @@ describe("历史：追加序与上限", () => {
     expect(legacy[0]?.author).toBeUndefined();
   });
 
+  it("盘上的老键读进来归一成契约键：历史页按新键筛选认得出老记录", () => {
+    writeFileSync(
+      join(dir, "history.json"),
+      JSON.stringify([
+        { id: "h-xhs", platform: "xhs", title: "老小红书", files: [], createdAt: 1 },
+        { id: "h-ppxia", platform: "ppxia", title: "老皮皮虾", files: [], createdAt: 2 },
+        // 注册表外的键原样回吐：归一是为了对上契约键，不是为了把不认识的东西改掉
+        { id: "h-free", platform: "brandNewPlatform", title: "没登记的", files: [], createdAt: 3 },
+      ])
+    );
+    const list = new JsonStore(dir).loadHistory();
+    expect(list.map((h) => h.platform)).toEqual(["redbook", "pipixia", "brandNewPlatform"]);
+  });
+
   it("超过 HISTORY_MAX 条截断，丢的是最旧的", () => {
     const s = new JsonStore(dir);
     for (let i = 0; i < HISTORY_MAX + 5; i++) s.appendHistory(entry(`h${i}`));

@@ -185,8 +185,11 @@ export class JsonStore {
     const stamp = this.historyStamp();
     if (this.historyCache && this.historyStampOnDisk === stamp) return this.historyCache;
     const onDisk = this.readJson<HistoryEntry[]>(this.path("history"), []);
+    // 读侧归一（P2）：写入口归一只管得住今后，盘上的 xhs/ppxia 存量要在这里变回契约键，
+    // 否则历史页按 `redbook` 筛选永远筛不出老记录。幂等，所以不必重写文件。
+    const migrated = onDisk.map((e) => (e.platform ? { ...e, platform: resolveKey(e.platform) } : e));
     // 还没落盘的追加接回最前面（新在前），外部改档不能把它们吃掉
-    this.historyCache = [...this.historyPending, ...onDisk].slice(0, HISTORY_MAX);
+    this.historyCache = [...this.historyPending, ...migrated].slice(0, HISTORY_MAX);
     this.historyStampOnDisk = stamp;
     return this.historyCache;
   }

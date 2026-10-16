@@ -29,7 +29,14 @@ import {
   type StatsSnapshot,
   type UpdateState,
 } from "../../../types/ipc";
-import { PLATFORMS, canonicalKeys, displayName } from "../../../shared/platforms";
+import {
+  PLATFORMS,
+  canonicalKeys,
+  displayName,
+  engineCoverage,
+  isEnabled,
+  isRegistered,
+} from "../../../shared/platforms";
 
 const ok = <T,>(data: T): InvokeResult<T> => ({ ok: true, data });
 
@@ -191,17 +198,19 @@ export const FIXTURES: Record<string, { platform: string; data: ParseData }> = {
 
 function detectPlatform(text: string): string | null {
   const t = text.toLowerCase();
-  const table: Array<[RegExp, string]> = [
-    [/bilibili|b23\.tv/, "bilibili"],
-    [/xiaohongshu|xhslink/, "redbook"],
-    [/douyin|iesdouyin/, "douyin"],
-    [/youtu\.?be/, "youtube"],
-    [/y\.qq\.com|qqmusic/, "qqmusic"],
-    [/acfun/, "acfun"],
-  ];
-  for (const [re, key] of table) if (re.test(t)) return key;
+  // 域名表取自注册表（长域名优先，`music.douyin.com` 才不会被 `douyin.com` 抢走）：
+  // 预览的识别面 = 产品边界，不再手抄一张六行小表，否则关掉的平台在预览里绕过闸门
+  const ordered = [...PLATFORMS].sort(
+    (a, b) => maxDomainLen(b) - maxDomainLen(a)
+  );
+  for (const p of ordered) {
+    if ([...p.domains, ...p.shortDomains].some((d) => t.includes(d))) return p.key;
+  }
   return null;
 }
+
+const maxDomainLen = (p: (typeof PLATFORMS)[number]): number =>
+  Math.max(0, ...p.domains.map((d) => d.length), ...p.shortDomains.map((d) => d.length));
 
 // 与内核 extractUrlFromShareText 同字符类：在中文标点/全角空格处截断（预览的识别 kind 才与真核一致）
 const URL_RE = /https?:\/\/[^\s\u3000\u00A0，。！？、；：（）【】《》"'“”‘’<>]+/i;
@@ -708,11 +717,25 @@ const mockBridge: MgBridge = {
         durationMs: 18,
       });
     }
-    const key = (platformHint && FIXTURES[platformHint] ? platformHint : null) ?? detectPlatform(t) ?? "douyin";
+    // 识别优先于 platformHint（与主引擎同规则：不把指鹿为马的提示当真）
+    const key = detectPlatform(t) ?? platformHint ?? "douyin";
+    // 供给闸门与主进程同源：注册表关掉的平台，不给它造出成功夹具
+    if (isRegistered(key) && !isEnabled(key, settings.platformSwitches)) {
+      return ok<ParseRunOutcome>({
+        result: {
+          code: 400,
+          msg: `${displayName(key)}：解析已在设置里关闭（设置 → 引擎 → 平台能力）`,
+          platform: key,
+        },
+        via: "local",
+        durationMs: 12,
+      });
+    }
     const fx = FIXTURES[key] ?? FIXTURES.douyin;
     const online = t.includes("online");
     return ok<ParseRunOutcome>({
-      result: { code: 200, msg: "解析成功", platform: fx.platform, data: structuredClone(fx.data) },
+      // 平台按识别结果标：夹具正文只是替身，界面要画的是用户贴进来的那个平台
+      result: { code: 200, msg: "解析成功", platform: key, data: structuredClone(fx.data) },
       via: online ? "online" : "local",
       fallbackReason: online ? "本地解析器未取得 vkey，已转线上回落通道" : undefined,
       durationMs: online ? 2140 : key === "redbook" ? 38 : 168,
@@ -817,17 +840,34 @@ const mockBridge: MgBridge = {
   },
 
   probe: {
-    // 全量平台取自注册表（真核这里返回 engine.platforms()，P2 改为注册表 × 引擎矩阵后两处同源）
-    engines: async () =>
-      ok<EngineHealth[]>(
-        PLATFORMS.map((p, i) => ({
+    // 与主进程 engine.health() 同一条算式：注册表 × 引擎能力位 × 用户开关。
+    // 假桥只假造数据，不假造能力 —— 预览里看到的三种真相必须和真应用措辞一致。
+    engines: async () => {
+      const able = (key: string): string[] => {
+        const list: string[] = [];
+        if (engineCoverage(key, "parseCore") === "ready") list.push("本地内核");
+        if (settings.fallbackOnline && engineCoverage(key, "onlineApi") === "ready") {
+          list.push("线上 API");
+        }
+        return list;
+      };
+      const rows: EngineHealth[] = PLATFORMS.map((p, i) => {
+        const covered = able(p.key);
+        const supplied = isEnabled(p.key, settings.platformSwitches);
+        return {
           platform: p.key,
           name: p.name,
-          ok: i % 4 !== 3,
-          detail: i % 4 === 3 ? "接口签名过期，走线上回落" : "本地解析器可用",
+          ok: supplied && covered.length > 0,
+          detail: !supplied
+            ? "注册表已关闭该平台（设置 → 引擎）"
+            : covered.length > 0
+              ? `可解引擎：${covered.join(" / ")}`
+              : "无引擎今天声明可解",
           durationMs: 20 + i * 7,
-        }))
-      ),
+        };
+      });
+      return ok<EngineHealth[]>(rows);
+    },
   },
 
   stats: {

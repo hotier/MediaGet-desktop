@@ -309,21 +309,10 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     store.clearHistory();
     return { ok: true };
   });
-  // —— probe:engines（本地版体检：如实汇报解析通道覆盖，不发抓取、不打平台风控）——
-  wrap<unknown, Promise<EngineHealth[]>>(IPC.probeEngines, null, async () => {
-    const local = new Set(await engine.localCoverage());
-    const onlineReady = engine.fallbackEnabled();
-    return engine.platforms().map((p) => ({
-      platform: p.key,
-      name: p.name,
-      ok: local.has(p.key) || onlineReady,
-      detail: local.has(p.key)
-        ? "本地内核直连（parse-core 注册表覆盖）"
-        : onlineReady
-          ? "经线上回落通道"
-          : "本地内核未覆盖且线上回落已关闭：不可用",
-    }));
-  });
+  // —— probe:engines（本地版体检：注册表 × 在场引擎 × 用户开关，不发抓取、不打平台风控）——
+  // 三件事一次算清：这平台供不供（开关）、谁能解（引擎自报 ∧ 注册表能力位）、为什么不行（detail）。
+  // 平台行集来自注册表而不是内核自述，所以关掉的/内核没登记但我们能解的平台都在表上。
+  wrap<unknown, Promise<EngineHealth[]>>(IPC.probeEngines, null, async () => engine.health());
 
   // —— app:getBinaryStatus（随包二进制完整性：把「降级」如实报到 UI）——
   wrap<unknown, BinaryStatusReport>(IPC.appGetBinaryStatus, null, () => {

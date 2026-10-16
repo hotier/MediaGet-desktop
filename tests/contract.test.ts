@@ -88,7 +88,7 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
   const deps = {
     ipcMain,
     engine: {
-      platforms: () => [{ key: "douyin", name: "抖音", nameEn: "Douyin", supportsIdParse: false }],
+      health: async () => [{ platform: "douyin", name: "抖音", ok: true, detail: "可解引擎：本地内核" }],
       identify: (text: string) => ({
         platform: "douyin",
         platformName: "抖音",
@@ -106,7 +106,6 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
         durationMs: 12,
       }),
       localCoverage: async () => ["douyin"],
-      fallbackEnabled: () => false,
     },
     downloader: {
       enqueue: () => ["t-1"],

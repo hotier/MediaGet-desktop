@@ -192,6 +192,8 @@ const engine = createEngine({
   readKernelConfig,
   getThrottleMs: () => store.loadConfig().settings.throttleMs,
   isFallbackEnabled: () => store.loadConfig().settings.fallbackOnline,
+  // 供给开关读持久值（每次解析/体检各读一次）：渲染层 store 只是视图，不是第二本账
+  getPlatformSwitches: () => store.loadConfig().settings.platformSwitches,
   onlineFallback: createOnlineFallback({
     getBase: () => store.loadConfig().settings.onlineApiBase,
   }),
