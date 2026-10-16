@@ -47,7 +47,8 @@ if (!app.requestSingleInstanceLock()) {
 app.setAppUserModelId("cc.hotier.mediaget.desktop");
 
 // —— 装配 ——
-const store = new JsonStore(app.getPath("userData"));
+// onError 用后绑定箭头：logger 本身要读 store，构造期还不能互相引用
+const store = new JsonStore(app.getPath("userData"), (m) => logger.error(m));
 
 /**
  * 文件日志（设置→通用→日志）：userData/logs/app.log。

@@ -16,6 +16,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  statSync,
   writeFileSync,
   openSync,
   fsyncSync,
@@ -30,6 +31,9 @@ import {
 } from "../../types/ipc";
 
 const HISTORY_MAX = 500;
+
+/** 历史落盘合并窗口：批量下载连环完成时，一秒内几十次追加只重写一次整档 */
+const HISTORY_WRITE_DEBOUNCE_MS = 1000;
 
 export type { PersistedQueueTask };
 
@@ -46,8 +50,22 @@ export class JsonStore {
   /** 待落盘的队列快照（节流窗口内最后一次写赢） */
   private pendingQueue: PersistedQueueTask[] | null = null;
   private configCache: Pick<StoreShape, "settings" | "kernel"> | null = null;
+  /** 历史在内存里的当前表（新在前）；null = 还没从盘上读过来 */
+  private historyCache: HistoryEntry[] | null = null;
+  /** `historyCache` 对应的盘上身份（`${size}:${mtimeMs}`，null = 档不存在） */
+  private historyStampOnDisk: string | null = null;
+  /** 已进内存、尚未落盘的追加（新在前） */
+  private historyPending: HistoryEntry[] = [];
+  private historyTimer: NodeJS.Timeout | null = null;
 
-  constructor(private dir: string) {
+  /**
+   * @param onError 落盘失败的去处（默认 console.error；主进程注入文件日志）。
+   * 历史写失败必须留痕 —— 合并窗口意味着失败不会在用户眼前重现第二次。
+   */
+  constructor(
+    private dir: string,
+    private onError: (message: string) => void = (message: string): void => console.error(message)
+  ) {
     mkdirSync(this.dir, { recursive: true });
   }
 
@@ -126,19 +144,77 @@ export class JsonStore {
 
   // —— history ——
 
+  /**
+   * 读历史（内存缓存 + 文件身份校验）。
+   *
+   * 追加即全量重写的话，500 条档位的单次写本机实测 4.4 ms（读 177 KB + parse +
+   * stringify + fsync + rename），批量下载连环落盘就是在主进程上一颗一颗钉；
+   * 而 `history:list` 每次调用都重读整档同样没必要。所以这里像 config 一样
+   * 常驻内存，只在一个 `statSync` 的尺度上确认「盘上还是我认得的那份」——
+   * 被外部改档（用户手编辑 / 别的实例）时以盘为准，不能拿着旧缓存装没看见。
+   */
   loadHistory(): HistoryEntry[] {
-    return this.readJson<HistoryEntry[]>(this.path("history"), []);
+    const stamp = this.historyStamp();
+    if (this.historyCache && this.historyStampOnDisk === stamp) return this.historyCache;
+    const onDisk = this.readJson<HistoryEntry[]>(this.path("history"), []);
+    // 还没落盘的追加接回最前面（新在前），外部改档不能把它们吃掉
+    this.historyCache = [...this.historyPending, ...onDisk].slice(0, HISTORY_MAX);
+    this.historyStampOnDisk = stamp;
+    return this.historyCache;
   }
 
+  /**
+   * 追加一条：只动内存，落盘交给合并窗口。
+   * 返回的是新表（新在前）；退出前 `flush()` 会把最后一次写补上。
+   */
   appendHistory(entry: HistoryEntry): HistoryEntry[] {
-    const list = [entry, ...this.loadHistory()].slice(0, HISTORY_MAX);
-    this.writeJson(this.path("history"), list);
-    return list;
+    const list = this.loadHistory();
+    const next = [entry, ...list].slice(0, HISTORY_MAX);
+    this.historyCache = next;
+    this.historyPending = [entry, ...this.historyPending].slice(0, HISTORY_MAX);
+    this.scheduleHistoryWrite();
+    return next;
   }
 
+  /** 清空历史：用户动作，立即落盘（不等合并窗口） */
   clearHistory(): HistoryEntry[] {
-    this.writeJson(this.path("history"), []);
+    this.historyCache = [];
+    this.historyPending = [];
+    if (this.historyTimer) {
+      clearTimeout(this.historyTimer);
+      this.historyTimer = null;
+    }
+    this.writeHistoryNow();
     return [];
+  }
+
+  /** 合并窗口：窗口内无论追加多少条，只重写一次整档 */
+  private scheduleHistoryWrite(): void {
+    if (this.historyTimer) return;
+    this.historyTimer = setTimeout(() => {
+      this.historyTimer = null;
+      this.writeHistoryNow();
+    }, HISTORY_WRITE_DEBOUNCE_MS);
+    if (typeof this.historyTimer.unref === "function") this.historyTimer.unref();
+  }
+
+  private writeHistoryNow(): void {
+    try {
+      this.writeJson(this.path("history"), this.historyCache ?? []);
+      this.historyPending = [];
+      this.historyStampOnDisk = this.historyStamp(); // 我们自己写的这份，缓存与盘重新对齐
+    } catch (e) {
+      this.onError(`history.json 落盘失败: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  private historyStamp(): string | null {
+    try {
+      const st = statSync(this.path("history"));
+      return `${st.size}:${st.mtimeMs}`;
+    } catch {
+      return null; // 档还不存在
+    }
   }
 
   // —— queue（下载队列恢复用；写走节流，进度高频不逐条落盘）——
@@ -183,12 +259,20 @@ export class JsonStore {
     }
   }
 
-  /** 退出前调用：取消定时器并**同步**落盘最后一次快照，避免丢最后一次写入 */
+  /**
+   * 退出前调用：取消定时器并**同步**落盘最后快照，避免丢最后一次写入。
+   * 队列与历史共用这一个收尾口 —— 两者的落盘都是节流的，退出路径上不补就等于丢。
+   */
   flush(): void {
     if (this.dirtyTimer) {
       clearTimeout(this.dirtyTimer);
       this.dirtyTimer = null;
     }
     this.flushQueue();
+    if (this.historyTimer) {
+      clearTimeout(this.historyTimer);
+      this.historyTimer = null;
+    }
+    if (this.historyPending.length > 0) this.writeHistoryNow();
   }
 }
