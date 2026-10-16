@@ -1,6 +1,6 @@
 # mediaGet-desktop
 
-「即刻解析」桌面客户端（Windows 首发）：基于 [mediaGet](https://github.com/hotier/mediaGet) 的视频解析能力，在本机完成**解析 + 下载**闭环。
+MediaGet 桌面客户端（Windows 首发）：基于 [mediaGet](https://github.com/hotier/mediaGet) 的视频解析能力，在本机完成**解析 + 下载**闭环。
 
 - 仓库定位：桌面客户端工程（Electron）。**解析内核不在本仓**——单一代码源留在 `mediaGet` 仓 `packages/parse-core/`，本仓以**版本化 npm 工件** `@mediaget/parse-core` 消费（见下文「内核耦合」）。
 - 状态：**P1–P6 主线已落地**（main/preload/renderer + core-adapter + IPC 契约 v3 + 下载管理器 + 线上回落 + 设置页五分类 + 自动更新 + 批量导入），解析面已**桌面化一致**：上游内核整体收敛为 `packages/parse-core` 统一入口（`unifiedParseLocal` + `localParserKeys`），黑名单/平台识别/全部 21 平台解析器/快手兜底/直链验证/source+id 模式**全部本地执行**（见「内核耦合」）。本仓不再自维护平台解析器表，只引用这一个核心。线上 `/api/parse` 降级为**逃生通道**（上游改版风暴、用户主动开启时才用），不再承担主解析；无网络且回落关闭时落 mock，结果来源（local/online/mock）在结果卡如实标注。发布链路（release-it + tag 触发的 `release.yml`）已接通，**尚未打第一个 `v*` 标签**——所以应用内「检测更新」目前查不到版本，这是缺 Release 而不是缺代码。

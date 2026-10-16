@@ -507,7 +507,7 @@ function createWindow(): void {
     minWidth: 820,
     minHeight: 560,
     show: false,
-    title: "即刻解析",
+    title: "MediaGet",
     icon: winIcon.isEmpty() ? undefined : winIcon,
     ...(usesWindowControlsOverlay && {
       titleBarStyle: "hidden",
@@ -568,7 +568,7 @@ function createTray(): void {
     icon.addRepresentation({ width: width * 2, height: height * 2, buffer: retina.toBitmap() });
   }
   tray = new Tray(icon.isEmpty() ? createFallbackTrayIcon() : icon);
-  tray.setToolTip("即刻解析");
+  tray.setToolTip("MediaGet");
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "显示主窗口", click: showMainWindow },

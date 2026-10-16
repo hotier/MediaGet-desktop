@@ -2,7 +2,7 @@
  * userData 配置/历史读写（docs/ARCHITECTURE.md §2：JSON 文件 + 原子写；
  * 不用 SQLite 除非历史量大）。
  *
- * 落盘布局（%APPDATA%/即刻解析 或 Electron userData）：
+ * 落盘布局（%APPDATA%/MediaGet 或 Electron userData）：
  *   config.json   —— 应用设置 AppSettings + 内核配置键（Cookie 等，§5）
  *   history.json  —— HistoryEntry[]（只存平台/标题/时间/落地路径，**不存直链**）
  *   queue.json    —— 下载队列持久化（重启恢复，P2 验收「重启后队列/历史完整」）

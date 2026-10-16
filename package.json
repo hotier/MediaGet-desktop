@@ -1,8 +1,8 @@
 {
   "name": "mediaget-desktop",
-  "productName": "即刻解析",
+  "productName": "MediaGet",
   "version": "0.1.0",
-  "description": "「即刻解析」桌面客户端（Electron，Windows 首发）：解析 + 下载闭环，解析内核单一代码源来自 mediaGet。",
+  "description": "MediaGet 桌面客户端（Electron，Windows 首发）：解析 + 下载闭环，解析内核单一代码源来自 mediaGet。",
   "main": "dist-electron/main/index.js",
   "author": "hotier",
   "license": "MIT",
@@ -81,7 +81,7 @@
   },
   "build": {
     "appId": "cc.hotier.mediaget.desktop",
-    "productName": "即刻解析",
+    "productName": "MediaGet",
     "directories": {
       "output": "release",
       "buildResources": "build"

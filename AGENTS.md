@@ -1,6 +1,6 @@
 # AGENTS.md
 
-「即刻解析」Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet 仓，本仓只消费它的版本化工件 `@mediaget/parse-core`。
+MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet 仓，本仓只消费它的版本化工件 `@mediaget/parse-core`。
 
 深层依据不在此文件，按需要读：
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— §1 三条硬约束、§6 安全红线、§7 构建与发布、§8 分仓与同步（改架构前先读 §8）

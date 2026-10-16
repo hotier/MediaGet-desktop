@@ -1,4 +1,4 @@
-# 即刻解析（mediaGet-desktop）UI/UX 完整设计方案
+# MediaGet（mediaGet-desktop）UI/UX 完整设计方案
 
 | 项 | 内容 |
 | --- | --- |
@@ -255,7 +255,7 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 
 ```
 ┌───────────────────────────────────────────────────────────────────────────┐
-│ [◈ logo 即刻解析]  [v0.1.0]         解析 下载 历史 设置        [◐主题][⚙][— □ ✕]│ ← 48px 拖拽区
+│ [◈ logo MediaGet]  [v0.1.0]         解析 下载 历史 设置        [◐主题][⚙][— □ ✕]│ ← 48px 拖拽区
 ├───────────────────────────────────────────────────────────────────────────┤
 │ ⓘ 发现新版本 0.2.0 · [查看更新] [稍后]                                      │ ← 更新横幅（仅需要时）
 ├───────────────────────────────────────────────────────────────────────────┤
@@ -528,17 +528,17 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 | --- | --- |
 | **图标** | 16×16（`tray-icon.png`，Win 通知区实际按 DPI 缩放，建议同时提供 32 备用的 `@2x`）。**双份**：`tray-dark.png` / `tray-light.png`，随主题切；单色描边版，不直接用彩色 logo（通知区小尺寸下糊成一团） |
 | **活跃态** | 有 queued/downloading 时图标叠加进度环（用 `Tray.setTitle` 或 `setOverlayIcon`，Win 用 `setOverlayIcon` 更稳）。完成 1 个 → 图标闪一次（`flashFrame(true)`）|
-| **Tooltip** | 动态：`即刻解析 · 3 个任务进行中 · 12.4 MB/s`；空闲：`即刻解析` |
+| **Tooltip** | 动态：`MediaGet · 3 个任务进行中 · 12.4 MB/s`；空闲：`MediaGet` |
 | **左键单击** | 显示/聚焦主窗口（`restore()+focus()`，复用 `second-instance` 已有代码 `index.ts:236-241`）|
 | **左键双击** | 同上（Win 惯例） |
 | **右键** | 托盘菜单（见下）|
-| **关窗行为** | 托盘存在时：**点 ✕ = 隐藏到托盘**（首次执行时发一条系统通知「即刻解析仍在后台下载 · 点此恢复」，让用户知道去哪找）。设置项 `closeToTray: true（默认）/ false` |
+| **关窗行为** | 托盘存在时：**点 ✕ = 隐藏到托盘**（首次执行时发一条系统通知「MediaGet 仍在后台下载 · 点此恢复」，让用户知道去哪找）。设置项 `closeToTray: true（默认）/ false` |
 | **通知** | `new Notification()` 走主进程（renderer 无通知权限，`setPermissionRequestHandler` 已全拒 `index.ts:246`）。触发条件：全部任务完成、失败数 >0、有任务等待用户操作（Cookie 失效类）、更新就绪。**每条通知必须可关**（设置项） |
 
 **托盘菜单**（`Menu.buildFromTemplate`，与 Win11 上下文菜单风格一致，系统原生渲染 —— **不需要我们做样式**，这是选原生而非自绘的关键理由）
 
 ```
-打开即刻解析                    Ctrl+Alt+O
+打开 MediaGet                   Ctrl+Alt+O
 ─────────────
 ⏸ 全部暂停        （无活任务时置灰）
 ▶ 全部继续
@@ -551,7 +551,7 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 开机自动启动        ☐
 显示托盘图标        ☑
 ─────────────
-退出即刻解析                  ← 唯一真正的退出入口
+退出 MediaGet                 ← 唯一真正的退出入口
 ```
 
 **任务在飞时点"退出"** → 原生模态（主进程 `dialog.showMessageBox`，`type:'warning'`, `buttons:['仍然退出','取消并继续下载']`）：3 个下载未完成，退出后可从托盘恢复并断点续传。**不静默丢任务**。
@@ -566,7 +566,7 @@ app.on("window-all-closed", () => { store.flush(); if (process.platform !== "dar
 | **带高** | `--wco-h: 40px`（styles.css 层 2.5）= 主进程 `TITLEBAR_H`。两处各留一份常量，改一处必须同改，否则按钮不居中 |
 | **按钮底色** | `color:'#00000000'` 透明：按钮浮在我们自己那条带上，hover 高亮仍由系统画，不另起一条系统底 |
 | **符号色** | 跟层 1 墨色（暗 `#e4e6e8` / 浅 `#1b1e21`）。主进程看不到 CSS，按同一规则自己解析：`theme!=="system"` 直接用设定，`system` 读 `nativeTheme.shouldUseDarkColors`（renderer 的 `matchMedia` 在 Electron 里就是它）。settings 写入与 `nativeTheme` 变更两条路都要重贴，漏一次浅色档符号就白在底上 |
-| **这条带的规矩** | 带内只放拖拽区，**不摆任何可点控件** —— 右端那 3 枚是系统按钮，压上去点不动。侧栏品牌行「即刻解析」就是这条带的左半（文字垂直居中即与按钮同轴），内容列另起一条 `drag-region h-(--wco-h)` 空带 |
+| **这条带的规矩** | 带内只放拖拽区，**不摆任何可点控件** —— 右端那 3 枚是系统按钮，压上去点不动。侧栏品牌行「MediaGet」就是这条带的左半（文字垂直居中即与按钮同轴），内容列另起一条 `drag-region h-(--wco-h)` 空带 |
 
 **应用菜单（菜单栏）**：**已删除**（`Menu.setApplicationMenu(null)`）。业主判定这套「文件/编辑/视图/窗口」在本应用里用不到，而 `autoHideMenuBar` 意味着 Alt 才出现 —— Win 用户既发现不了也用不上。菜单里的能力都有去处：编辑类（撤销/复制/粘贴/全选）由 Chromium 原生快捷键完成，不需要菜单注册；显示与退出走托盘；重载与开发者工具在 dev 由 detach 的 DevTools 承担。§3.4 的快捷键表因此是**唯一**的动作发现渠道，设置页"快捷键"分组必须让它可见。
 

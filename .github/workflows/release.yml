@@ -113,7 +113,7 @@ jobs:
             echo "Release $TAG 已存在，已覆盖附件"
           else
             gh release create "$TAG" "${assets[@]}" \
-              --title "即刻解析 $TAG" \
+              --title "MediaGet $TAG" \
               --notes-file /tmp/notes.md
           fi
           gh release view "$TAG" --json tagName,name,assets \
