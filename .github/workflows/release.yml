@@ -1,0 +1,120 @@
+name: Release
+
+# 触发方式：本地 `pnpm release`（release-it）跑完验收门 → 升版本 + 写 CHANGELOG +
+# 打 `vX.Y.Z` 附注标签 + push。标签一到 GitHub，本工作流就负责出包与发布 ——
+# 「什么时候算一版」是人敲命令决定的，「这一版是什么号」由 commit 前缀推导。
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  verify:
+    name: 发版前复检（typecheck / lint / test）
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm 版本不在此硬编码：action-setup 读 package.json 的 packageManager 字段。
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+      - run: pnpm run typecheck
+      - run: pnpm run lint
+      - run: pnpm run test
+
+  publish:
+    name: 打包并发布该版本
+    needs: verify
+    runs-on: windows-latest
+    permissions:
+      # `gh release create/upload` 要写 Release 与附件
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm 版本不在此硬编码：action-setup 读 package.json 的 packageManager 字段。
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # 这里不能设 ELECTRON_SKIP_BINARY_DOWNLOAD：electron-builder 要真 electron 分发件。
+      - run: pnpm install --frozen-lockfile
+
+      # 防呆：release-it 先写 package.json 再打 tag，正常一定一致；不一致说明 tag 是
+      # 手打的或版本被改过 —— 趁早红，别发出一个「文件名 v0.3.0 / 应用自报 0.2.0」的包。
+      - name: Assert tag matches package.json version
+        shell: bash
+        run: |
+          pkg="v$(node -p "require('./package.json').version")"
+          if [ "$pkg" != "$TAG" ]; then
+            echo "tag=$TAG 与 package.json=$pkg 不一致，终止发布" >&2
+            exit 1
+          fi
+          echo "OK $TAG"
+
+      - name: Fetch yt-dlp / ffmpeg binaries (pinned + verified)
+        run: node scripts/fetch-binaries.cjs
+      - name: Verify binaries + manifest before packaging
+        run: node scripts/fetch-binaries.cjs --verify-only --require-all
+
+      # --publish never 是刻意的：产物此刻还不属于任何 Release。若让 electron-builder
+      # 自己 publish，它会另建一个 Release，和下面 `gh release create` 撞成两个（且
+      # 标题/说明不受控）。发布动作统一由本 job 末尾一次完成。
+      - name: Build app + installer
+        run: pnpm run build:app && pnpm exec electron-builder --win --publish never
+
+      # 取 CHANGELOG 第一节（release-it 每次把新版本写在最顶）作为 Release 正文；
+      # 对不上当前 tag 就退回占位文案，别把上一版的说明发出去。
+      - name: Extract release notes for this version
+        shell: bash
+        run: |
+          version="${TAG#v}"
+          awk '/^## /{n++; if(n>1) exit} n==1' CHANGELOG.md > /tmp/notes.md
+          if [ ! -s /tmp/notes.md ] || ! head -1 /tmp/notes.md | grep -q "$version"; then
+            {
+              echo "## $version"
+              echo
+              echo "见仓库 CHANGELOG.md。"
+            } > /tmp/notes.md
+            echo "CHANGELOG 首节不是 $version，已退回占位说明" >&2
+          fi
+          echo '--- Release 正文 ---'
+          cat /tmp/notes.md
+
+      - name: Create GitHub Release and upload artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          shopt -s nullglob
+          # latest.yml 是 electron-updater 的更新源清单，必须与安装包同在一个 Release；
+          # 缺它则应用内「检测更新」永远查不到版本（README P6 的端到端前置）。
+          assets=(release/*.exe release/*.yml release/*.blockmap)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "release/ 下没有可上传产物" >&2
+            exit 1
+          fi
+          printf '待上传：\n'
+          printf '  %s\n' "${assets[@]}"
+          # 重跑本 job 时 Release 已存在：只覆盖附件，不重复建。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+            echo "Release $TAG 已存在，已覆盖附件"
+          else
+            gh release create "$TAG" "${assets[@]}" \
+              --title "即刻解析 $TAG" \
+              --notes-file /tmp/notes.md
+          fi
+          gh release view "$TAG" --json tagName,name,assets \
+            --jq '{tag: .tagName, name: .name, assets: [.assets[].name]}'

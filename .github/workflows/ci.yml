@@ -11,9 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # pnpm 版本不在这里硬编码：action-setup 会读 package.json 的 packageManager 字段，
+      # 于是本机与 CI 永远同一档；升 pnpm 只改那一个字段。
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
@@ -39,9 +39,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      # pnpm 版本不在这里硬编码：action-setup 会读 package.json 的 packageManager 字段，
+      # 于是本机与 CI 永远同一档；升 pnpm 只改那一个字段。
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
       - uses: actions/setup-node@v4
         with:
           node-version: 22

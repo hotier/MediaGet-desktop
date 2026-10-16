@@ -1,0 +1,74 @@
+// Renovate 依赖机器人配置。用 JSON5（官方支持注释），理由跟本仓其他配置件一样：
+// 为什么这么分组，必须写在改动它的那一行旁边。
+//
+// 生效前提：Renovate 是 GitHub App，要在 hotier/mediaGet-desktop 的 App 授权列表里装上；
+// 没授权时本文件只是文档，不会有任何 PR。
+//
+// 明确不在 Renovate 管辖范围内的两件事：
+// 1. `resources/binaries.json` 里的 yt-dlp/ffmpeg —— 它不是 npm 依赖，Renovate 读不到；
+//    而且托管版 Renovate **不执行 postUpgradeTasks**（自托管独有能力），机器人不可能替我们
+//    下载二进制并算 SHA-256。所以升级必须是人改 `binaries.json`：校验值由人贴进真源，
+//    这个性质不能让工具代劳。观察上游用 `node scripts/fetch-binaries.cjs --check-updates`
+//    （CI 侧每周跑一次，见 binaries-watch.yml）。
+// 2. `packageManager` 字段本身 —— 升 pnpm 由人决定（它同时决定 CI 用哪个 pnpm）。
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+
+  // 与 pnpm 的供应链策略对齐：pnpm 默认 minimumReleaseAge=1 week，发布不满一周的包
+  // `pnpm install` 直接 ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION。Renovate 默认不设年龄门槛，
+  // 于是会开出「本地装不动、CI 必红」的 PR。写同一个 7 天，机器人提的版本就一定装得动；
+  // pnpm-workspace.yaml 里的 minimumReleaseAgeExclude 是同一窗口的例外清单（急用才加，过期删）。
+  "minimumReleaseAge": "7 days",
+  // 再加 1 天缓冲，专门治本仓这类包：electron 升版时，它的平台伴侣件
+  // （@electron/get、esbuild 的 win32-x64 二进制等）是在主包之后发布的，
+  // Renovate 只看主包年龄就会提 PR，而 pnpm 因为伴侣件仍在自己的一周冷却内拒绝更新 lockfile
+  // ——报 artifact error。Renovate 官方就是为这个场景留了 buffer（默认只有 30 分钟，不够）。
+  "minimumReleaseAgeBuffer": "1 day",
+
+  // 业主在本机时区，下面的 schedule 按 Asia/Shanghai 解释
+  "timezone": "Asia/Shanghai",
+  // 单人项目：每周一上午集中开 PR，别每天来敲门——工作日是来写码的，不是来签收机器人的。
+  "schedule": ["before 9am on Monday"],
+  "prConcurrentLimit": 15,
+
+  "packageRules": [
+    // 先大捆：所有 minor/patch 合成一枚 PR，把噪音压到每周一发。
+    // packageRules 按数组顺序生效、后面的覆盖前面的，所以下面两条用 groupName:null / 新组名把它拆开。
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "依赖小版本（minor/patch）",
+      "groupSlug": "minor-patch"
+    },
+    // 拆出来第一捆：解析内核。升版 = 解析行为变更，必须单独 PR、单独回归，
+    // 绝不跟 react/radix 的样式升级挤在同一次合并里——挤在一起就没法只回滚内核。
+    // 前缀显式写 feat：内核在 `dependencies` 里，config:recommended 对生产依赖默认给 `fix`，
+    // 而 fix 只升 patch 位，与「解析行为变更」的量级不匹配。
+    // （别用 commitMessagePrefix 实现这件事：官方文档说配了它会让语义提交前缀整体失效。）
+    {
+      "matchPackageNames": ["@mediaget/parse-core"],
+      "groupName": null,
+      "semanticCommitType": "feat",
+      "semanticCommitScope": "kernel",
+      "labels": ["内核"]
+    },
+    // 拆出来第二捆：Electron 运行时与打包链。这几件是绑在一起动的——electron 大版本一变，
+    // electron-builder 的产物格式与 electron-updater 的读法跟着变，分开升会产出
+    // 「能构建、但装不上或更不了新」的组合。
+    {
+      "matchPackageNames": [
+        "electron",
+        "electron-builder",
+        "electron-updater",
+        "builder-util-runtime"
+      ],
+      "groupName": "Electron 运行时与打包链",
+      "groupSlug": "electron-stack"
+    },
+    // major 一律各自成 PR：一次只看一个破坏性变更，逐个签
+    {
+      "matchUpdateTypes": ["major"],
+      "separateMultipleMajor": true
+    }
+  ]
+}
