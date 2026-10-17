@@ -7,18 +7,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { registerIpc } from "../electron/main/ipc";
-import { createEngine } from "../electron/main/engine";
+import { createEngine, type KernelMode } from "../electron/main/engine";
 import { Downloader } from "../electron/main/downloader";
 import { createCacheProbe } from "../electron/main/cache";
 import { createLogger } from "../electron/main/logger";
 import { JsonStore } from "../electron/main/store";
 import { createStats } from "../electron/main/stats";
 import { createUpdater } from "../electron/main/updater";
+import { workKeyOf } from "../shared/history";
 import { IPC, type EngineHealth, type InvokeResult, type ParseResult } from "../types/ipc";
 
 type Handler = (event: unknown, input: unknown) => Promise<InvokeResult<unknown>>;
 
-function harness() {
+function harness(opts: { forceMode?: KernelMode } = {}) {
   const handlers = new Map<string, Handler>();
   const fakeIpc = {
     handle(channel: string, listener: Handler) {
@@ -34,17 +35,25 @@ function harness() {
     isFallbackEnabled: () => false, // 测试全离线
     onlineFallback: async () => null,
     // 开关读持久值（与 index.ts 同接线）：这条链路是 P2 的验收面，下面有用例钉它
+    // 开关读持久值（与 index.ts 同接线）：这条链路是 P2 的验收面，下面有用例钉它
     getPlatformSwitches: () => store.loadConfig().settings.platformSwitches,
     // 假内核：只声明 kuaishou 覆盖，探测/解析通道全部离线可控
     coreLoader: async () => ({
       localParserKeys: () => ["kuaishou"],
-      unifiedParseLocal: async (input: string) => ({
+      unifiedParseLocal: async () => ({
         code: 200,
         msg: "解析成功",
         platform: "kuaishou",
-        data: { url: input },
+        // 直链与分享链接刻意不同源、还带签名：历史档里搜到这两个词就是隐私红线破了
+        data: {
+          url: "https://cdn-direct.example.com/a.mp4?sign=SECRET",
+          title: "快手作品",
+          author: "测试作者",
+        },
       }),
     }),
+    // mock 档只为验一条语义：演示结果不落历史（用例见本 describe 末尾）
+    forceMode: opts.forceMode,
   });
   const downloader = new Downloader({
     getDownloadDir: () => dir,
@@ -530,6 +539,58 @@ describe("IPC 信封与校验", () => {
 
     await call(IPC.settingsSet, { platformSwitches: { kuaishou: { enabled: true } } });
     expect((await run()).code).toBe(200);
+    cleanup();
+  });
+
+  it("解析成功即落历史：不下载也留一行「未下载」（v8 语义，业主指令 2026-10-17）", async () => {
+    const { call, store, cleanup } = harness();
+    const text = "https://v.kuaishou.com/abc";
+    const r = await call(IPC.parseRun, { text });
+    expect(r.ok).toBe(true);
+
+    const list = store.loadHistory();
+    expect(list).toHaveLength(1);
+    const key = workKeyOf(text);
+    expect(list[0]).toMatchObject({
+      id: key,
+      groupId: key,
+      platform: "kuaishou",
+      title: "快手作品",
+      sourceUrl: text,
+      files: [],
+    });
+    expect(list[0].author?.name).toBe("测试作者");
+    // 历史页/首页「最近解析」读的是同一条通道：这里必须已经是 1 行而不是 0 行
+    const listed = await call(IPC.historyList, { limit: 5 });
+    expect(listed.ok && (listed.data as unknown[]).length).toBe(1);
+    // 隐私红线：直链与签名参数都不许进档，档里那条链接只能是用户输入的分享链接
+    expect(JSON.stringify(list)).not.toContain("cdn-direct");
+    expect(JSON.stringify(list)).not.toContain("SECRET");
+
+    // 同一条链接再解析一次 = 刷新那一行，历史页不许长成「重复解析的堆」
+    await call(IPC.parseRun, { text });
+    expect(store.loadHistory()).toHaveLength(1);
+    cleanup();
+  });
+
+  it("解析失败不落历史：400 的结果不配占一行", async () => {
+    const { call, store, cleanup } = harness();
+    await call(IPC.settingsSet, { platformSwitches: { kuaishou: { enabled: false } } });
+    const r = await call(IPC.parseRun, { text: "https://v.kuaishou.com/off" });
+    if (!r.ok) throw new Error(`parse:run 应当受理，实际 ${JSON.stringify(r)}`);
+    expect((r.data as { result: ParseResult }).result.code).toBe(400);
+    expect(store.loadHistory()).toEqual([]);
+    cleanup();
+  });
+
+  it("mock 兜底的成功结果不落历史：演示数据不进用户的账", async () => {
+    const { call, store, cleanup } = harness({ forceMode: "mock" });
+    const r = await call(IPC.parseRun, { text: "https://v.kuaishou.com/abc" });
+    if (!r.ok) throw new Error(`parse:run 应当受理，实际 ${JSON.stringify(r)}`);
+    const outcome = r.data as { result: ParseResult; via: string };
+    expect(outcome.result.code).toBe(200);
+    expect(outcome.via).toBe("mock");
+    expect(store.loadHistory()).toEqual([]);
     cleanup();
   });
 

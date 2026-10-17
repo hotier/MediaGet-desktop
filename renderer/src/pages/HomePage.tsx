@@ -1,6 +1,6 @@
 /**
  * 首页（工作台主场，2026-10-14 合并原解析页）：粘贴 → 识别 → 结果卡 → 一键下载，
- * 下方是最近作品；右栏常驻队列轨负责实时进度。
+ * 下方是最近解析；右栏常驻队列轨负责实时进度。
  * 首页即大粘贴区（主张句与顶栏入口已删），输入卡是第一视觉焦点。
  *
  * 交互（UIUX-DESIGN §2.1 / §3.4 L1）：粘贴后 600ms 自动识别并解析——支持批量，
@@ -8,17 +8,14 @@
  * Esc 清空、解析中骨架占位；「导入文件」读本地文本文件（一行一条即可）走同一条流，
  * 旁挂 info 图标，弹窗说明格式并一键保存 txt / csv 模板（不做 hover tooltip——说明要承载动作）；
  * 本页 Textarea 是全应用唯一解析输入面，Ctrl+K 由 App 层跳来并聚焦（inputRef）。
+ * 输入草稿与结果卡活在 `store/home-draft.ts` 而不是本页的 useState：切页即卸载重挂，
+ * 回来要还是刚才那批结果（业主指令 2026-10-17）。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { ArrowUpRight, Download, FileUp, Info, Loader2 } from "lucide-react";
 import { api, BridgeError } from "../lib/bridge";
-import type {
-  DownloadTaskView,
-  HistoryEntry,
-  IdentifyOutcome,
-  ParseRunOutcome,
-} from "../../../types/ipc";
+import type { DownloadTaskView, HistoryEntry, IdentifyOutcome } from "../../../types/ipc";
 import { ResultCard } from "../components/ResultCard";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { QueueRail } from "../components/QueueRail";
@@ -26,10 +23,11 @@ import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "../components/ui/dialog";
 import { Skeleton } from "../components/ui/skeleton";
 import { TruncatedTooltip } from "../components/ui/tooltip";
 import { fmtCreated } from "../lib/format";
+import { useHomeDraft } from "../store/home-draft";
 
 type Page = "downloads" | "history";
 
@@ -62,18 +60,6 @@ function saveImportTemplate(fileName: string, mime: string): void {
   a.click();
   URL.revokeObjectURL(url);
 }
-
-/** 批量解析的一条：一颗结果卡从 pending 走到 done / error */
-type BatchItem = {
-  id: number;
-  text: string;
-  status: "pending" | "done" | "error";
-  /** identify 出的来源链接（写历史用，非直链） */
-  sourceUrl?: string;
-  outcome?: ParseRunOutcome;
-  /** IPC 级失败（bridge 抛错）；引擎业务失败走 outcome.code≠200 的失败卡 */
-  error?: string;
-};
 
 type ParsedHit = {
   token: string;
@@ -109,6 +95,8 @@ export default function HomePage({
   onOpenSettings,
   clipboardFill,
   onClipboardFillDone,
+  reparseFill,
+  onReparseFillDone,
 }: {
   tasks: DownloadTaskView[];
   /** App 层 Ctrl+K 用的输入框 ref：聚焦首页工作台 */
@@ -123,23 +111,18 @@ export default function HomePage({
   clipboardFill: { url: string; platform: string; seq: number } | null;
   /** 消费后清账（App 层置空，避免重挂载时重放同一条） */
   onClipboardFillDone: () => void;
+  /** 历史页多选「重新解析」送来的分享链接（逐行一条，与导入文件同一条流） */
+  reparseFill: { links: string[]; seq: number } | null;
+  /** 消费后清账，同 clipboardFill */
+  onReparseFillDone: () => void;
 }): React.ReactElement {
-  const [text, setText] = useState("");
-  const [identifyHint, setIdentifyHint] = useState<string>("");
-  const [items, setItems] = useState<BatchItem[]>([]);
-  const [busy, setBusy] = useState(false);
+  // 工作台草稿（文本 / 提示 / 结果卡 / 进行态）在 store 里：见 store/home-draft.ts
+  const { text, setText, hint: identifyHint, setHint: setIdentifyHint, items, busy, setBusy, startBatch, patchItem } =
+    useHomeDraft();
   const [helpOpen, setHelpOpen] = useState(false);
   const [recent, setRecent] = useState<HistoryEntry[]>([]);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // 粘贴→自动解析防抖与 busy 竞争：用 ref 读最新值
-  const busyRef = useRef(false);
-  busyRef.current = busy;
-  const idRef = useRef(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  const patchItem = useCallback((id: number, up: Partial<BatchItem>) => {
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...up } : it)));
-  }, []);
 
   /**
    * 单条解析（批内逐条调用；结果卡与失败卡的 [重试] 都走它，`retry=true`）。
@@ -149,7 +132,7 @@ export default function HomePage({
    */
   const parseOne = useCallback(
     async (id: number, source: string, retry = false) => {
-      patchItem(id, { status: "pending", outcome: undefined, error: undefined });
+      patchItem(id, { status: "pending", outcome: undefined, error: undefined, at: undefined });
       let sourceUrl: string | undefined;
       try {
         sourceUrl = (await api.identify(source)).url ?? undefined;
@@ -158,7 +141,8 @@ export default function HomePage({
       }
       try {
         const r = await api.parse(retry ? { text: source, forceOnline: true } : { text: source });
-        patchItem(id, { status: "done", outcome: r, sourceUrl });
+        // at = 结果到手时刻：切页重挂载后卡片接着算直链年龄，不把过期的链显示成刚拿到
+        patchItem(id, { status: "done", outcome: r, sourceUrl, at: Date.now() });
       } catch (e) {
         patchItem(id, {
           status: "error",
@@ -177,16 +161,13 @@ export default function HomePage({
   const runBatch = useCallback(
     async (sources: string[]) => {
       const list = sources.map((s) => s.trim()).filter(Boolean);
-      if (list.length === 0 || busyRef.current) return;
-      busyRef.current = true;
+      if (list.length === 0 || useHomeDraft.getState().busy) return;
       setBusy(true);
-      const fresh: BatchItem[] = list.map((t) => ({ id: ++idRef.current, text: t, status: "pending" }));
-      setItems(fresh);
+      const fresh = startBatch(list);
       for (const it of fresh) await parseOne(it.id, it.text);
-      busyRef.current = false;
       setBusy(false);
     },
-    [parseOne]
+    [parseOne, setBusy, startBatch]
   );
 
   /** 手动解析（按钮 / Ctrl+Enter）：没有可提取链接时把原文交给引擎如实报错 */
@@ -292,6 +273,18 @@ export default function HomePage({
     onInputRef.current(clipboardFill.url);
   }, [clipboardFill]);
 
+  // 历史页「重新解析」送来的链接：走 onInput 同一条流（识别提示 + 600ms 自动批量解析），
+  // 与 onImportFile 拼多行文本那句完全一致 —— 本页不另开一条解析编排。
+  // 这里**不抄**上面那条「输入框有内容就不覆盖」的守卫：那条防的是被动监听吞掉手输草稿，
+  // 而这是用户点了「重新解析」，覆盖草稿就是这次点击的语义（旧结果卡由 startBatch 整表替换）。
+  useEffect(() => {
+    if (!reparseFill) return;
+    onReparseFillDone();
+    const joined = reparseFill.links.join("\n");
+    autoFilledRef.current = joined;
+    onInputRef.current(joined);
+  }, [reparseFill]);
+
   // 封面/主色上抛已移除（2026-10-15 蓝白指令）：焦点色由「主题风格」整带决定，
   // 不再随解析结果里的封面抽色漂移。
 
@@ -308,9 +301,14 @@ export default function HomePage({
     return () => window.removeEventListener("keydown", onKey);
   }, [text]);
 
+  // 最近解析 = 历史头五条。回读挂在「工作台没有待解析的卡片」这个条件上：
+  // 空表时为真（首帧就要读一次），一批解析落位、一条重试完成时也落回真 ——
+  // 不切页也能看见刚解析的那条进了历史。解析进行中不读，免得每张卡都打一次 IPC。
+  const settled = items.every((it) => it.status !== "pending");
   useEffect(() => {
+    if (!settled) return;
     void api.history.list({ limit: 5 }).then(setRecent).catch(() => {});
-  }, []);
+  }, [settled]);
 
   // 进行中任务不在首页做第二份展示：右栏队列轨已逐条实时显示，资源明细归队列页。
 
@@ -385,18 +383,15 @@ export default function HomePage({
         </Card>
 
         {/* 导入说明与模板收进弹窗（业主定稿 2026-10-15）：tooltip 放不了「保存模板」这类动作；
-            该弹窗无遮罩、非模态（业主点名），页面照常可见可点，其余对话框遮罩照旧 */}
+            该弹窗非模态（业主点名，页面照常可点），遮罩走「浅而不拦手」一档 */}
         <Dialog open={helpOpen} onOpenChange={setHelpOpen} modal={false}>
-          <DialogContent showOverlay={false}>
+          <DialogContent showOverlay="light" className="max-w-sm" aria-describedby={undefined}>
             <DialogHeader>
               <DialogTitle>批量导入说明</DialogTitle>
-              <DialogDescription>
-                模板是一份写好填写说明的 txt / csv 文件，填完后用「导入文件」选中即可。
-              </DialogDescription>
             </DialogHeader>
             <ul className="flex list-disc flex-col gap-1.5 ps-5 text-sm text-muted-foreground">
               <li>支持 .txt / .md / .csv 文本文件</li>
-              <li>一行一条：直接贴链接，或整段分享文案（链接会被自动提取）</li>
+              <li>每行一条：直接贴链接，或整段分享文案</li>
               <li>最多 100 条 / 1 MB，超出按前 100 条解析</li>
             </ul>
             <DialogFooter>
@@ -469,6 +464,7 @@ export default function HomePage({
               key={item.id}
               outcome={item.outcome}
               sourceUrl={item.sourceUrl}
+              parsedAt={item.at}
               onRetry={() => void parseOne(item.id, item.text, true)}
               onNavigate={onOpenSettings}
               onQueued={(count) =>
@@ -482,7 +478,7 @@ export default function HomePage({
 
         <Card>
           <CardHeader className="flex-row items-center justify-between gap-3">
-            <CardTitle className="text-sm">最近下载</CardTitle>
+            <CardTitle className="text-sm">最近解析</CardTitle>
             <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onNav("history")}>
               全部历史
               <ArrowUpRight />
@@ -490,7 +486,7 @@ export default function HomePage({
           </CardHeader>
           <CardContent className="pb-4">
             {recent.length === 0 ? (
-              <p className="text-xs text-muted-foreground">还没有记录。解析成功后点「下载」，完成的历史会出现在这里。</p>
+              <p className="text-xs text-muted-foreground">还没有解析记录。</p>
             ) : (
               <ul className="flex flex-col divide-y divide-border">
                 {recent.map((h) => (

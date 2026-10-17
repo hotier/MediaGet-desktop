@@ -93,9 +93,16 @@ export type InvokeResult<T> = InvokeOk<T> | InvokeErr;
 //     `app:openExternal`（结果卡「在浏览器打开」，scheme 白名单只放 http/https）。
 //     `settings` 另加两键 `filenamePreset` / `filenameExtra`（下载文件名主体与追加开关）。
 //     升号理由与 v5 同一条：通道集合增了。两把新键都有缺省值，旧存档读进来按 v7 解释不会缺字段。
+// v8：`HistoryEntry` 的含义从「一次落地文件」变成「一条解析记录」（业主指令 2026-10-17）。
+//     zod 形状一个字没改（`files` 一直是数组、可为空），改的是谁在写它：主进程在 parse:run
+//     成功时就写一行，`files: []` = 解析过但没下载；`groupId` 现在是可复算的作品键
+//     （`shared/history.ts` 的 workKeyOf），同一作品的解析行与下载行靠它聚成历史页的一行。
+//     形状兼容但口径变了，所以必须升号：拿 v7 的解释读 v8 的档，统计页的「文件数」会把
+//     0 文件的解析行也数成一个文件 —— 数值错，界面上没有任何异常。旧档（每行都有文件）反过来读
+//     成新口径不受影响，不需要迁移。
 // ————————————————————————————————————————————————
 
-export const CONTRACT_VERSION = 7;
+export const CONTRACT_VERSION = 8;
 
 // ————————————————————————————————————————————————
 // channel 常量（preload/main/renderer 三方共用字面量，禁止散落拼写）

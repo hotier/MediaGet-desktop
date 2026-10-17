@@ -368,22 +368,28 @@ export const ClearTasksInputSchema = z.object({
  */
 export const ClearTasksResultSchema = z.object({ removed: z.number().int().min(0) });
 
-/** history:list 项 */
+/**
+ * history:list 项 —— 一条**解析记录**（业主指令 2026-10-17：历史页不是下载台账）。
+ *
+ * 写入方有两个，都在主进程：`parse:run` 成功时写一条（`files` 为空），下载落地时每个文件追加一条。
+ * 两侧从同一条分享链接算出同一个 `groupId`（`shared/history.ts` 的 workKeyOf），
+ * 历史页按它聚合，所以「解析过又下载了的作品」在界面上是一行而不是两行。
+ */
 export const HistoryEntrySchema = z.object({
   id: STR,
-  /** 图集等成组下载共用（聚合一行用） */
+  /** 作品键（解析行与它的下载行共用）；图集等成组下载也共用同一行 */
   groupId: STR.optional(),
   platform: STR.optional(),
   title: STR.optional(),
-  /** 媒体类型（视频/图集/音频/文件） */
+  /** 媒体类型（视频/图集/音频/文件）：只有落地过的行有值，解析行留空由下载行补上 */
   kind: STR.optional(),
-  /** 文件字节数（done 时的 received） */
+  /** 文件字节数（done 时的 received）；解析行为空 */
   bytes: z.number().optional(),
-  /** 落地文件路径列表 */
+  /** 落地文件路径列表；**空数组 = 只解析没下载** */
   files: z.array(STR),
   /** 分享来源链接（用户自己的输入，非直链） */
   sourceUrl: STR.optional(),
-  /** 下载那一刻的作者快照（老记录无此键） */
+  /** 解析那一刻的作者快照（本版本之前的老记录无此键） */
   author: AuthorSnapshotSchema.optional(),
   createdAt: z.number(),
 });
@@ -451,6 +457,10 @@ export const UpdateStateSchema = z.object({
   releaseNotes: STR.max(20000).optional(),
   /** error 阶段的说明（原始错误文本，不翻译，便于排查） */
   error: STR.optional(),
+  /**
+   * 本运行环境有无更新源（`app.isPackaged` 且挂上 electron-updater）。
+   * 它管无源时「检查更新」怎么应答（点击以 toast 说明环境），不管按钮存在性——按钮常驻（业主指令 2026-10-17）。
+   */
   canCheck: z.boolean(),
 });
 

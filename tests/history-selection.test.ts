@@ -13,7 +13,9 @@ import {
   csvCell,
   CSV_HEADER,
   EMPTY_SEL,
+  headerCheckState,
   isSelected,
+  reparseLinks,
   selectAllVisible,
   WORK_SEPARATOR,
 } from "../renderer/src/lib/history-selection";
@@ -160,5 +162,36 @@ describe("buildWorksCsv（一行一作品）", () => {
 
   it("BOM 不在这里加（那是落盘侧的事，拼进字符串会污染首列表头）", () => {
     expect(buildWorksCsv([full], fmt)[0]).not.toBe("\uFEFF");
+  });
+});
+
+describe("headerCheckState（表头那枚全选框的三态）", () => {
+  it("一条没选 = 空", () => {
+    expect(headerCheckState(EMPTY_SEL, V)).toBe(false);
+  });
+
+  it("选了一部分必须是 indeterminate：画成勾，下一次点就变清空，用户以为刚才全选过", () => {
+    expect(headerCheckState({ keys: ["a", "c"], anchor: "c" }, V)).toBe("indeterminate");
+  });
+
+  it("可见行全在里面 = 勾；**筛掉的**选中行不参与判断（表头只代表看得见的这些）", () => {
+    expect(headerCheckState({ keys: V, anchor: "e" }, V)).toBe(true);
+    expect(headerCheckState({ keys: ["a", "b", "zz"], anchor: "zz" }, ["a", "b"])).toBe(true);
+    expect(headerCheckState({ keys: ["a", "b", "zz"], anchor: "zz" }, ["a", "b", "c"])).toBe("indeterminate");
+  });
+
+  it("过滤到零行时不给「全选」假象（空集不是「全选中」）", () => {
+    expect(headerCheckState({ keys: ["a"], anchor: "a" }, [])).toBe(false);
+  });
+});
+
+describe("reparseLinks（多选·重新解析交得出什么）", () => {
+  it("缺来源链接的行跳过 —— 历史不存直链，分享链接是唯一入口", () => {
+    expect(reparseLinks([{ sourceUrl: "u1" }, {}, { sourceUrl: "" }, { sourceUrl: "u2" }])).toEqual(["u1", "u2"]);
+  });
+
+  it("保行序（送进首页的顺序就是列表里的顺序，多条时结果卡对得上）", () => {
+    expect(reparseLinks([{ sourceUrl: "b" }, { sourceUrl: "a" }])).toEqual(["b", "a"]);
+    expect(reparseLinks([])).toEqual([]);
   });
 });

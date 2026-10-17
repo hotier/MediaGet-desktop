@@ -5,7 +5,7 @@ MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet
 深层依据不在此文件，按需要读：
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— §1 三条硬约束、§6 安全红线、§7 构建与发布、§8 分仓与同步（改架构前先读 §8）、§9 耦合治理（平台清单的归属在这里定过）
 - [docs/UIUX-DESIGN.md](docs/UIUX-DESIGN.md) —— Token 分层与视觉语义真源；§7 覆盖 §1–2；§9 定统计页与图表底座（ECharts 唯一登记点、取色探针、作图三规）
-- [README.md](README.md) —— 当前进度台账与命令表
+- [README.md](README.md) —— 项目说明、命令表、里程碑状态；界面决策沿革不在这里（在 [docs/UIUX-HANDOFF.md](docs/UIUX-HANDOFF.md) §6 勘误记录）
 
 ## 改 IPC 通道 = 动六件套
 
@@ -47,9 +47,16 @@ MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet
 - Cookie 只活在主进程并全程脱敏；剪贴板文本不持久化；历史与队列不保留直链 URL。
 - 不解析黑名单平台（微信视频号、付费/DRM），沿用内核判定；不做反检测加码。
 
-## 验收门
+## 验收按档，不按门（详表在 [docs/TESTING.md](docs/TESTING.md)，改档前先读它）
 
-`pnpm typecheck` + `pnpm lint` + `pnpm test`（全离线，禁真网络）+ 随包件校验 `pnpm run verify:binaries:release`。四门都是本机可跑的；提交口由 husky 只卡 `eslint --fix` 与 commitlint，重量级判定留在 CI 与 `pnpm release`。
+一条主干：**按「改了什么」选最低够用档，同一批改动只在收尾时完整验证一次**。下面四门（`pnpm typecheck` + `pnpm lint` + `pnpm test`（全离线，禁真网络）+ 随包件 `pnpm run verify:binaries:release`）是**收尾与 CI** 的门，不是每个 edit 的随身手序。
+
+- 文档 / 注释 / 勘误 → **不跑任何档**。界面文案、纯 className 与样式 → L0（typecheck + lint），改 `styles.css` 才加跑 `style-discipline` 那一个守卫。
+- 业务逻辑 / 纯函数 → 对应的 L1 单测，收尾 L3 一次。动 `types/**` 或 `electron/main/ipc.ts` → L2（`contract` / `boundaries` / `ipc` / `kernel-sync`）。
+- 新增 runtime 依赖、`resources/**`、打包链路 → 才 L4 与 `verify:binaries*`；主进程生命周期与像素/几何 → L5（实机人工，vitest 只吃 `tests/stubs/electron.ts`，测不到真窗口）。
+- **禁止**：没改代码就重跑同一档；每 edit 跑一次全量；用 `pnpm test` 去验只有 L5 才验得到的东西（假绿比不绿更坏）。几何/视觉用 dev server `127.0.0.1:5433`（mock 桥）人工核对，**不写进验收门**。
+- 新测试只写两类：**纯函数/逻辑分支**，与**把一次事故钉成一条断言的回归守卫**。不写 UI 快照、不写依赖真网络的用例、不为 DOM 冒烟引 jsdom（test 依赖只保留 vitest）。源码扫描型守卫（`boundaries` 按文件生成用例、`style-discipline`、`toast-sonner`）会让纯样式/文案改动也能红，碰这三面跑**对应那一个**，不是全量。
+- 提交口由 husky 只卡 `eslint --fix` 与 commitlint，重量级判定留在 CI 与 `pnpm release`。本地少跑，兜底交给 CI。
 
 ## 本机的坑（配置里读不出来）
 

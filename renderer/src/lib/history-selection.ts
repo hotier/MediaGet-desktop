@@ -55,6 +55,26 @@ export function selectAllVisible(s: SelState, visibleKeys: string[]): SelState {
   return { keys: [...visibleKeys], anchor: s.anchor };
 }
 
+/**
+ * 表头那枚全选框的三态。`s` 里可能带着**已被筛掉**的选中行，所以只看可见行的命中比例：
+ * 一条没选 = 空，全选了 = 勾，选了一部分必须显示成 indeterminate —— 部分态若画成勾，
+ * 下一次点就是「清空」，用户会以为自己刚才全选过。
+ */
+export function headerCheckState(s: SelState, visibleKeys: string[]): boolean | "indeterminate" {
+  const picked = visibleKeys.reduce((n, k) => n + (s.keys.includes(k) ? 1 : 0), 0);
+  if (picked === 0) return false;
+  return picked === visibleKeys.length ? true : "indeterminate";
+}
+
+/**
+ * 多选「重新解析」：只交得出**带分享链接**的行。
+ * 历史不存媒体直链（ARCHITECTURE §3），分享链接是把作品交回内核的唯一入口；
+ * v8 起的解析行必然有，而更早的下载行可能没有 —— 缺了不能猜，跳过并如实报数。
+ */
+export function reparseLinks(rows: Array<{ sourceUrl?: string }>): string[] {
+  return rows.map((r) => r.sourceUrl).filter((u): u is string => Boolean(u));
+}
+
 // ————————————————————————————————————————————————
 // 导出文本
 // ————————————————————————————————————————————————

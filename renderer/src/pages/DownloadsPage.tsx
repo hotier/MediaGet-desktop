@@ -270,13 +270,13 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
 
   if (tasks.length === 0) {
     return (
-      <section className="flex flex-col gap-3">
+      // 空态只留标题一行，说明段删掉（业主指令 2026-10-17）；剩下这一组在可用高度里垂直居中，
+      // 不再顶着页头悬在半空——ToastLine 仍钉在顶部，居中的是它下面那片可用区
+      <section className="flex min-h-full flex-col gap-3">
         <ToastLine text={toast} />
-        <div className="flex flex-col items-center gap-3 py-16 text-center">
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
           <DownloadCloud className="size-11 text-faint" strokeWidth={1.5} aria-hidden="true" />
           <div className="font-medium">暂无下载任务</div>
-          <p className="text-sm text-muted-foreground">解析成功后点「下载」即入队；批量图集会整组显示进度。</p>
-          <p className="text-sm text-muted-foreground">断点续传：重启后未完成任务自动恢复；.part 存在则 Range 续传。</p>
         </div>
       </section>
     );
@@ -285,7 +285,8 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
   return (
     <section className="flex flex-col gap-3">
       <ToastLine text={toast} />
-      <Card className="py-0">
+      {/* gap-0 同历史页：不让 Card 的 gap-4 在工具栏底线与表头之间垫出空带 */}
+      <Card className="gap-0 py-0">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-2 py-1.5">
           {STATUS_FILTERS.map((f) => (
             <Button
@@ -335,7 +336,8 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
             </Button>
           </div>
         </div>
-        <CardContent className="py-1">
+        {/* 只留 pb：pt 会把表头顶离工具栏底线，那 4px 又变成「表头比内容行高」 */}
+        <CardContent className="pb-1">
           {rows.length === 0 ? (
             <div className="flex items-center justify-center gap-3 py-10 text-sm text-muted-foreground">
               <span>没有符合条件的下载项</span>

@@ -103,6 +103,7 @@
   --wb-line-strong: #363b41; /* 控件描边 */
   --wb-line-hover: #4a5057;
   --wb-veil: #08090ae6;
+  --wb-scrim: #08090a99; /* 弹窗遮罩：比 veil 浅一档。暗档页底本就深，压暗主要靠 blur，这里 60% 只把背景往后推一层 */
   --wb-ink: #e4e6e8; /* 主文字：非纯白 */
   --wb-ink-muted: #9aa0a7;
   --wb-ink-faint: #757b83;
@@ -130,6 +131,7 @@
   --wb-light-line-control: #d8dde4; /* 控件描边：比 line-strong 浅一档（业主 2026-10-15 再浅一点） */
   --wb-light-line-hover: #aab1b9;
   --wb-light-veil: #1b1e21d9;
+  --wb-light-scrim: #1b1e2152; /* 浅档页底 #f5f6f7，32% 把整页压到 ~rgb(176) 且字仍可辨；两档 alpha 不等是因为页底通道值差一个量级，同一个 alpha 在浅档会糊成不透明 */
   --wb-light-ink: #1b1e21;
   --wb-light-ink-muted: #59606a;
   --wb-light-ink-faint: #7b828c;
@@ -211,6 +213,7 @@
   --surface-sunken: color-mix(in srgb, var(--wb-black) 92%, var(--wc-hue));
   --control-bg: transparent; /* 控件填充底（输入框/下拉触发器/开关/复选）：无填充，只留描边（业主 2026-10-15） */
   --overlay: var(--wb-veil);
+  --scrim: var(--wb-scrim); /* 弹窗背景遮罩：比 overlay 浅一档，浅到背后页面还认得出（业主指令 2026-10-17） */
   --text: var(--wb-ink);
   --text-muted: var(--wb-ink-muted);
   --text-placeholder: var(--wb-ink-faint);
@@ -254,6 +257,7 @@
   --surface-sunken: var(--wb-light-sunken);
   --control-bg: transparent; /* 浅档同暗档：控件零填充，不做灰底 */
   --overlay: var(--wb-light-veil);
+  --scrim: var(--wb-light-scrim);
   --text: var(--wb-light-ink);
   --text-muted: var(--wb-light-ink-muted);
   --text-placeholder: var(--wb-light-ink-faint);

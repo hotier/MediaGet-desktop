@@ -34,6 +34,7 @@ import {
 } from "../lib/stats";
 import type { HistoryEntry, StatsSnapshot } from "../../../types/ipc";
 import { displayName } from "../../../shared/platforms";
+import { isLanded } from "../../../shared/history";
 import { EChart } from "../components/charts/EChart";
 import { rankHeight, rankOption, trendOption, histogramOption, heatOption, type RankDatum, type TrendMetric } from "../components/charts/options";
 import { useChartPalette } from "../components/charts/palette";
@@ -191,9 +192,12 @@ export default function StatsPage({
   const since = useMemo(() => (snap ? sinceLabel(snap) : null), [snap]);
 
   // —— 历史明细口径（只有这两张卡用它）——
-  const hist = useMemo(() => sizeHistogram(list), [list]);
-  const scope = useMemo(() => historyScope(list), [list]);
-  const authors = useMemo(() => authorTop(list, 10), [list]);
+  // 明细档从 v8 起是**解析**历史：一条没下载的记录也占一行。作者榜、单文件大小分布算的是
+  // 「文件」，所以只数落地行 —— 这两张卡的口径没变，变的是档里多了不算文件的行。
+  const landed = useMemo(() => list.filter(isLanded), [list]);
+  const hist = useMemo(() => sizeHistogram(landed), [landed]);
+  const scope = useMemo(() => historyScope(landed), [landed]);
+  const authors = useMemo(() => authorTop(landed, 10), [landed]);
 
   const platformData = useMemo<RankDatum[]>(
     () =>

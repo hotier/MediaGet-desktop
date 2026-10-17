@@ -1,10 +1,11 @@
 /**
- * 作者快照与「复制作品信息」的纯函数（renderer/src/lib/work-info.ts）。
- * 这两个函数是历史页唯一的取数口径：快照决定了历史.json 里有什么，
- * 复制文本决定了离开应用后用户手里剩下什么，所以逐字段钉住。
+ * 作者快照与「复制作品信息」的纯函数。
+ * 快照决定了 history.json 里有什么（解析行与下载行共用，住在 shared/author.ts），
+ * 复制文本决定了离开应用后用户手里剩下什么（渲染层展示口径，住在 renderer/src/lib/work-info.ts）。
  */
 import { describe, expect, it } from "vitest";
-import { buildAuthorSnapshot, buildWorkInfoText } from "../renderer/src/lib/work-info";
+import { buildAuthorSnapshot } from "../shared/author";
+import { buildWorkInfoText } from "../renderer/src/lib/work-info";
 import type { ParseData } from "../types/ipc";
 
 describe("buildAuthorSnapshot", () => {

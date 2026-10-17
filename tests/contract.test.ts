@@ -136,6 +136,9 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
         ];
       },
       clearHistory: () => {},
+      // parse:run 成功时写一条解析历史（files 为空）。这条链的真实语义归 history-record.test.ts，
+      // 这里只要「handler 调得到、返回值不影响出参校验」。
+      upsertHistory: () => [],
       // history:remove 的真实 handler 会调这里；契约测试只要「返回形状对」（剩余 HistoryEntry[]），
       // 双命中删组的落盘行为归 store.test.ts 管。回一条与 loadHistory 同构的剩余项即可。
       removeHistory: (keys: string[]) =>

@@ -1172,7 +1172,7 @@ export default function SettingsPage({
       case "about":
         return (
           <>
-            <ItemCard title="更新策略" desc="打包发布态生效；开发环境无发布通道，「手动检测更新」显示「当前运行环境没有更新源」属预期。开关保存后立即生效（启动检测自下次启动读取）。">
+            <ItemCard title="更新策略" desc="打包发布态生效；开发环境无发布通道，点「检查更新」会提示「当前运行环境没有更新源」，属预期。开关保存后立即生效（启动检测自下次启动读取）。">
               <Row label="启动时自动检测更新" hint="打开应用即静默检查一次 GitHub Releases，不弹窗、不打断；失败留在错误态，可在下方「手动检测更新」重试。" end>
                 <Switch
                   aria-label="启动时自动检测更新"

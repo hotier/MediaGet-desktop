@@ -40,11 +40,15 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">): React.Re
 }
 
 function TableHead({ className, ...props }: React.ComponentProps<"th">): React.ReactElement {
+  /* 表头与内容行共用同一套内边距（业主指令 2026-10-17「标题行高度应该和内容行一致」）。
+     原来这里是 h-9：rem 定值不随「界面字号」伸缩，而 td 的高 = py-2 + 1.5 倍行高，
+     两批行只在 13px 档偶然等高（36 vs 35.5），字号调小表头就比内容行高、调大则反过来。
+     同一套 py 才是任何档位都严格等高。 */
   return (
     <th
       data-slot="table-head"
       className={cn(
-        "h-9 px-3 text-start align-middle text-sm font-medium whitespace-nowrap text-muted-foreground",
+        "px-3 py-2 text-start align-middle text-sm font-medium whitespace-nowrap text-muted-foreground",
         className
       )}
       {...props}

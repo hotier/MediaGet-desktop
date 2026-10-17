@@ -13,7 +13,11 @@ function DialogOverlay({ className, ...props }: React.ComponentProps<typeof Dial
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        "fixed inset-0 z-50 bg-[var(--overlay)] backdrop-blur-sm",
+        // 浅遮罩 `--scrim`（业主指令 2026-10-17）：暗档 60% / 浅档 32%，把背景往后推一层但不抹成一块黑。
+        // 浅档只到 32% 是因为页底 `#f5f6f7` 的通道值约为暗档 `#0f1113` 的 16 倍，同一个 alpha 在浅档会糊成不透明。
+        // 遮罩变浅之后「卡片浮在内容之上」主要靠 blur，所以 blur 保留。
+        // 结果卡「+N」角标那枚深遮罩仍用 `--overlay`——它压的是图，不是页面，两档不共用。
+        "fixed inset-0 z-50 bg-[var(--scrim)] backdrop-blur-sm",
         "animate-in fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
         className
       )}
@@ -30,16 +34,40 @@ function DialogContent({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean;
-  /** 业主点名的浮层可去遮罩（配合 Root `modal={false}` 才不锁背景交互），默认保留遮罩 */
-  showOverlay?: boolean;
+  /**
+   * 遮罩三档：`true` 浅遮罩 + 模态锁背景（默认）；`"light"` 同一枚浅遮罩但不拦手；`false` 完全不画。
+   * `"light"` 只配 Root `modal={false}` 用（业主点名的两层：作者卡片、批量导入说明——要背景照常可点）。
+   */
+  showOverlay?: boolean | "light";
 }): React.ReactElement {
   return (
     <DialogPortal>
-      {showOverlay && <DialogOverlay />}
+      {showOverlay === "light" ? (
+        // 这层只能自己画：Radix 的 `Dialog.Overlay` 在非模态下**直接返回 null**
+        // （`context.modal ? <Presence>…</Presence> : null`），而非模态正是「背景照常可点」的前提。
+        // 给模态 Overlay 加 `pointer-events-none` 也不行——模态锁是加在 `document.body` 上的。
+        // 不叠 blur：这两层要的「照常可见」经不起糊一层。
+        <div
+          aria-hidden
+          data-slot="dialog-scrim"
+          className="pointer-events-none fixed inset-0 z-50 bg-[var(--scrim)] animate-in fade-in-0 duration-200"
+        />
+      ) : showOverlay ? (
+        <DialogOverlay />
+      ) : null}
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border border-border bg-card p-5 shadow-pop",
+          // grid-cols-[minmax(0,1fr)]：隐式列是 auto，它的**下限 = 内容的 max-content**。
+          // 卡里只要有一行 `truncate`（nowrap + overflow-hidden），那行全文的宽度就会把列撑到
+          // 几百 px，整张卡溢出对话框、省略号根本不出现（作者卡简介实测撑到 896，框只有 365）。
+          // min 归 0 之后列才真的等于框宽，截断才有可截断的盒。
+          // left 偏移 = 侧栏宽的一半：弹窗的居中参照是**功能区**而不是整个视口（业主指令 2026-10-17，
+          // 与底部浮层 `SheetContent` 的 `ms-(--w-side)` 同一条口径）。侧栏恒在，所以按 var 算不按断点算。
+          // w 也得跟着让开侧栏：`w-full` 的 100% 是**视口**宽，参照系挪到功能区后它就不封顶了 ——
+          // 820（minWidth）时 max-w-3xl 那张会算出 [130, 898]，左缘压到侧栏上、右缘出屏。
+          // 这里减掉侧栏再留 2rem，配合上面的 left 可证：左缘 ≥ 侧栏宽 + 16、右缘 ≤ 视口 - 16。
+          "fixed top-1/2 left-[calc(50%_+_var(--w-side)/2)] z-50 grid w-[calc(100%_-_var(--w-side)_-_2rem)] max-w-lg grid-cols-[minmax(0,1fr)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-lg border border-border bg-card p-5 shadow-pop",
           "animate-in fade-in-0 zoom-in-95 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 duration-200",
           className
         )}

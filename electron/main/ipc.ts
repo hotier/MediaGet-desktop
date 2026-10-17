@@ -15,6 +15,8 @@ import { basename, extname } from "node:path";
 import { shell } from "electron";
 import { PLATFORM_INFO, sanitizeFilename } from "@mediaget/parse-core";
 import { resolveKey } from "../../shared/platforms";
+import { buildAuthorSnapshot } from "../../shared/author";
+import { parseHistoryEntry } from "../../shared/history";
 import {
   describeIssues,
   CacheClearInputSchema,
@@ -181,6 +183,8 @@ export function registerIpc(deps: IpcRegistryDeps): void {
   // —— parse:run（统一入口）——
   // 计数在这一层记，不在 engine 里记：engine 的返回点有九处（本地/线上/mock），
   // 挂在出口一处收口才不会随着内部分支增加而漏计。
+  /** 一次性历史 id：只在链接抽不出来时用（ID 直解模式），同毫秒内也要互不覆盖 */
+  let parseSeq = 0;
   wrap(IPC.parseRun, ParseInputSchema, async (parsed) => {
     const at = Date.now();
     const outcome = await engine.parse(parsed.text, parsed.source, parsed.id, {
@@ -195,6 +199,23 @@ export function registerIpc(deps: IpcRegistryDeps): void {
       ok: outcome.result.code === 200,
       durationMs: outcome.durationMs,
     });
+    // 解析成功即落一条历史（业主指令 2026-10-17：历史页是**解析历史**，不下载也要有记录）。
+    // 写在主进程而不是首页：首页关掉、切页、dev 之外的任何入口都该有同一条记录。
+    // mock 兜底不写：那是「没有引擎在场」时的演示结果，标题就写着 mock，落进用户历史只是脏数据。
+    if (outcome.result.code === 200 && outcome.via !== "mock") {
+      // 分享链接本地再抽一次（与首页取 sourceUrl 同一个函数），历史里只留这条，不留直链
+      const sourceUrl = engine.identify(parsed.text).url ?? undefined;
+      store.upsertHistory(
+        parseHistoryEntry({
+          sourceUrl,
+          platform: outcome.result.platform,
+          title: outcome.result.data?.title ?? outcome.result.data?.desc,
+          author: buildAuthorSnapshot(outcome.result.data),
+          fallbackId: `p-${at.toString(36)}-${(++parseSeq).toString(36)}`,
+          at,
+        })
+      );
+    }
     return outcome;
   });
 

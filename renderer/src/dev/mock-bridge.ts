@@ -37,6 +37,8 @@ import {
   isEnabled,
   isRegistered,
 } from "../../../shared/platforms";
+import { buildAuthorSnapshot } from "../../../shared/author";
+import { isLanded, parseHistoryEntry, workKeyOf } from "../../../shared/history";
 
 const ok = <T,>(data: T): InvokeResult<T> => ({ ok: true, data });
 
@@ -298,10 +300,30 @@ function stopIfIdle(): void {
 
 const history: HistoryEntry[] = [];
 
+/**
+ * 解析成功即记一行（与主进程 ipc.ts 的 parse:run 同一动作、同一个 `parseHistoryEntry`）。
+ * 预览里历史页要能评审「解析过但没下载」那一态，否则这条链只在真窗口里看得见。
+ */
+function rememberParse(outcome: ParseRunOutcome, sourceUrl: string | undefined): void {
+  const entry = parseHistoryEntry({
+    sourceUrl,
+    platform: outcome.result.platform,
+    title: outcome.result.data?.title ?? outcome.result.data?.desc,
+    author: buildAuthorSnapshot(outcome.result.data),
+    fallbackId: `p-${Date.now().toString(36)}`,
+    at: Date.now(),
+  });
+  const at = history.findIndex((h) => h.id === entry.id);
+  if (at >= 0) history.splice(at, 1); // 重复解析覆盖那一条，不堆行（与 store.upsertHistory 同语义）
+  history.unshift(entry);
+  if (history.length > 50) history.length = 50;
+}
+
 function remember(t: DownloadTaskView): void {
   history.unshift({
     id: `h-${t.taskId}`,
-    groupId: t.groupId,
+    // 作品键优先：解析行与下载行才会在历史页聚成同一行（与主进程 index.ts 同一条）
+    groupId: workKeyOf(t.sourceUrl) ?? t.groupId,
     platform: t.platform,
     title: t.title ?? t.filename,
     kind: t.kind,
@@ -426,8 +448,12 @@ function mockStats(): StatsSnapshot {
       addFailure(dayStart.getTime() - back * DAY + 21 * 3_600_000, keys[(back + f) % keys.length]);
     }
   }
-  // 本会话的真实行：历史页里有什么，统计页就该有什么
-  for (const h of history) addDownload(h.createdAt, h.platform ?? "", h.kind ?? "file", h.bytes ?? 0, 0);
+  // 本会话的真实行：历史页里有什么，统计页就该有什么 —— 但只有落地行算一次下载，
+  // 解析行（files 为空）在主进程那边根本不进 stats.done，预览也不能把它数成文件
+  for (const h of history) {
+    if (!isLanded(h)) continue;
+    addDownload(h.createdAt, h.platform ?? "", h.kind ?? "file", h.bytes ?? 0, 0);
+  }
 
   return snap;
 }
@@ -622,7 +648,12 @@ function startUpdateTick(): void {
 
 // ————————————————————————————————————————————————
 
-/** 预览用静态字体子集（真实枚举在主进程 font-list）；混排中英、按 zh 序近似排好 */
+/**
+ * 预览用静态字体子集（真实枚举在主进程 font-list）；混排中英、按 zh 序近似排好。
+ * 拉丁组末尾那几枚符号/图标字体（Segoe UI Symbol / Segoe MDL2 Assets / Symbol / Webdings / Wingdings）
+ * 是故意留在名单里的：本机 `getFonts()` 实测 115 枚中就有这七枚，它们把 A–Z 重映射成图形，
+ * 是「字体名画成乱码」那类缺陷的唯一复现素材，删掉就等于把最难看的用例从预览里藏起来。
+ */
 const MOCK_FONTS: string[] = [
   "Arial",
   "Cambria",
@@ -637,6 +668,11 @@ const MOCK_FONTS: string[] = [
   "Tahoma",
   "Times New Roman",
   "Verdana",
+  "Segoe UI Symbol",
+  "Segoe MDL2 Assets",
+  "Symbol",
+  "Webdings",
+  "Wingdings",
   "等线",
   "仿宋",
   "黑体",
@@ -733,13 +769,15 @@ const mockBridge: MgBridge = {
     }
     const fx = FIXTURES[key] ?? FIXTURES.douyin;
     const online = t.includes("online");
-    return ok<ParseRunOutcome>({
+    const outcome: ParseRunOutcome = {
       // 平台按识别结果标：夹具正文只是替身，界面要画的是用户贴进来的那个平台
       result: { code: 200, msg: "解析成功", platform: key, data: structuredClone(fx.data) },
       via: online ? "online" : "local",
       fallbackReason: online ? "本地解析器未取得 vkey，已转线上回落通道" : undefined,
       durationMs: online ? 2140 : key === "redbook" ? 38 : 168,
-    });
+    };
+    rememberParse(outcome, text.match(URL_RE)?.[0]);
+    return ok<ParseRunOutcome>(outcome);
   },
 
   download: {

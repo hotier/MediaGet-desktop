@@ -26,7 +26,7 @@ import {
   summarize,
 } from "../lib/download-plan";
 import { fmtCount, fmtDuration } from "../lib/format";
-import { buildAuthorSnapshot } from "../lib/work-info";
+import { buildAuthorSnapshot } from "../../../shared/author";
 import type { ParseRunOutcome } from "../../../types/ipc";
 import { displayName } from "../../../shared/platforms";
 import { PlatformIcon } from "./PlatformIcon";
@@ -55,6 +55,7 @@ const PLAN_COLLAPSE_AT = 3;
 export function ResultCard({
   outcome,
   sourceUrl,
+  parsedAt,
   onQueued,
   onRetry,
   onNavigate,
@@ -62,6 +63,8 @@ export function ResultCard({
   outcome: ParseRunOutcome;
   /** 用户输入的分享链接（写历史用，非直链） */
   sourceUrl?: string;
+  /** 这条结果到手的时刻（epoch ms）：切页重挂载后直链计龄接着算，见下面的 resultAge */
+  parsedAt?: number;
   onQueued: (count: number) => void;
   /** 失败态 [重试] / 直链过期后 [重新解析并下载]：由页面重新发起解析 */
   onRetry?: () => void;
@@ -104,10 +107,14 @@ export function ResultCard({
   const [resultAge, setResultAge] = useState(0);
   useEffect(() => {
     if (result.code !== 200) return;
-    const startedAt = Date.now();
-    const timer = setInterval(() => setResultAge(Date.now() - startedAt), 15_000);
+    // 起算点是解析到手那一刻（首页带进来的 parsedAt），不是本卡挂载那一刻：
+    // 切页会让结果卡重挂载，按挂载时间算就等于每次回到首页都把一条早过期的链显示成「刚拿到」。
+    const startedAt = parsedAt ?? Date.now();
+    const age = (): void => setResultAge(Math.max(0, Date.now() - startedAt));
+    age();
+    const timer = setInterval(age, 15_000);
     return () => clearInterval(timer);
-  }, [outcome, result.code]);
+  }, [outcome, result.code, parsedAt]);
   const linkAged = resultAge >= LINK_TTL_MS;
 
   // 新一轮解析 = 全新卡片状态：队列锁、勾选、清晰度、计龄都不该带过来。
@@ -117,12 +124,13 @@ export function ResultCard({
     setErr("");
     setQualityIdx(null);
     setExcluded(new Set());
-    setResultAge(0);
+    // 与上面计龄同一个起算点：本 effect 声明在后，写回 0 会把刚算出来的真实年龄抹掉
+    setResultAge(parsedAt ? Math.max(0, Date.now() - parsedAt) : 0);
     // 短清单（≤3 项）摊开，长清单（图集/多 P）折叠 —— 结果卡不许吃掉整屏
     const fresh = buildQualityPlan(data, qualityStrategy);
     setPlanOpen(buildPlan(data, fresh.options[fresh.primaryIndex]).length <= PLAN_COLLAPSE_AT);
     // 只随解析结果重置；策略读新值迟到由下方 memo 纠正
-  }, [outcome, data]);
+  }, [outcome, data, parsedAt]);
 
   const qualityPlan = useMemo(() => buildQualityPlan(data, qualityStrategy), [data, qualityStrategy]);
   const qualityOptions = qualityPlan.options;

@@ -39,6 +39,7 @@ import { registerIpc } from "./ipc";
 import { listInstalledFonts } from "./fonts";
 import { createUpdater } from "./updater";
 import { IPC, type DownloadTaskView, type HistoryEntry, type PersistedQueueTask } from "../../types/ipc";
+import { workKeyOf } from "../../shared/history";
 
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 
@@ -302,7 +303,10 @@ const downloader = new Downloader({
     history: ({ groupTask, files }) => {
       const entry: HistoryEntry = {
         id: groupTask.taskId,
-        groupId: groupTask.groupId,
+        // 作品键（分享链接的摘要）优先：历史页一行 = 一个作品，解析行与它后续的下载行
+        // 要落进同一行，靠的就是两侧从同一条链接算出同一个键。拿不到链接时退回本次
+        // enqueue 的分组 id（老语义：一次批量一行）。
+        groupId: workKeyOf(groupTask.sourceUrl) ?? groupTask.groupId,
         platform: groupTask.platform,
         title: groupTask.title ?? groupTask.filename,
         kind: groupTask.kind,

@@ -1,29 +1,9 @@
 /**
- * 历史页的两个纯函数出口：解析结果 → 作者快照、历史行 → 复制文本。
- * 都只做信息变形，不碰资源、不碰网络 —— 历史页按分工只处理信息。
+ * 历史行 → 「复制作品信息」的正文。只做信息变形，不碰资源、不碰网络 ——
+ * 历史页按分工只处理信息。作者快照的造法在 `shared/author.ts`（两侧都要写它）。
  */
-import type { AuthorSnapshot, ParseData } from "../../../types/ipc";
+import type { AuthorSnapshot } from "../../../types/ipc";
 import { fmtCount, fmtCreated } from "./format";
-
-/**
- * 解析数据 → 作者快照。一个字段都没有时返回 undefined，而不是写一个空对象进历史：
- * 空对象会让历史页渲染出一个点不开任何信息的假昵称。
- */
-export function buildAuthorSnapshot(data?: ParseData | null): AuthorSnapshot | undefined {
-  if (!data) return undefined;
-  const snap: AuthorSnapshot = {
-    name: data.author || undefined,
-    id: data.authorId || data.uid || undefined,
-    url: data.authorUrl || undefined,
-    avatar: data.avatar || undefined,
-    sign: data.sign || undefined,
-    // YouTube 只给 subscriberCount，与 B站/抖音的 followerCount 同义
-    followerCount: data.followerCount ?? data.subscriberCount,
-    followingCount: data.followingCount,
-    totalFavorited: data.totalFavorited,
-  };
-  return Object.values(snap).some((v) => v !== undefined) ? snap : undefined;
-}
 
 export interface WorkInfoInput {
   title: string;

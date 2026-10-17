@@ -4,7 +4,8 @@
  *
  * 落盘布局（%APPDATA%/MediaGet 或 Electron userData）：
  *   config.json   —— 应用设置 AppSettings + 内核配置键（Cookie 等，§5）
- *   history.json  —— HistoryEntry[]（只存平台/标题/时间/落地路径，**不存直链**）
+ *   history.json  —— HistoryEntry[]（解析历史：平台/标题/时间/落地路径，**不存直链**；
+ *                    files 为空 = 只解析没下载）
  *   queue.json    —— 下载队列持久化（重启恢复，P2 验收「重启后队列/历史完整」）
  *   stats.json    —— StatsSnapshot 生命周期计数器（只有计数/字节/时长，无 url 无文件名）
  *
@@ -201,14 +202,32 @@ export class JsonStore {
    * 返回的是新表（新在前）；退出前 `flush()` 会把最后一次写补上。
    */
   appendHistory(entry: HistoryEntry): HistoryEntry[] {
+    return this.pushHistory(entry, false);
+  }
+
+  /**
+   * 追加或刷新同 id 的那一条（解析行用）。
+   *
+   * 一条链接会被解析很多次（[重试]、直链过期后的「重新解析并下载」、隔天再贴一遍），
+   * 每次成功都插一行就成了重复解析的堆。id 是可复算的作品键（`shared/history.ts`），
+   * 所以「同 id 先摘掉再前置」就等于：这个作品在历史里只有一条解析记录，且时间在最新。
+   */
+  upsertHistory(entry: HistoryEntry): HistoryEntry[] {
+    return this.pushHistory(entry, true);
+  }
+
+  private pushHistory(entry: HistoryEntry, replaceSameId: boolean): HistoryEntry[] {
     // 别名归一（xhs → redbook）在唯一的写入口做：历史页与统计页因此不可能看到同一个平台的两个名字
     const normalized: HistoryEntry = entry.platform
       ? { ...entry, platform: resolveKey(entry.platform) }
       : entry;
-    const list = this.loadHistory();
-    const next = [normalized, ...list].slice(0, HISTORY_MAX);
+    const drop = (e: HistoryEntry): boolean => replaceSameId && e.id === normalized.id;
+    const next = [normalized, ...this.loadHistory().filter((e) => !drop(e))].slice(0, HISTORY_MAX);
     this.historyCache = next;
-    this.historyPending = [normalized, ...this.historyPending].slice(0, HISTORY_MAX);
+    this.historyPending = [normalized, ...this.historyPending.filter((e) => !drop(e))].slice(
+      0,
+      HISTORY_MAX
+    );
     this.scheduleHistoryWrite();
     return next;
   }

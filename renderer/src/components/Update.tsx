@@ -87,6 +87,15 @@ function phrase(s: UpdateState): string {
   }
 }
 
+/**
+ * 无更新源时点「检查更新」的回执文案（导出给单测）。主进程 `check()` 在这种环境原样回吐快照、
+ * 阶段不迁移，toast 决策表永远不响——不自己说一句，这颗按钮就成了点了没反应的。
+ * 环境说明不是故障，所以走 info 档而不是 error。
+ */
+export function noSourceNotice(s: UpdateState): string | null {
+  return s.canCheck ? null : phrase(s);
+}
+
 function dialogTitle(s: UpdateState): string {
   const v = s.availableVersion ? ` v${s.availableVersion}` : "";
   switch (s.phase) {
@@ -135,11 +144,20 @@ export function UpdateActions({
   return (
     <div className="flex flex-col items-end gap-2">
       <span className="flex flex-wrap items-center justify-end gap-2 pt-1.5">
-        {state.canCheck && (
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => void act("check", onState)}>
-            {state.phase === "checking" ? "检查中…" : "检查更新"}
-          </Button>
-        )}
+        {/* 「检查更新」常驻（业主指令 2026-10-17）：环境只改变可用性，不改变存在性——
+            按钮随运行环境消失会被读成缺陷。开发态照样可点，点了用 sonner 说清这儿为什么查不了。 */}
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy}
+          onClick={() => {
+            const notice = noSourceNotice(state);
+            if (notice) toast.info(notice);
+            else void act("check", onState);
+          }}
+        >
+          {state.phase === "checking" ? "检查中…" : "检查更新"}
+        </Button>
         {state.phase === "available" && (
           <Button size="sm" onClick={startDownload}>
             下载更新

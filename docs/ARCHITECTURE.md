@@ -46,7 +46,7 @@
 | `electron/main/updater.ts` | 自动更新状态机：把 electron-updater 事件收敛成单个 `UpdateState` 快照（阶段 + 进度 + 错误），守卫「无源不检查、未下载完不安装」 | 窗口操作、下载队列 |
 | `electron/main/notify.ts` | 下载通知聚合器：文件粒度的 done/error 按组收敛成一次系统通知（组内无排队/下载中任务时才播报，图集不逐张弹） | `Notification` 本体（由 index.ts 装配注入） |
 | `electron/main/clipboard.ts` | 剪贴板监听：开关开启时轮询剪贴板 → 内核 `identify` 纯本地识别 → 命中分享链接投 `app:clipboardLink`（文本不落盘、不出本机） | — |
-| `electron/main/store.ts` | `userData` 配置/历史读写（JSON 文件 + 原子写；不用 SQLite 除非历史量大）。历史窗口 `HISTORY_MAX = 5000`（2026-10-16 由 500 提档：统计页的作者榜与体积分布要够长的明细才画得出形状） | 敏感凭据明文（见 §6） |
+| `electron/main/store.ts` | `userData` 配置/历史读写（JSON 文件 + 原子写；不用 SQLite 除非历史量大）。历史窗口 `HISTORY_MAX = 5000`（2026-10-16 由 500 提档：统计页的作者榜与体积分布要够长的明细才画得出形状）。两个写入口分得很清：`appendHistory` 逐行追加（下载落地，一个文件一行），`upsertHistory` 按作品键刷新（解析，重复解析不堆行） | 敏感凭据明文（见 §6） |
 | `electron/main/stats.ts` | 生命周期计数器（`userData/stats.json`）：解析/下载/失败/取消/字节/耗时按 `totals` + `byDay`/`byPlatform`/`byKind`/`byHour` 只加不删，落盘走 JsonStore 同一节流口；`byDay` 保留 366 天 | url、文件名、作者名、Cookie（见 §6 第 8 条：统计面不许看出任何人下过什么）；逐条明细（那是 history 的活） |
 | `renderer/src/lib/stats.ts` | 统计页的聚合出口：把计数档 + 历史明细两份原始数据换成视图模型（趋势补零、两榜、成功率、速度、解析通道、热力、体积直方、作者榜）。纯函数、除零现算（比率 `null` / 份额 `0`） | 读盘、IPC、色值、ECharts option（那在 `charts/options.ts`） |
 | `renderer/src/components/charts/` | ECharts 适配器四件：`echarts-core.ts`（唯一注册点，摇树落点）/ `palette.ts`（CSS Token 探针 → canvas 取色）/ `options.ts`（纯 option 构造，node 环境可测）/ `EChart.tsx`（哑宿主：init/setOption/resize/dispose） | 业务口径（口径在 `lib/stats.ts`）；色值字面量（一个都不许写，见 UIUX §9.3） |
@@ -56,11 +56,15 @@
 | `renderer/src/lib/utils.ts` | 只有 `cn()`：clsx 合条件类 + tailwind-merge 后者胜出 | 任何格式化/业务工具（别把这里长成杂物间） |
 | `renderer/src/styles.css` | 三层 Token（层 1 唯一 hex 处）+ `@theme inline` 把层 2 桥成 shadcn 语义 utility + 少数无法 utility 化的全局（`@utility drag-region/no-drag`、细滚动条、reduced-motion） | 组件层样式（2026-10-14 迁 shadcn 后已删，组件样式在 JSX 的 utility 里） |
 | `renderer/src/lib/download-plan.ts` | 下载计划纯函数：`ParseData` + 清晰度选择 → 将要落盘的每一项（含多 P 清晰度回落标注、同直链去重） | 渲染、IPC 调用 |
+| `renderer/src/lib/history-works.ts` | 历史页聚合纯函数：`HistoryEntry[]` → 「作品」行（同作品键的解析行与下载行并成一行，每个字段各取组里最新那条有值的行）。v8 起一行不再等于一次下载，所以这条规则必须可测 | 读盘、筛选与搜索（留在页面）、身份计算（在 `shared/history.ts`） |
 | `core-adapter/` | 内核的本地注入件（cache/analytics/config/ratelimit） | 任何解析算法 |
 | `types/ipc-contract.ts` | 载荷形状的唯一声明处（zod）：每通道 in/out schema + `CONTRACT`/`EVENTS` 注册表 | 运行时以外的东西；被 renderer 以值 import |
 | `types/ipc.ts` | 通道常量 `IPC`、`MgBridge` 面、`DEFAULT_SETTINGS`，以及从 contract 派生的类型 | 任何运行时值（须保持只 `import type`）|
 | `shared/platforms.ts` | 平台注册表：本项目「有哪些平台、叫什么、哪枚图标、哪个引擎能解、供不供」的唯一真源（零依赖，主进程与渲染进程 import 同一份，见 §9） | 解析算法、IPC、图标文件本体（SVG 在 `renderer/public/logos/`） |
+| `shared/history.ts` | 历史记录的身份规则（零依赖，与注册表同一处置）：`workKeyOf(分享链接)` 算出可复算的作品键，解析侧与下载侧各写自己的行却算出同一个键 → 历史页聚成一行；`parseHistoryEntry()` 造「未下载」那一行，入参表不收任何直链 | 落盘（在 `store.ts`）、聚合展示（在 `lib/history-works.ts`）、平台定义（在注册表） |
+| `shared/author.ts` | `buildAuthorSnapshot(ParseData)`：「哪些字段算一个作者」的一份口径，下载行由渲染层随 enqueue 带上、解析行由主进程在 parse 成功时造 | 第二份字段映射（2026-10-17 从 `renderer/src/lib/work-info.ts` 提上来，抄两份迟早漏字段） |
 | `renderer/src/store/platforms.ts` | 平台开关的渲染层视图（本仓第一个 Zustand store）：乐观置态 → `settings:set` 整表提交 → 失败回滚。消费者 = 设置「引擎」体检表的「提供」列，开关即时生效、不进脏计数（§2 的 `probe:engines` 与它同源） | 平台静态定义（在注册表）；持久化（在 `config.json` 的 `settings.platformSwitches`，主进程读这份而不是渲染层内存） |
+| `renderer/src/store/home-draft.ts` | 首页工作台的会话草稿（第二个 Zustand store）：输入文本 / 识别提示 / 结果卡批次 / 进行态。页面是条件渲染 + `key={page}`，切页即卸载重挂，这些态留在组件里会一起归零（业主指令 2026-10-17：切回来还要看到上次解析的结果） | 落盘（只在内存，重启即清；长期记忆归历史页）、解析发起与 IPC（在 `pages/HomePage.tsx`） |
 | `resources/` | 第三方二进制（git-lfs 或 CI 拉取，**不入 git**） | 源码 |
 
 ## 3. IPC 契约（v0 草案）
@@ -77,14 +81,14 @@
 | --- | --- | --- | --- |
 | `app:getMeta` | — | `{ version, electron, platforms[] }` | 平台清单来自内核 `PLATFORM_INFO`，不在 renderer 复制 |
 | `parse:identify` | `{ text }` | `{ platform, kind }` \| null | 纯识别，不发起抓取 |
-| `parse:run` | `{ text, platformHint?, sourceId? }` | `ParseResult`（`normalize-result` 同构） | 统一入口，等价线上 `/api/parse` |
+| `parse:run` | `{ text, platformHint?, sourceId? }` | `ParseResult`（`normalize-result` 同构） | 统一入口，等价线上 `/api/parse`。**解析成功即由这一层落一条历史**（v8）：写在主进程而不是首页，任何入口发起的解析都留同一条记录；`via=mock` 的演示结果不落 |
 | `download:enqueue` | `{ items: DownloadItem[], groupId? }` | `{ taskId }` | `DownloadItem = { url, filename, referer?, headers?, kind }` |
 | `download:progress` | —（事件流） | `{ taskId, received, total, speed, status }` | `webContents.send` 推送，节流 ~200ms |
 | `download:cancel` / `pause` / `resume` | `{ taskId }` | `{ ok }` | 续传依赖 `.part` + `Range: bytes=` |
 | `settings:get` / `settings:set` | 部分字段 | 全量生效配置 | Cookie/下载目录/并发/回落开关/日志级别与保留天数 |
 | `app:cacheStatus` / `app:cacheClear` | — / `{ keys }` | `{ items[], totalBytes, clearableBytes }` / `{ freed, skipped, report }` | 只清具名临时文件（网络缓存/孤儿断点/残留/日志）；更新包与本机记录只报占用，活任务的 `.part` 避让 |
 | `app:openLogDir` / `app:log` | — / `{ level, message }` | `{ ok }` | 渲染层未捕获异常经 `app:log` 落进同一份文件日志（上限 50 条/次会话） |
-| `history:list` / `history:clear` | `{ filter?, limit? }`（`limit` 上限 = 窗口 `HISTORY_MAX` = 5000） | `HistoryEntry[]` | 只存平台/标题/作者快照/时间/落地路径，**不存媒体直链**（时效与隐私）；作者主页与头像是公开页面，2026-10-14 业主批准入档 |
+| `history:list` / `history:clear` | `{ filter?, limit? }`（`limit` 上限 = 窗口 `HISTORY_MAX` = 5000） | `HistoryEntry[]` | **解析历史**（v8）：解析成功就有一条，下不下载都在。`files` 空数组 = 只解析没下载，界面上那一列写「未下载」。只存平台/标题/作者快照/时间/落地路径，**不存媒体直链**（时效与隐私）；作者主页与头像是公开页面，2026-10-14 业主批准入档 |
 | `stats:get` | — | `StatsSnapshot` | 统计页真源（契约 v5，2026-10-16）：`totals` + `parse` + `byDay`/`byPlatform`/`byKind`/`byHour`。只有计数、字节、时长，**没有 url 与文件名**；失败与取消只在这份档里（history 只有成功记录，从它算失败率永远是 100%） |
 | `probe:engines` | — | `EngineHealth[]` | 本地版体检 = 注册表全量 × 在场引擎能力位 × 用户开关（`engine.health()`），不发抓取、不打平台风控；与解析路由同源，所以界面说「不可解」的平台真的不会被解 |
 | `update:state` | — | `UpdateState` | 当前更新快照（renderer 挂载时先取一次，补上窗口未建期间丢掉的事件） |
@@ -127,6 +131,7 @@
 6. 不做反检测加码：UA/请求头治理以内核既有实现为限。
 7. 文件日志（`userData/logs/app.log`）与 config 同处 userData，受同一红线约束：**不写 Cookie 值、不写媒体直链**，下载失败只投「文件名 + 原因」；渲染层转发的异常文本截到 2000 字符、单会话上限 50 条，避免堆栈把盘刷满。
 8. `userData/stats.json`（统计页计数档）只落**计数、字节、时长**：没有 url、文件名、作者名、Cookie。逐条明细归 history，统计面看不出任何人下过什么 —— 这条同时也决定了页面的算法：失败与取消只在计数档里，所以任何比率都不从历史明细算。
+9. `userData/history.json` 从 v8 起每条**成功解析**都落一行（不下下载也有），但字段口径没有放宽：只有平台、标题、作者快照、落地路径与用户自己粘的那条分享链接。内核给的 `data.url` / `images[]` / `qualities[].url` 一律不入档 —— 记录变多不等于直链变多，写入口 `shared/history.ts` 的入参表根本不收它们。`via=mock` 的演示结果不落盘。
 
 ## 7. 构建与发布
 

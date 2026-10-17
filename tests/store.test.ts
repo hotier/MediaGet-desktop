@@ -1,5 +1,5 @@
 /**
- * JsonStore 测试：原子写 / 坏档自愈 / 配置缓存 / 脱敏导出 / 队列节流落盘 / 历史写合并 / 计数档落盘。
+ * JsonStore 测试：原子写 / 坏档自愈 / 配置缓存 / 脱敏导出 / 队列节流落盘 / 历史写合并 / 计数档落盘 / 解析行去重。
  *
  * 队列那组是**回归测试**：早先 saveQueueThrottled 在节流窗口内直接 return，
  * 落盘的是窗口开始时的旧快照，且 flush() 只清定时器不落盘 —— 退出路径上
@@ -21,6 +21,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HISTORY_MAX, JsonStore } from "../electron/main/store";
 import { emptyStats } from "../electron/main/stats";
+import { parseHistoryEntry, workKeyOf } from "../shared/history";
 import type { HistoryEntry, PersistedQueueTask, StatsSnapshot } from "../types/ipc";
 
 let dir: string;
@@ -174,6 +175,72 @@ describe("历史：追加序与上限", () => {
     expect(s.loadHistory()).toEqual([]);
     // 清空是用户动作：不等合并窗口，盘上当下就是空的
     expect(JSON.parse(readFileSync(join(dir, "history.json"), "utf8"))).toEqual([]);
+  });
+});
+
+/**
+ * v8「历史 = 解析历史」的两个写入口（业主指令 2026-10-17）。
+ *
+ * 同一作品现在有两类行：解析行（files 空，来自 parse:run）与下载行（来自落地文件）。
+ * 它们必须是历史页的**一行**，所以解析行按可复算的作品键 upsert，下载行照旧 append。
+ * 这两个语义一旦混用就同时坏：改成 append 会让重试解析堆成一屏重复行，改成 upsert
+ * 会让图集的第二、三个文件互相顶掉 —— 所以下面第 4 条专门钉「append 不许去重」。
+ */
+describe("历史：解析行按作品键刷新（upsertHistory）", () => {
+  const url = "https://v.kuaishou.com/abc";
+  // 兜底值只为过类型（作品键算不出就等于 shared/history 坏了，用例自然红）
+  const key = workKeyOf(url) ?? "w-broken";
+  const parseRow = (at: number): HistoryEntry =>
+    parseHistoryEntry({ sourceUrl: url, platform: "kuaishou", title: "作品", fallbackId: "p-x", at });
+  const fileRow = (id: string): HistoryEntry => ({
+    id,
+    groupId: key,
+    platform: "kuaishou",
+    title: "作品",
+    kind: "video",
+    files: [`/tmp/${id}.mp4`],
+    createdAt: 2,
+  });
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("同一条链接重复解析只留一行，且时刻是最新的", () => {
+    const s = new JsonStore(dir);
+    s.upsertHistory(parseRow(100));
+    s.upsertHistory(parseRow(300)); // 直链过期后「重新解析并下载」也走这条
+    const list = s.loadHistory();
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ id: key, createdAt: 300, files: [] });
+  });
+
+  it("解析行与同作品的下载行共存：两行都在，按作品键一次删净", () => {
+    const s = new JsonStore(dir);
+    s.upsertHistory(parseRow(100));
+    s.appendHistory(fileRow("d1"));
+    s.appendHistory(fileRow("d2"));
+    expect(s.loadHistory()).toHaveLength(3);
+    // 历史页聚合按 groupId：这三行在界面上就是作品「abc」的一行
+    expect(new Set(s.loadHistory().map((h) => h.groupId))).toEqual(new Set([key]));
+    expect(s.removeHistory([key])).toHaveLength(0);
+  });
+
+  it("重复解析刷新后落盘的是最新时刻，档里仍只有一行", () => {
+    const s = new JsonStore(dir);
+    s.upsertHistory(parseRow(100));
+    s.upsertHistory(parseRow(200));
+    expect(existsSync(join(dir, "history.json"))).toBe(false); // 与 append 同一条合并窗口
+    vi.advanceTimersByTime(1000);
+    const saved = JSON.parse(readFileSync(join(dir, "history.json"), "utf8")) as HistoryEntry[];
+    expect(saved).toHaveLength(1);
+    expect(saved[0].createdAt).toBe(200);
+  });
+
+  it("appendHistory 对同 id 不去重（下载行的每落地一个文件 = 一行，不许被解析语义污染）", () => {
+    const s = new JsonStore(dir);
+    s.appendHistory(fileRow("d1"));
+    s.appendHistory(fileRow("d1"));
+    expect(s.loadHistory()).toHaveLength(2);
   });
 });
 

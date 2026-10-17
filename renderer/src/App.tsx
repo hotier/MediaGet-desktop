@@ -66,6 +66,15 @@ export default function App(): React.ReactElement {
     setHistoryFocus(null);
     setPage("history");
   }, []);
+  /** 历史页多选「重新解析」送来的链接：切到首页并交给那唯一一块输入面。
+   *  与 clipboardFill 同一形状（seq 让「同一批再送一次」也能重放，否则同值 setState 不触发消费 effect） */
+  const [homeReparse, setHomeReparse] = useState<{ links: string[]; seq: number } | null>(null);
+  const homeReparseSeq = useRef(0);
+  const requestHomeReparse = useCallback((links: string[]) => {
+    homeReparseSeq.current += 1;
+    setHomeReparse({ links, seq: homeReparseSeq.current });
+    setPage("home");
+  }, []);
   /** 读更新策略两开关：启动一次，退出设置模式时再读（保存即影响侧栏下载图标显示条件） */
   const loadUpdatePolicy = () =>
     api.settings
@@ -256,10 +265,14 @@ export default function App(): React.ReactElement {
                 }}
                 clipboardFill={clipboardFill}
                 onClipboardFillDone={() => setClipboardFill(null)}
+                reparseFill={homeReparse}
+                onReparseFillDone={() => setHomeReparse(null)}
               />
             )}
             {page === "downloads" && <DownloadsPage onNav={navToHistory} />}
-            {page === "history" && <HistoryPage focusKey={historyFocus} platformFocus={historyPlatform} />}
+            {page === "history" && (
+              <HistoryPage focusKey={historyFocus} platformFocus={historyPlatform} onReparse={requestHomeReparse} />
+            )}
             {page === "stats" && (
               <Suspense
                 fallback={

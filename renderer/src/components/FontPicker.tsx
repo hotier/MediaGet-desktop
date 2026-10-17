@@ -3,25 +3,25 @@
  *
  * 数据源是**本机枚举**的字体族（font-list 在主进程跑，约 3–4s），所以：
  * - 打开面板时才懒加载（父级传 fetchFonts），带「读取中…」态；进程侧已缓存，重开即时。
- * - 列表可能上百条，顶部即时过滤 + 滚动；每项按自身字形渲染，选中/关闭即回调 value。
+ * - 列表可能上百条，顶部即时过滤 + 滚动；选中/关闭即回调 value。
+ *   行内名称**一律用界面字体画，绝不套自身字形**：符号/图标字体（本机枚举实测 115 枚里有
+ *   Wingdings、Webdings、Symbol、MT Extra、Marlett、Segoe MDL2 Assets、Segoe UI Symbol 七枚）
+ *   把 A–Z 整个重映射成图形，名字套上去就是一串乱码。这款字体长什么样由整屏活预览回答
+ *   （SettingsPage 的 draft.fontFamily → theme.setFontFamily）。
  *   顺序 = 主进程给的顺序（中文字体组在前、英文组在后，业主指令 2026-10-15），
  *   过滤只做保留、不重排——分组是数据源的承诺，不在 UI 层重实现一遍。
  * - 用原生 div + 面板自管理（本仓未装 Popover/Command 原语），视觉口径对齐 ui/select.tsx。
- *   触发器 w-36 / 面板 w-56 比通用 Select（w-28~36）宽一档：字体名动辄二三十字符，
- *   再窄就全是截断（业主指令 2026-10-15 宽度收窄，对齐通用档）。
+ *   触发器 w-28（设置页通用 Select 的档位）、面板 w-36：字体名动辄二三十字符，
+ *   两处都会截断，全名出口是 tooltip（ui/tooltip 的 TruncatedTooltip，真截断才弹）+ 顶部搜索。
  * value 语义："system" = 哨兵（内联 --font-ui 被清除，回落基座栈），其余 = 具体 family 名。
  */
 import * as React from "react";
 import { Check, ChevronDown, Search } from "lucide-react";
 import { cn } from "~/lib/utils";
+import { TruncatedTooltip } from "./ui/tooltip";
 
 const SYSTEM = "system";
 const SYSTEM_LABEL = "系统默认";
-
-/** CSS 安全字体名：含空格/非 ASCII（中文字面）加引号，与 theme.ts quoteFamily 同规则 */
-function cssFamily(name: string): string {
-  return /[^a-zA-Z0-9_-]/.test(name) ? `"${name.replace(/"/g, '\\"')}"` : name;
-}
 
 export function FontPicker({
   value,
@@ -125,7 +125,6 @@ export function FontPicker({
   }
 
   const triggerLabel = value === SYSTEM ? SYSTEM_LABEL : value;
-  const triggerStyle = value === SYSTEM ? undefined : { fontFamily: cssFamily(value) };
 
   return (
     <div ref={rootRef} className={cn("relative", className)}>
@@ -138,21 +137,23 @@ export function FontPicker({
         onClick={() => setOpen((o) => !o)}
         onKeyDown={onTriggerKey}
         className={cn(
-          "flex h-9 w-36 items-center justify-between gap-2 rounded-md border border-input bg-control px-3 py-2 text-sm whitespace-nowrap outline-none",
+          "flex h-9 w-28 items-center justify-between gap-2 rounded-md border border-input bg-control px-3 py-2 text-sm whitespace-nowrap outline-none",
           "transition-colors focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/40",
           "[&_svg]:pointer-events-none [&_svg]:shrink-0"
         )}
       >
-        <span className="line-clamp-1" style={triggerStyle}>
-          {triggerLabel}
-        </span>
+        {/* 名称不套自身字形：选到符号字体时整屏都在预览那款字，框内再套一层就认不出自己选了谁。
+            截断处给 tooltip 是全仓基准（ui/tooltip 的 TruncatedTooltip，真截断才弹） */}
+        <TruncatedTooltip label={triggerLabel}>
+          <span className="min-w-0 truncate">{triggerLabel}</span>
+        </TruncatedTooltip>
         <ChevronDown className="size-4 opacity-60" />
       </button>
 
       {open && (
         <div
           className={cn(
-            "absolute z-50 mt-1 w-56 overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-pop",
+            "absolute z-50 mt-1 w-36 overflow-hidden rounded-md border border-border bg-popover text-popover-foreground shadow-pop",
             "animate-in fade-in-0 zoom-in-95"
           )}
         >
@@ -181,6 +182,7 @@ export function FontPicker({
               options.map((fam, i) => {
                 const isSystem = fam === SYSTEM;
                 const selected = fam === value;
+                const famName = isSystem ? SYSTEM_LABEL : fam;
                 return (
                   <li key={fam} data-idx={i}>
                     <button
@@ -194,9 +196,10 @@ export function FontPicker({
                         i === active ? "bg-accent text-accent-foreground" : "hover:bg-accent/60"
                       )}
                     >
-                      <span className="line-clamp-1" style={isSystem ? undefined : { fontFamily: cssFamily(fam) }}>
-                        {isSystem ? SYSTEM_LABEL : fam}
-                      </span>
+                      {/* 面板定宽，长名一律截断 → 全名走 tooltip（真截断才弹，全仓同一条基准） */}
+                      <TruncatedTooltip label={famName}>
+                        <span className="min-w-0 truncate">{famName}</span>
+                      </TruncatedTooltip>
                       {selected && <Check className="absolute end-2 size-4 shrink-0" />}
                     </button>
                   </li>
