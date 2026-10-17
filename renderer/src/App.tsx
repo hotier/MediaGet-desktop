@@ -25,6 +25,7 @@ import { Badge } from "./components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert";
 import { Skeleton } from "./components/ui/skeleton";
 import { Toaster } from "./components/ui/sonner";
+import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip";
 
 /** 页面键与导航项的真源在 `lib/nav-icons.ts`（那张表的顺序就是 ⌃1–4 的映射顺序） */
@@ -109,7 +110,13 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     void api.download.list().then(setTasks).catch(() => {});
     const offs = [
-      api.download.onProgress((t) => setTasks((prev) => upsert(prev, t))),
+      api.download.onProgress((t) => {
+        setTasks((prev) => upsert(prev, t));
+        // 403 自动续链成功时静默重试并通过 toast 告知用户
+        if (t.note && t.status === "downloading") {
+          toast.info(t.note);
+        }
+      }),
       api.download.onDone((t) => setTasks((prev) => upsert(prev, t))),
       api.download.onError((t) => setTasks((prev) => upsert(prev, t))),
     ];

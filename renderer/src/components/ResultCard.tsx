@@ -45,15 +45,6 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 
-/**
- * 直链计龄的标注阈值（不是过期判据）。业主质疑「你确定有效期只有 5 分钟吗」之后实测过：
- * 抖音播放链整串查询里没有任何时间签名，封面图的签名约 14 天，内核 README 那句「分钟级」
- * 只是各家 CDN 的经验下限。既然这个数在真实结果里无法验证，就不许再拿它改按钮语义
- * （旧版会把主按钮换成「重新解析并下载」，用户以为不重新解析就下不动）；现在它只决定
- * 什么时候在时间旁边补一句实话。真过期的处理在失败之后：见 `electron/main/link-renew.ts`。
- */
-const LINK_TTL_MS = 5 * 60 * 1000;
-
 /** 超过这个条数就默认折叠，避免图集/多 P 把整屏占掉 */
 const PLAN_COLLAPSE_AT = 3;
 
@@ -108,20 +99,6 @@ export function ResultCard({
       .catch(() => {});
   }, [outcome]);
 
-  // 解析成功后 15s 心跳计龄：过阈值只改「下面那行时间怎么说」，不改按钮（见 LINK_TTL_MS 的注释）
-  const [resultAge, setResultAge] = useState(0);
-  useEffect(() => {
-    if (result.code !== 200) return;
-    // 起算点是解析到手那一刻（首页带进来的 parsedAt），不是本卡挂载那一刻：
-    // 切页会让结果卡重挂载，按挂载时间算就等于每次回到首页都把一条早过期的链显示成「刚拿到」。
-    const startedAt = parsedAt ?? Date.now();
-    const age = (): void => setResultAge(Math.max(0, Date.now() - startedAt));
-    age();
-    const timer = setInterval(age, 15_000);
-    return () => clearInterval(timer);
-  }, [outcome, result.code, parsedAt]);
-  const linkAged = resultAge >= LINK_TTL_MS;
-
   // 新一轮解析 = 全新卡片状态：队列锁、勾选、清晰度、计龄都不该带过来。
   // 依赖只写 outcome：清晰度切换会重算 plan，那时不能把用户的勾选与队列提示清掉。
   useEffect(() => {
@@ -129,8 +106,6 @@ export function ResultCard({
     setErr("");
     setQualityIdx(null);
     setExcluded(new Set());
-    // 与上面计龄同一个起算点：本 effect 声明在后，写回 0 会把刚算出来的真实年龄抹掉
-    setResultAge(parsedAt ? Math.max(0, Date.now() - parsedAt) : 0);
     // 短清单（≤3 项）摊开，长清单（图集/多 P）折叠 —— 结果卡不许吃掉整屏
     const fresh = buildQualityPlan(data, qualityStrategy);
     setPlanOpen(buildPlan(data, fresh.options[fresh.primaryIndex]).length <= PLAN_COLLAPSE_AT);
@@ -335,9 +310,6 @@ export function ResultCard({
               </Button>
             )}
             {queued && <Badge variant="ok">已加入队列 ✓</Badge>}
-            {linkAged && !data?.embedOnly && (
-              <span className="text-xs text-muted-foreground">链可能已过期，下载会自动重新取链</span>
-            )}
             {!data?.embedOnly && data?.embedUrl && !data.url && !data.videos?.length && (
               <Button asChild variant="link" size="sm" className="h-auto px-0">
                 <a href={data.embedUrl} target="_blank" rel="noreferrer">

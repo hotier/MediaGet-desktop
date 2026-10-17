@@ -706,7 +706,13 @@ export class Downloader {
       // 用户视角应当是「等一下就好了」，而不是队列里多一条 403 让他自己重新解析。
       if (httpStatus === 403 && !t.renewed && t.sourceUrl && this.opts.renewUrl) {
         t.renewed = true; // 先立牌：续链本身失败也不能再来一轮，否则会打平台打到手
-        const next = await this.opts.renewUrl(t.url, t.sourceUrl).catch(() => null);
+        const next = await this.opts.renewUrl(t.url, t.sourceUrl).catch((e) => {
+          console.warn(`[download] 续链失败: ${t.filename} - ${e?.message ?? String(e)}`);
+          return null;
+        });
+        if (!next) {
+          console.warn(`[download] 续链无结果: ${t.filename}, sourceUrl=${t.sourceUrl}`);
+        }
         const live3 = st();
         if (next && next !== t.url && live3 !== "canceled" && live3 !== "paused") {
           t.url = next;
@@ -721,6 +727,8 @@ export class Downloader {
           this.opts.events.progress(toView(t));
           this.persist();
           return this.runOne(t);
+        } else if (next && next === t.url) {
+          console.warn(`[download] 续链返回同一条URL: ${t.filename}`);
         }
       }
       t.attempts++;
