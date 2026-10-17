@@ -241,7 +241,7 @@ export function ResultCard({
                     {Math.round(data.duration > 100000 ? data.duration / 1000 : data.duration)}s
                   </span>
                 )}
-                {stats.length > 0 && stats.slice(0, 2).map((s) => (
+                {stats.length > 0 && stats.map((s) => (
                   <span key={s.label} className="tabular-nums">
                     {s.label}{s.value}
                   </span>
