@@ -154,6 +154,32 @@ export const AuthorSnapshotSchema = z.object({
   followerCount: z.number().optional(),
   followingCount: z.number().optional(),
   totalFavorited: z.number().optional(),
+  /** 投稿数（YouTube 频道；B站/抖音不给，故只在有值时出现） */
+  videoCount: z.number().optional(),
+});
+
+/**
+ * 作品计数快照 —— 解析那一刻的公开互动数，随解析行进历史。
+ *
+ * 为什么不直接把整份 `ParseData` 存进历史：内核那份是 passthrough 的活水，里面既有
+ * `url` / `images[]` / `qualities[].url` 这类**媒体直链**（隐私红线，绝不落盘），
+ * 也有要留的公开数字。所以只挑计数、按语义归并成固定八档 —— 各平台的填法不一样
+ * （B站给 `stat.view`、抖音给 `stat.view`、推特给平铺 `retweets`、YouTube 给 `channelViews`），
+ * 归并口径只有一个出口：`shared/work-stat.ts`，结果卡与导出共用它。
+ *
+ * 全字段 optional：改动之前落盘的记录没这个键，而 `loadHistory` 没有版本迁移机制，
+ * 缺字段必须在契约层就合法（与上面作者快照同一条理由）。
+ */
+export const WorkStatSchema = z.object({
+  view: z.number().optional(),
+  danmaku: z.number().optional(),
+  like: z.number().optional(),
+  /** 转发（推特等；与 B站的 `share`「分享」是两档，不并成一档） */
+  retweet: z.number().optional(),
+  reply: z.number().optional(),
+  favorite: z.number().optional(),
+  coin: z.number().optional(),
+  share: z.number().optional(),
 });
 
 export const EnqueueInputSchema = z.object({
@@ -270,9 +296,22 @@ export const HistoryRemoveInputSchema = z.object({
 });
 
 /** 仅主进程持久化格式（store.ts 真源），入参侧复用 */
+/**
+ * 队列快照（queue.json 的档内形状，不是任何通道的载荷）。
+ *
+ * v13 起「进过队列的行全部留档」：业主指令 2026-10-17——重启后队列页应当是完整台账，
+ * 而不是只剩没干完的活。于是终态三件套必须跟着落盘，否则重启后的「已完成」行是坏的：
+ * 缺 `filePath` 就没有「打开所在文件夹」与「复制文件路径」（那两处都按 `status === "done" && filePath` 渲染），
+ * 缺 `error` 就是一条不知道为什么失败的「失败」（旧实现连原因都不写盘）。
+ * `finishedAt` 落盘后，完成时刻不再只是本进程内存里的临时值。
+ */
 export const PersistedQueueTaskSchema = z.object({
   taskId: STR,
   groupId: STR,
+  /**
+   * 媒体直链。**只有还能续/重试的状态才写盘**：done 行落盘时剥成空串（直链到期后没有价值，
+   * 而队列从此是长期档，把带签名的 URL 永久留在盘上违反隐私红线「队列不保留直链」）。
+   */
   url: STR,
   filename: STR,
   referer: STR.optional(),
@@ -286,6 +325,12 @@ export const PersistedQueueTaskSchema = z.object({
   sourceUrl: STR.optional(),
   author: AuthorSnapshotSchema.optional(),
   status: z.enum(["queued", "downloading", "paused", "done", "error", "canceled"]),
+  /** 实际落地路径（含同名冲突后的最终名）；done 行的「位置」动作靠它 */
+  filePath: STR.optional(),
+  /** 失败原因文本；上限 300 是因为它来自上游异常，不该把任意长的报文灌进长期档 */
+  error: STR.max(300).optional(),
+  /** 完成时刻 */
+  finishedAt: z.number().optional(),
 });
 
 // ————————————————————————————————————————————————
@@ -340,6 +385,11 @@ export const DownloadTaskViewSchema = z.object({
   /** 落地路径（done 后） */
   filePath: STR.optional(),
   error: STR.optional(),
+  /**
+   * 一句「这一行刚刚自己动过」的说明（v12）：目前只有 403 自动续链那一条会写。
+   * 上限 200 因为它是给人看的短句而不是数据；媒体直链绝不进这里（隐私红线）。
+   */
+  note: STR.max(200).optional(),
   platform: STR.optional(),
   title: STR.optional(),
   /** 用户输入的分享链接（透传给历史，非直链） */
@@ -347,8 +397,8 @@ export const DownloadTaskViewSchema = z.object({
   author: AuthorSnapshotSchema.optional(),
   createdAt: z.number(),
   /**
-   * 完成时刻（仅 done 有值）。只在本进程存活期内有效：snapshot() 过滤掉 done，
-   * 重启后已完成任务不再回队列（落地目录才是真源），所以它不是持久字段。
+   * 完成时刻。v13 起随队列快照落盘（业主定「进过队列的行全部留档」），
+   * 所以它跨重启有效；旧档没这个键 → 重启后完成列留空，不编一个假时刻。
    */
   finishedAt: z.number().optional(),
 });
@@ -391,6 +441,14 @@ export const HistoryEntrySchema = z.object({
   sourceUrl: STR.optional(),
   /** 解析那一刻的作者快照（本版本之前的老记录无此键） */
   author: AuthorSnapshotSchema.optional(),
+  /**
+   * 作品在平台上的**发布**时刻（本地毫秒）。与 `createdAt`（本机解析/落地那刻）是两回事，
+   * 两个都要：今天解析一条三年前的视频，界面上那行的顺序按解析时刻排，导出里要知道作品什么时候发的。
+   * 老记录无此键，各平台也不都给 —— 缺就是缺，导出留空而不是拿 `createdAt` 冒充。
+   */
+  publishedAt: z.number().optional(),
+  /** 解析那一刻的公开互动数快照（业主指令 2026-10-17：导出要带完整作品信息） */
+  stat: WorkStatSchema.optional(),
   createdAt: z.number(),
 });
 
@@ -479,6 +537,16 @@ export const UrlInputSchema = z.object({
     .string()
     .max(2000)
     .refine((u) => /^https?:\/\//i.test(u), "只支持 http/https 链接"),
+});
+
+/**
+ * app:copyText 入参。上限 200_000 字符：复制正文最长的是历史页「作品信息」（十几行，含
+ * 图集文件名与落地目录），量级在千以内，这里给的是两百倍余量 —— 封顶只是防 renderer 被
+ * 攻破后拿这条通道往剪贴板灌巨串，不是为了校验业务长度。空串直接拒：点了复制却复制不到
+ * 东西，界面无从表达。
+ */
+export const CopyTextInputSchema = z.object({
+  text: STR.min(1).max(200_000),
 });
 
 // ————————————————————————————————————————————————
@@ -628,7 +696,6 @@ export const CONTRACT = {
   [IPC.settingsSet]: invoke(SettingsPatchSchema, AppSettingsSchema),
   [IPC.historyList]: invoke(HistoryFilterSchema.optional(), z.array(HistoryEntrySchema)),
   [IPC.historyRemove]: invoke(HistoryRemoveInputSchema, z.array(HistoryEntrySchema)),
-  [IPC.historyClear]: invoke(null, OkFlagSchema),
   [IPC.probeEngines]: invoke(null, z.array(EngineHealthSchema)),
   [IPC.appGetBinaryStatus]: invoke(null, BinaryStatusReportSchema),
   [IPC.appPickDownloadDir]: invoke(null, PickDirResultSchema),
@@ -639,6 +706,7 @@ export const CONTRACT = {
   [IPC.appOpenLogDir]: invoke(null, OkFlagSchema),
   [IPC.appLog]: invoke(LogWriteInputSchema, OkFlagSchema),
   [IPC.appOpenExternal]: invoke(UrlInputSchema, OkFlagSchema),
+  [IPC.appCopyText]: invoke(CopyTextInputSchema, OkFlagSchema),
   [IPC.statsGet]: invoke(null, StatsSnapshotSchema),
   [IPC.updateGetState]: invoke(null, UpdateStateSchema),
   [IPC.updateCheck]: invoke(null, UpdateStateSchema),

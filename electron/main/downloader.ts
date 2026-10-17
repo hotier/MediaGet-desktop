@@ -66,6 +66,11 @@ export interface DownloaderOptions {
   stallTimeoutMs?: number;
   /** 重试退避基数（默认 1s；同上，测试要能压缩时间） */
   retryBaseDelayMs?: number;
+  /**
+   * 直链过期（HTTP 403）时重新取一条链：给**同一个资源**换新签名，认不出对象就不续（返回 null，
+   * 照原样进重试与报错）。合并与判据在 `electron/main/link-renew.ts`、`shared/link-identity.ts`。
+   */
+  renewUrl?: (failedUrl: string, sourceUrl?: string) => Promise<string | null>;
   events: DownloaderEvents;
   fetchImpl?: typeof fetch;
 }
@@ -75,6 +80,10 @@ interface InternalTask extends DownloadTaskView {
   headers?: Record<string, string>;
   signal?: AbortController;
   attempts: number;
+  /** 本任务已经为 403 续过一次链（一次为限：续完还 403 就不是时效问题） */
+  renewed?: boolean;
+  /** 续链成功那一句给用户的说明，只活在本进程内存里（队列快照不带它） */
+  note?: string;
   /** 最终落地路径（含同名冲突后的实际名） */
   filePath?: string;
 }
@@ -350,25 +359,29 @@ export class Downloader {
   }
 
   /**
-   * 重启恢复（P2 验收「重启后队列/历史完整」）：
-   * - queued / downloading → queued（.part+meta 在则续传）
-   * - paused / error → 保持原态，等用户手动 resume（error 可重试，是有效待办）
-   * - done → 跳过（落地目录才是真源）
-   * - canceled → 跳过（v4：用户明确作废的行不该每次启动都回来占位）
+   * 重启恢复（v13 起：**进过队列的行全部回来**，含 done 与 canceled）。
+   * - downloading → queued（.part+meta 在则续传）；queued / paused / error / canceled / done 保持原态
+   * - 失败原因、落地路径、完成时刻都跟着档回来：旧实现把 error 无条件清成 undefined，
+   *   于是重启后的失败行是一条「不知道为什么失败」的记录
+   * - `pump()` 只挑 queued，所以终态行回来只是台账，不会被自动开跑
+   *
+   * 翻案记录（别照旧注释改回去）：v4 定过「done 跳过（落地目录才是真源）」与「canceled 不该
+   * 每次启动回来占位」，业主 2026-10-17 明确推翻，原话「保留所有进过队列的数据」。
+   * 队列页因此成为跨重启的完整台账，代价是它到 QUEUE_MAX（200）会丢最旧的，
+   * 而「清理」按钮从此真的能落盘（旧实现清完一次重启又长回来）。
    */
   restore(saved: PersistedQueueLike[]): void {
     for (const s of saved) {
-      if (s.status === "done" || s.status === "canceled") continue;
-      const revived: DownloadStatus =
-        s.status === "queued" || s.status === "downloading" ? "queued" : s.status;
+      const revived: DownloadStatus = s.status === "downloading" ? "queued" : s.status;
       const t = {
         ...s,
         status: revived,
         speed: 0,
         attempts: 0,
-        error: undefined,
       } as unknown as InternalTask;
-      t.filePath = join(this.opts.getDownloadDir(), t.filename);
+      // filePath 以档内为准：同名冲突时落的是 `xxx(1).mp4`，按「目录 + 文件名」重算会指向
+      // 一个从没落地的名字，「打开所在文件夹」跳到不存在的路径。缺这个键（v13 之前的旧档）才重算。
+      if (!t.filePath) t.filePath = join(this.opts.getDownloadDir(), t.filename);
       this.claimedTargets.add(t.filePath);
       this.tasks.set(t.taskId, t);
       this.order.push(t.taskId);
@@ -380,15 +393,21 @@ export class Downloader {
     this.pump();
   }
 
-  /** 退出前把仍在跑的任务快照为可恢复 */
+  /**
+   * 队列快照（v13：一行不落，含 done 与 canceled —— 队列页从此是跨重启的台账）。
+   *
+   * 直链只在「还能续或还能重试」的状态上落盘：done 行剥成空串。理由是隐私红线「队列不保留
+   * 直链 URL」——旧实现靠"完成行不落盘"顺带满足了它，现在完成行要留，就得单独把链摘掉；
+   * 而到期直链对一条已完成记录本来也没有用途。
+   */
   snapshot(): PersistedQueueLike[] {
     return this.order
       .map((id) => this.tasks.get(id))
-      .filter((t): t is InternalTask => !!t && t.status !== "done")
+      .filter((t): t is InternalTask => !!t)
       .map((t) => ({
         taskId: t.taskId,
         groupId: t.groupId,
-        url: t.url,
+        url: t.status === "done" ? "" : t.url,
         filename: t.filename,
         referer: t.referer,
         headers: t.headers,
@@ -401,6 +420,10 @@ export class Downloader {
         sourceUrl: t.sourceUrl,
         author: t.author,
         status: t.status as DownloadStatus,
+        filePath: t.filePath,
+        // 异常文本可能带路径且长度不可控（写流错误尤甚），契约上限 300，落盘前就地截
+        error: t.error ? t.error.slice(0, 300) : undefined,
+        finishedAt: t.finishedAt,
       }));
   }
 
@@ -532,6 +555,8 @@ export class Downloader {
     if (start > 0) headers["Range"] = `bytes=${start}-`;
 
     let lastEmit = 0;
+    /** 上游状态码：403 是「链过期」的唯一硬证据，catch 里靠它决定要不要续链 */
+    let httpStatus = 0;
     let stream: ReturnType<typeof createWriteStream> | null = null;
     /** 写流错误（磁盘满 / EPERM / 路径被占）——必须自己接住，见下面的 once("error") */
     let streamErr: Error | null = null;
@@ -562,6 +587,7 @@ export class Downloader {
       armStall();
       const resp = await fetchImpl(t.url, { headers, signal: t.signal.signal, redirect: "follow" });
       if (!resp.ok && resp.status !== 206) {
+        httpStatus = resp.status;
         throw new Error(`HTTP ${resp.status}`);
       }
       const supportsRange = resp.status === 206;
@@ -675,6 +701,28 @@ export class Downloader {
         this.opts.events.progress(toView(t));
         return;
       }
+      // —— 直链过期（403）自动续链：一次为限，认不出对象就照原样报错 ——
+      // 放在重试计数之前：续链不是「又失败一次」，而是把这一条任务换成能用的链再来一遍。
+      // 用户视角应当是「等一下就好了」，而不是队列里多一条 403 让他自己重新解析。
+      if (httpStatus === 403 && !t.renewed && t.sourceUrl && this.opts.renewUrl) {
+        t.renewed = true; // 先立牌：续链本身失败也不能再来一轮，否则会打平台打到手
+        const next = await this.opts.renewUrl(t.url, t.sourceUrl).catch(() => null);
+        const live3 = st();
+        if (next && next !== t.url && live3 !== "canceled" && live3 !== "paused") {
+          t.url = next;
+          // `.part.meta` 记的是「这一份资源的身份」，续链换的只是签名不是资源；不同步这一行
+          // 就掉进下面那条「异 URL → 清掉半成品重下」，用户会看到进度从 0 开始跳回去。
+          try {
+            writeFileSync(metaPathFor(part), next, "utf8");
+          } catch {
+            /* meta 写失败只影响下次续传判定 */
+          }
+          t.note = "直链已过期，已自动重新取链";
+          this.opts.events.progress(toView(t));
+          this.persist();
+          return this.runOne(t);
+        }
+      }
       t.attempts++;
       const maxAttempts = Math.min(4, Math.max(1, this.opts.getRetryTimes() + 1));
       if (t.attempts < maxAttempts) {
@@ -715,6 +763,7 @@ export function toView(t: InternalTask): DownloadTaskView {
     createdAt: t.createdAt,
   };
   if (t.sourceUrl) v.sourceUrl = t.sourceUrl;
+  if (t.note) v.note = t.note;
   if (t.author) v.author = t.author;
   if (t.finishedAt) v.finishedAt = t.finishedAt;
   if (t.status === "done" && t.filePath) v.filePath = t.filePath;

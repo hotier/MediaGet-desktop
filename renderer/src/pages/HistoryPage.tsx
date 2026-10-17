@@ -428,39 +428,42 @@ export default function HistoryPage({
           裁在卡片自己身上而不是给表格容器补圆角：浏览器的裁剪半径已减去 1px 边框，天然与卡片那条曲线重合 */}
       <Card className="gap-0 py-0 overflow-hidden">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-2 py-1.5">
+          {/* 筛选器在左，搜索框在右 */}
+          <div className="flex items-center gap-2">
+            <Select value={platform === "" ? ALL : platform} onValueChange={(v) => setPlatform(v === ALL ? "" : v)}>
+              <SelectTrigger size="sm" className="w-30" aria-label="按平台筛选">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>全部平台</SelectItem>
+                {platforms.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {displayName(p)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
+              <SelectTrigger size="sm" className="w-30" aria-label="按时间筛选">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TIME_RANGES.map((f) => (
+                  <SelectItem key={f.key} value={f.key}>
+                    {f.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
           <Input
             ref={searchRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="搜索标题 / 作者 / 文件名"
             aria-label="搜索历史记录"
-            className="h-8 w-56"
+            className="h-8 w-56 ms-auto"
           />
-          <Select value={platform === "" ? ALL : platform} onValueChange={(v) => setPlatform(v === ALL ? "" : v)}>
-            <SelectTrigger size="sm" className="w-36" aria-label="按平台筛选">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL}>全部平台</SelectItem>
-              {platforms.map((p) => (
-                <SelectItem key={p} value={p}>
-                  {displayName(p)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
-            <SelectTrigger size="sm" className="w-28" aria-label="按时间筛选">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {TIME_RANGES.map((f) => (
-                <SelectItem key={f.key} value={f.key}>
-                  {f.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
           {/* 工具栏没有右侧按钮：「清空历史」已随 history:clear 一起撤（业主指令 2026-10-17）。
               整表清空 = 表头全选 → 浮窗「移除记录」，走 history:remove（keys 上限 = HISTORY_MAX，
               一次点得掉整张表），不再留第二条语义重复的通道 */}
