@@ -44,6 +44,7 @@ import type {
   PersistedQueueTaskSchema,
   StatsSnapshotSchema,
   UpdateStateSchema,
+  WorkStatSchema,
 } from "./ipc-contract";
 
 // ————————————————————————————————————————————————
@@ -100,9 +101,39 @@ export type InvokeResult<T> = InvokeOk<T> | InvokeErr;
 //     形状兼容但口径变了，所以必须升号：拿 v7 的解释读 v8 的档，统计页的「文件数」会把
 //     0 文件的解析行也数成一个文件 —— 数值错，界面上没有任何异常。旧档（每行都有文件）反过来读
 //     成新口径不受影响，不需要迁移。
+// v9：删掉 `history:clear` 整条通道（业主指令 2026-10-17：历史页不再有「清空历史」按钮）。
+//     全清改走 `history:remove`（表头全选 → 移除记录），它的 `keys` 上限 5000 = `HISTORY_MAX`，
+//     一次点得掉整张表，不必留第二条语义重复的通道。升号理由与 v5/v7 同一条：**通道集合变了**
+//     （存档形状没变，清空与移除落到的结果本来一样，旧档不需要迁移）。
+// v10：`HistoryEntry` 新增三个可选键 `publishedAt` / `stat` / `author.videoCount`（业主指令
+//     2026-10-17：导出的信息要完整——发布时间、点赞评论收藏、作者主页与粉丝量）。通道集合没变，
+//     但载荷形状变了，按 v6/v7 那条口径必须升号：不升号就等于让「有没有这列数据」变成不可见的
+//     运气。旧记录三个键都缺 → 导出这几格留空（`loadHistory` 没有迁移机制，缺字段在契约层合法），
+//     想要就把那几条选中点「重新解析」，解析行按作品键覆盖那一条，字段自己就补上了。
+// v11：新增 `app:copyText`（复制动作改由主进程代发）。**这条通道的存在本身就是一处修复**：
+//     主进程 `index.ts` 装了「所有权限请求一律拒」的 `setPermissionRequestHandler`，而 Chromium 的
+//     `navigator.clipboard.writeText` 要过那条钩子（Electron 把写也报成 `clipboard-read`），
+//     于是渲染层三处复制在真应用里**全部** reject NotAllowedError —— 队列页与结果卡那两处连
+//     catch 都没有，就成了「点了没反应」。实机探针证据、两条路线的取舍与「为什么不能只放行写」
+//     记在 docs/UIUX-HANDOFF.md §6。升号理由与 v5/v7/v9 同一条：通道集合变了。存档形状没动，
+//     旧档不需要迁移。
+// v12：`DownloadTaskView` 新增可选键 `note`（业主指令 2026-10-17：直链过期这类情况静默重试）。
+//     下载遇到 HTTP 403 时主进程自动重新取一次链并就地重试，`note` 就是队列那一行给出的
+//     「已自动重新取链」说明——它是**解释**而不是状态，成功与否照旧走 `status`/`error`。
+//     通道集合没变，但出参形状变了，按 v6/v7/v10 那条口径必须升号：不升号，旧版界面读到
+//     带 `note` 的载荷时既不会显示也不会报错，用户永远不知道这一行为什么自己动过。
+//     旧档不受影响（队列快照 `PersistedQueueTask` 没带这个键，重启后说明自然消失）。
+// v13：队列快照 `PersistedQueueTask` 新增三个可选键 `filePath` / `error` / `finishedAt`，语义从
+//     「只记没干完的活」改成**进过队列的行全部留档**（业主指令 2026-10-17：重启开发服务器之后
+//     之前的下载队列记录消失了）。旧实现 `snapshot()` 滤掉 done、`restore()` 跳过 done 与
+//     canceled（v4 定的「落地目录才是真源」「作废行不该每次回来占位」），两条一并推翻并就地标注。
+//     没有这三个键，重启后的「已完成」行是**坏的**而不是少一列：「打开所在文件夹」「复制文件路径」
+//     都按 `status === "done" && filePath` 渲染，缺 filePath 就整项消失；缺 error 则是一条不知道为什么
+//     失败的「失败」。通道集合没变，但档内形状变了，按 v6/v7/v10/v12 同一条口径升号。
+//     旧档不需要迁移（三个键都可选，缺就是空）；done 行的 `url` 落盘时剥成空串，见契约注释。
 // ————————————————————————————————————————————————
 
-export const CONTRACT_VERSION = 8;
+export const CONTRACT_VERSION = 13;
 
 // ————————————————————————————————————————————————
 // channel 常量（preload/main/renderer 三方共用字面量，禁止散落拼写）
@@ -122,7 +153,6 @@ export const IPC = {
   settingsSet: "settings:set",
   historyList: "history:list",
   historyRemove: "history:remove",
-  historyClear: "history:clear",
   probeEngines: "probe:engines",
   appGetBinaryStatus: "app:getBinaryStatus",
   appPickDownloadDir: "app:pickDownloadDir",
@@ -133,6 +163,7 @@ export const IPC = {
   appOpenLogDir: "app:openLogDir",
   appLog: "app:log",
   appOpenExternal: "app:openExternal",
+  appCopyText: "app:copyText",
   statsGet: "stats:get",
   updateGetState: "update:state",
   updateCheck: "update:check",
@@ -174,6 +205,9 @@ export type EnqueueOutcome = z.infer<typeof EnqueueOutcomeSchema>;
 
 /** 作者快照（解析那一刻的公开信息，随任务/历史透传） */
 export type AuthorSnapshot = z.infer<typeof AuthorSnapshotSchema>;
+
+/** 作品计数快照（解析那一刻的公开互动数；档位与来源归一见 shared/work-stat.ts） */
+export type WorkStat = z.infer<typeof WorkStatSchema>;
 
 export type DownloadStatus = z.infer<typeof PersistedQueueTaskSchema>["status"];
 
@@ -308,9 +342,9 @@ export interface MgBridge {
   };
   history: {
     list(filter?: HistoryFilter): Promise<InvokeResult<HistoryEntry[]>>;
-    /** 删除选中行（行键 = 条目 id 或 groupId，主进程双命中删整组），返回剩余列表 */
+    /** 删除选中行（行键 = 条目 id 或 groupId，主进程双命中删整组），返回剩余列表。
+     *  整表清空也走这条（keys 上限 = HISTORY_MAX），没有第二条 clear 通道 */
     remove(keys: string[]): Promise<InvokeResult<HistoryEntry[]>>;
-    clear(): Promise<InvokeResult<{ ok: boolean }>>;
   };
   probe: {
     engines(): Promise<InvokeResult<EngineHealth[]>>;
@@ -334,6 +368,8 @@ export interface MgBridge {
     openLogDir(): Promise<InvokeResult<{ ok: boolean }>>;
     /** 用系统默认浏览器打开外链（scheme 白名单 http/https；不抢焦点） */
     openExternal(url: string): Promise<InvokeResult<{ ok: boolean }>>;
+    /** 复制文本到系统剪贴板（主进程代发：renderer 的 navigator.clipboard 被「所有权限一律拒」那条钩子挡死，见 CONTRACT_VERSION v11 注） */
+    copyText(text: string): Promise<InvokeResult<{ ok: boolean }>>;
     /** 渲染层异常转发到文件日志（窗口崩溃外的另一条线索；级别不含 off） */
     log(level: LogSeverity, message: string): Promise<InvokeResult<{ ok: boolean }>>;
     /** 剪贴板监听命中分享链接（main 端已识别：url 有值时可直接填入输入面） */
