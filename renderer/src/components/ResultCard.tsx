@@ -12,7 +12,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink, Heart, MessageCircle, StarCheck, Share2 } from "lucide-react";
 import { api } from "../lib/bridge";
 import {
   buildPlan,
@@ -237,8 +237,9 @@ export function ResultCard({
               {/* 视频详细直接展示，不做收起展开 */}
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 {stats.length > 0 && stats.map((s) => (
-                  <span key={s.label} className="tabular-nums">
-                    {s.label}{s.value}
+                  <span key={s.key} className="inline-flex items-center gap-1 tabular-nums">
+                    {s.icon}
+                    {s.value}
                   </span>
                 ))}
                 {typeof data?.duration === "number" && data.duration > 0 && (
@@ -468,12 +469,21 @@ export function ResultCard({
   );
 }
 
-/** stat / 频道 / 抖音微博等平台各异计数 → 统一「标签 数值」行。
+/** stat / 频道 / 抖音微博等平台各异计数 → 统一「图标 + 数值」行。
  *
  *  只返回作品级统计（点赞/播放/评论/分享/收藏等），不包含作者相关数据。 */
-function buildStatItems(data?: ParseData): Array<{ label: string; value: string }> {
-  const fmt = (label: string, value: number) => ({ label, value: fmtCount(value) });
-  return workStatItems(pickWorkStat(data)).map((s) => fmt(s.label, s.value));
+function buildStatItems(data?: ParseData): Array<{ key: string; icon: React.ReactElement; value: string }> {
+  const STAT_ICON_MAP: Record<string, React.ReactElement> = {
+    likeCount: <Heart className="size-3.5" />,
+    commentCount: <MessageCircle className="size-3.5" />,
+    shareCount: <Share2 className="size-3.5" />,
+    collectCount: <StarCheck className="size-3.5" />,
+  };
+  return workStatItems(pickWorkStat(data)).map((s) => ({
+    key: s.key,
+    icon: STAT_ICON_MAP[s.key] ?? <span className="size-3.5 inline-block" />,
+    value: fmtCount(s.value),
+  }));
 }
 
 function ViaBadge({ via }: { via: "local" | "online" | "mock" }): React.ReactElement {
