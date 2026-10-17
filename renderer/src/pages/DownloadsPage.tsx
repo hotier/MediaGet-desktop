@@ -466,7 +466,7 @@ function QueueTable({
   onNav: OnNav;
 }): React.ReactElement {
   return (
-    <Table className={TABLE_MIN_W}>
+    <Table className={`${TABLE_MIN_W} w-fit`}>
       <TableHeader>
         <TableRow>
           <TableHead className="w-[calc(1.5rem+16em)]">文件</TableHead>
