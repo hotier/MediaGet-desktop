@@ -24,7 +24,6 @@ import {
   type QualityStrategy,
   type ResourceShape,
   SHAPE_LABEL,
-  summarize,
 } from "../lib/download-plan";
 import { fmtClock, fmtCount, fmtDuration } from "../lib/format";
 import { buildAuthorSnapshot } from "../../../shared/author";
@@ -210,33 +209,28 @@ export function ResultCard({
 
   const images = (data?.images ?? []).filter(Boolean);
   const stats = buildStatItems(data);
-  const planSummary = summarize(selected);
   const shape = deriveShape(data);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   return (
     <>
       <Card>
-        {/*
-          三层节奏（2026-10-15）：同层内 gap-2 紧贴成一组，层与层之间 gap-5 拉开。
-          此前所有区块共用 gap-4，视觉上「一片平」，用户找不到主次。
-        */}
-        <CardContent className="flex flex-col gap-5 py-4">
-          {/* —— 第一眼：这是什么（封面 + 标题 + 身份）—— */}
-          <div className="flex flex-col gap-3">
-          <div className="flex gap-4">
+        <CardContent className="flex flex-col gap-4 py-4">
+          {/* —— 第一眼：这是什么（封面 + 标题 + 平台）—— */}
+          <div className="flex gap-3">
             {data?.cover && (
               <img
                 src={data.cover}
                 alt=""
                 referrerPolicy="no-referrer"
-                className="aspect-video w-40 shrink-0 rounded-md border border-border object-cover"
+                className="aspect-video w-32 shrink-0 rounded-md border border-border object-cover"
               />
             )}
-            <div className="flex min-w-0 flex-1 flex-col gap-2">
+            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               <TruncatedTooltip label={data?.title || data?.desc || "（无标题）"}>
                 <h2 className="truncate font-semibold text-[15px]">{data?.title || data?.desc || "（无标题）"}</h2>
               </TruncatedTooltip>
-              <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <div className="flex flex-wrap items-center gap-1.5 text-xs">
                 <Badge variant="secondary">{SHAPE_LABEL[shape]}</Badge>
                 {platformName && (
                   <Badge variant="outline" className="gap-1.5 ps-1">
@@ -244,6 +238,22 @@ export function ResultCard({
                     {platformName}
                   </Badge>
                 )}
+              </div>
+              {/* 次要信息收进可折叠区 */}
+              <button
+                type="button"
+                onClick={() => setDetailsOpen((v) => !v)}
+                className="self-start text-xs text-muted-foreground hover:text-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
+                {detailsOpen ? "收起详情" : "查看详情"}
+              </button>
+            </div>
+          </div>
+
+          {/* —— 详情区：作者/统计/时长/描述/音乐 —— */}
+          {detailsOpen && (
+            <div className="flex flex-col gap-2 rounded-md bg-muted/30 px-3 py-2.5 text-xs">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
                 {data?.author && (
                   <span className="inline-flex items-center gap-1.5">
                     {data.avatar && (
@@ -251,28 +261,23 @@ export function ResultCard({
                         src={data.avatar}
                         alt=""
                         referrerPolicy="no-referrer"
-                        className="size-4 rounded-full object-cover"
+                        className="size-3.5 rounded-full object-cover"
                       />
                     )}
-                    @{data.author}
+                    {data.author}
                   </span>
                 )}
                 {typeof data?.duration === "number" && data.duration > 0 && (
                   <span className="tabular-nums">
-                    {Math.round((data.duration > 100000 ? data.duration / 1000 : data.duration))}s
+                    {Math.round(data.duration > 100000 ? data.duration / 1000 : data.duration)}s
                   </span>
                 )}
-                {/*
-                  type 徽标只在它表达了形态徽标没说的东西时才显示。
-                  「视频/单视频」「图集/图集」这类是同一件事的两种说法，同行双标签纯属噪音；
-                  music 之类形态徽标覆盖不到的（或未知新平台值）仍要露出。
-                */}
                 {data?.type && !(TYPE_COVERED_BY_SHAPE[data.type] ?? []).includes(shape) && (
                   <Badge variant="secondary">{typeLabel(data.type)}</Badge>
                 )}
               </div>
               {stats.length > 0 && (
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs tabular-nums text-muted-foreground">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 tabular-nums text-muted-foreground">
                   {stats.map((s) => (
                     <span key={s.label}>
                       {s.label} {s.value}
@@ -287,122 +292,168 @@ export function ResultCard({
                 </div>
               )}
               {(data?.music?.author || data?.core) && (
-                <p className="text-xs text-muted-foreground">
+                <p className="text-muted-foreground">
                   {data.music?.author && `♪ ${data.music.author}${data.music.title ? ` - ${data.music.title}` : ""}`}
                   {data.core && (data.music?.author ? ` · 高潮片段 ${data.core}` : `高潮片段 ${data.core}`)}
                 </p>
               )}
-            </div>
-          </div>
-          </div>
-
-          {/* —— 第二眼：值不值得下（描述 + 形态专属区块）—— */}
-          <div className="flex flex-col gap-3">
-          {data?.desc && data.desc !== data.title && (
-            <TruncatedTooltip label={data.desc} contentClassName="max-w-96">
-              <p className="line-clamp-3 text-xs leading-relaxed text-muted-foreground">{data.desc}</p>
-            </TruncatedTooltip>
-          )}
-
-          {/* —— 形态专属区块：只有对应形态出现，插在摘要与选择层之间 —— */}
-          {shape === "gallery" && <GalleryBlock images={images} onPreview={setPreviewIdx} />}
-
-          {shape === "audio" && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-3 py-2 text-xs">
-              {data?.music?.author && (
-                <span className="font-medium">
-                  ♪ {data.music.author}
-                  {data.music.title ? ` - ${data.music.title}` : ""}
-                </span>
-              )}
-              {data?.lyrics && (
-                <button
-                  type="button"
-                  onClick={() => setLyricsOpen((v) => !v)}
-                  className="text-muted-foreground underline-offset-2 hover:underline"
-                >
-                  {lyricsOpen ? "收起歌词" : "查看歌词"}
-                </button>
+              {data?.desc && data.desc !== data.title && (
+                <TruncatedTooltip label={data.desc} contentClassName="max-w-96">
+                  <p className="line-clamp-3 leading-relaxed text-muted-foreground">{data.desc}</p>
+                </TruncatedTooltip>
               )}
             </div>
           )}
-          {shape === "audio" && lyricsOpen && data?.lyrics && (
-            <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-              {data.lyrics}
-            </pre>
+
+          {/* —— 形态专属区块：收进详情区 —— */}
+          {detailsOpen && (
+            <>
+              {shape === "gallery" && <GalleryBlock images={images} onPreview={setPreviewIdx} />}
+
+              {shape === "audio" && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-3 py-2 text-xs">
+                  {data?.music?.author && (
+                    <span className="font-medium">
+                      ♪ {data.music.author}
+                      {data.music.title ? ` - ${data.music.title}` : ""}
+                    </span>
+                  )}
+                  {data?.lyrics && (
+                    <button
+                      type="button"
+                      onClick={() => setLyricsOpen((v) => !v)}
+                      className="text-muted-foreground underline-offset-2 hover:underline"
+                    >
+                      {lyricsOpen ? "收起歌词" : "查看歌词"}
+                    </button>
+                  )}
+                </div>
+              )}
+              {shape === "audio" && lyricsOpen && data?.lyrics && (
+                <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+                  {data.lyrics}
+                </pre>
+              )}
+
+              {shape === "multi-video" && (
+                <ol className="flex flex-col gap-1.5">
+                  {(data?.videos ?? []).map((v, i) => (
+                    <li key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] tabular-nums">
+                        {i + 1}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{v.title || `分 P ${i + 1}`}</span>
+                      {v.durationFormat && <span className="shrink-0 tabular-nums">{v.durationFormat}</span>}
+                    </li>
+                  ))}
+                </ol>
+              )}
+
+              {shape === "text" && (
+                <div className="flex flex-col gap-2 rounded-md border border-dashed border-border px-3 py-4 text-center">
+                  <p className="text-xs text-muted-foreground">纯文字内容，没有可下载的文件</p>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <Button size="sm" variant="outline" onClick={() => void copyText(data?.title ?? data?.desc ?? "")}>
+                      复制文字
+                    </Button>
+                    {sourceUrl && (
+                      <Button size="sm" variant="outline" onClick={() => void openExternal(sourceUrl)}>
+                        <ExternalLink />
+                        打开原页面
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
           )}
 
-          {shape === "multi-video" && (
-            <ol className="flex flex-col gap-1.5">
-              {(data?.videos ?? []).map((v, i) => (
-                <li key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] tabular-nums">
-                    {i + 1}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">{v.title || `分 P ${i + 1}`}</span>
-                  {v.durationFormat && <span className="shrink-0 tabular-nums">{v.durationFormat}</span>}
-                </li>
-              ))}
-            </ol>
-          )}
-
-          {shape === "text" && (
-            <div className="flex flex-col gap-2 rounded-md border border-dashed border-border px-3 py-4 text-center">
-              <p className="text-xs text-muted-foreground">纯文字内容，没有可下载的文件</p>
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                <Button size="sm" variant="outline" onClick={() => void copyText(data?.title ?? data?.desc ?? "")}>
-                  复制文字
-                </Button>
-                {sourceUrl && (
-                  <Button size="sm" variant="outline" onClick={() => void openExternal(sourceUrl)}>
-                    <ExternalLink />
-                    打开原页面
-                  </Button>
-                )}
-              </div>
-            </div>
-          )}
-          </div>
-
-          {/* —— 操作区：与上方信息拉开，不让清单和介绍黏在一起 —— */}
+          {/* —— 操作区：与上方信息拉开 —— */}
           <Separator />
 
-          {/* —— 选择层：清晰度（队列状态不锁它，换清晰度是为了再下一份）—— */}
-          {qualityOptions.length > 1 && (
-            <div className="flex flex-wrap items-center gap-2" role="group" aria-label="选择清晰度">
-              <span className="text-xs text-muted-foreground">清晰度</span>
-              {qualityOptions.map((q, i) => (
-                <Button
-                  key={`${q.label}-${i}`}
-                  size="sm"
-                  variant={i === activeIdx ? "default" : "outline"}
-                  aria-pressed={i === activeIdx}
-                  className="h-7 rounded-full px-3 text-xs"
-                  onClick={() => setQualityIdx(i)}
-                >
-                  {q.label}
-                </Button>
-              ))}
-            </div>
+          {/* —— 下载配置按钮 + 主操作 —— */}
+          <div className="flex flex-wrap items-center gap-3">
+            {plan.length > 0 && (
+              <Button size="sm" variant="outline" onClick={() => setPlanOpen(true)}>
+                配置下载
+                <ChevronDown className="ms-1 size-3.5" />
+              </Button>
+            )}
+            {data?.embedOnly ? (
+              <Button asChild>
+                <a href={data.embedUrl ?? data.url ?? "#"} target="_blank" rel="noreferrer">
+                  <ExternalLink />
+                  在浏览器中打开播放
+                </a>
+              </Button>
+            ) : (
+              <Button onClick={() => void enqueue()} disabled={selected.length === 0}>
+                {queued ? "再次下载所选" : selected.length === 1 ? "下载" : `下载 ${selected.length} 项`}
+              </Button>
+            )}
+            {queued && <Badge variant="ok">已加入队列 ✓</Badge>}
+            {linkAged && !data?.embedOnly && (
+              <span className="text-xs text-muted-foreground">链可能已过期，下载会自动重新取链</span>
+            )}
+            {!data?.embedOnly && data?.embedUrl && !data.url && !data.videos?.length && (
+              <Button asChild variant="link" size="sm" className="h-auto px-0">
+                <a href={data.embedUrl} target="_blank" rel="noreferrer">
+                  官方播放页
+                </a>
+              </Button>
+            )}
+          </div>
+          {err && (
+            <Alert variant="destructive">
+              <AlertDescription>{err}</AlertDescription>
+            </Alert>
           )}
 
-          {/* —— 下载清单层：点之前就知道会得到什么 —— */}
-          <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              onClick={() => setPlanOpen((v) => !v)}
-              aria-expanded={planOpen}
-              disabled={plan.length === 0}
-              className="flex items-center gap-2 self-start text-sm outline-none disabled:opacity-50 focus-visible:ring-[3px] focus-visible:ring-ring/50"
-            >
-              <span className="font-medium">下载清单</span>
-              <span className="text-xs tabular-nums text-muted-foreground">
-                {selected.length === 0 ? "未选择任何文件" : planSummary}
-                {selected.length !== plan.length && `（已排除 ${plan.length - selected.length}）`}
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <ViaBadge via={via} />
+            <span className="tabular-nums">{fmtDuration(durationMs)}</span>
+            {parsedAt && <span className="tabular-nums">解析于 {fmtClock(parsedAt)}</span>}
+            {via === "local" && durationMs < 50 && <Badge variant="secondary">缓存命中</Badge>}
+            {fallbackReason && (
+              <span className="flex flex-wrap items-center gap-2">
+                <Button variant="link" size="sm" className="h-auto px-0" onClick={() => setReasonOpen((v) => !v)}>
+                  {reasonOpen ? "收起" : "为什么走了线上？"}
+                </Button>
+                {reasonOpen && <span className="text-xs">{fallbackReason}</span>}
               </span>
-              {planOpen ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-            </button>
-            {planOpen && (
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* 下载配置 Dialog：清晰度 + 文件清单 */}
+      <Dialog open={planOpen} onOpenChange={setPlanOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogHeader>
+            <DialogTitle>下载配置</DialogTitle>
+            <DialogDescription className="sr-only">选择清晰度与要下载的文件</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-4">
+            {/* 清晰度选择 */}
+            {qualityOptions.length > 1 && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium">清晰度</span>
+                {qualityOptions.map((q, i) => (
+                  <Button
+                    key={`${q.label}-${i}`}
+                    size="sm"
+                    variant={i === activeIdx ? "default" : "outline"}
+                    className="h-7 rounded-full px-3 text-xs"
+                    onClick={() => setQualityIdx(i)}
+                  >
+                    {q.label}
+                  </Button>
+                ))}
+              </div>
+            )}
+            {/* 文件清单 */}
+            <div>
+              <p className="mb-2 text-sm font-medium">文件清单</p>
               <ul className="flex flex-col gap-1.5">
                 {plan.map((p) => (
                   <li key={p.id} className="flex items-center gap-2 text-sm">
@@ -428,58 +479,13 @@ export function ResultCard({
                   </li>
                 ))}
               </ul>
-            )}
+            </div>
           </div>
-
-          <div className="flex flex-wrap items-center gap-3">
-            {data?.embedOnly ? (
-              <Button asChild>
-                <a href={data.embedUrl ?? data.url ?? "#"} target="_blank" rel="noreferrer">
-                  <ExternalLink />
-                  在浏览器中打开播放
-                </a>
-              </Button>
-            ) : (
-              <Button onClick={() => void enqueue()} disabled={selected.length === 0}>
-                {queued ? "再次下载所选" : selected.length === 1 ? "下载" : `下载 ${selected.length} 项`}
-              </Button>
-            )}
-            {queued && <Badge variant="ok">已加入队列 ✓</Badge>}
-            {/* 过阈值只报事实与「接下来会发生什么」，不把按钮改成需要用户先动手的样子 */}
-            {linkAged && !data?.embedOnly && (
-              <span className="text-xs text-muted-foreground">链可能已过期，下载会自动重新取链</span>
-            )}
-            {!data?.embedOnly && data?.embedUrl && !data.url && !data.videos?.length && (
-              <Button asChild variant="link" size="sm" className="h-auto px-0">
-                <a href={data.embedUrl} target="_blank" rel="noreferrer">
-                  官方播放页
-                </a>
-              </Button>
-            )}
-          </div>
-          {err && (
-            <Alert variant="destructive">
-              <AlertDescription>{err}</AlertDescription>
-            </Alert>
-          )}
-
-          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <ViaBadge via={via} />
-            <span className="tabular-nums">{fmtDuration(durationMs)}</span>
-            {/* 到手时刻（契约 v12 起不再拿它改按钮）：想知道链新不新，看几点解析的 */}
-            {parsedAt && <span className="tabular-nums">解析于 {fmtClock(parsedAt)}</span>}
-            {via === "local" && durationMs < 50 && <Badge variant="secondary">缓存命中</Badge>}
-            {fallbackReason && (
-              <span className="flex flex-wrap items-center gap-2">
-                <Button variant="link" size="sm" className="h-auto px-0" onClick={() => setReasonOpen((v) => !v)}>
-                  {reasonOpen ? "收起" : "为什么走了线上？"}
-                </Button>
-                {reasonOpen && <span className="text-xs">{fallbackReason}</span>}
-              </span>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+          <DialogFooter>
+            <Button onClick={() => setPlanOpen(false)}>完成</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* 图集预览：Radix Dialog 接管 Esc 与焦点，页面级 Esc 因此让位 */}
       <Dialog open={previewIdx !== null && !!images[previewIdx]} onOpenChange={(v) => !v && setPreviewIdx(null)}>
