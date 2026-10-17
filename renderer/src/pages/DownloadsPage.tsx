@@ -139,8 +139,8 @@ const COL = {
   status: "w-[calc(1.5rem+3.6em)]",
   progress: "w-[calc(1.5rem+4.5em)]",
   size: "w-[calc(1.5rem+4.4em)]",
-  speed: "w-[calc(1.5rem+5.2em)]",
-  eta: "w-[calc(1.5rem+3.9em)]",
+  speed: "w-[calc(1.5rem+3.6em)]",
+  eta: "w-[calc(1.5rem+3.2em)]",
   created: "w-[calc(1.5rem+9em)]",
   finished: "w-[calc(1.5rem+9em)]",
   actions: "w-[calc(1.5rem+3.2em)]",
@@ -474,7 +474,7 @@ function QueueTable({
           <TableHead className={COL.progress}>进度</TableHead>
           <TableHead className={COL.size}>大小</TableHead>
           <TableHead className={COL.speed}>速度</TableHead>
-          <TableHead className={COL.eta}>剩余</TableHead>
+          <TableHead className={COL.eta}>剩余时间</TableHead>
           <TableHead className={COL.created}>创建时间</TableHead>
           <TableHead className={COL.finished}>完成时间</TableHead>
           <TableHead className={COL.actions} aria-label="操作" />
