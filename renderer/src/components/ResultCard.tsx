@@ -12,7 +12,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, CircleEuro, CircleFadingPlay, ExternalLink, Heart, MessageCircleText, RotateCcwClock, Share2, StarCheck } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, CircleEuro, CircleFadingPlay, ExternalLink, Heart, MessageCircle, MessageCircleText, RotateCcwClock, Share2, StarCheck } from "lucide-react";
 import { api } from "../lib/bridge";
 import {
   buildPlan,
@@ -479,7 +479,7 @@ function buildStatItems(data?: ParseData): Array<{ key: string; icon: React.Reac
     danmaku: <MessageCircleText className="size-3.5" />,
     like: <Heart className="size-3.5" />,
     retweet: <Share2 className="size-3.5" />,
-    reply: <MessageCircleText className="size-3.5" />,
+    reply: <MessageCircle className="size-3.5" />,
     favorite: <StarCheck className="size-3.5" />,
     coin: <CircleEuro className="size-3.5" />,
     share: <Share2 className="size-3.5" />,
