@@ -12,7 +12,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink, Heart, MessageCircle, StarCheck, Share2 } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, CircleEuro, CircleFadingPlay, ExternalLink, Heart, MessageCircleText, RotateCcwClock, Share2, StarCheck } from "lucide-react";
 import { api } from "../lib/bridge";
 import {
   buildPlan,
@@ -243,8 +243,9 @@ export function ResultCard({
                   </span>
                 ))}
                 {typeof data?.duration === "number" && data.duration > 0 && (
-                  <span className="tabular-nums">
-                    时长{Math.round(data.duration > 100000 ? data.duration / 1000 : data.duration)}s
+                  <span className="inline-flex items-center gap-1 tabular-nums">
+                    <RotateCcwClock className="size-3.5" />
+                    {Math.round(data.duration > 100000 ? data.duration / 1000 : data.duration)}s
                   </span>
                 )}
               </div>
@@ -474,11 +475,14 @@ export function ResultCard({
  *  只返回作品级统计（点赞/播放/评论/分享/收藏等），不包含作者相关数据。 */
 function buildStatItems(data?: ParseData): Array<{ key: string; icon: React.ReactElement; value: string }> {
   const STAT_ICON_MAP: Record<string, React.ReactElement> = {
+    view: <CircleFadingPlay className="size-3.5" />,
+    danmaku: <MessageCircleText className="size-3.5" />,
     like: <Heart className="size-3.5" />,
-    reply: <MessageCircle className="size-3.5" />,
-    favorite: <StarCheck className="size-3.5" />,
-    share: <Share2 className="size-3.5" />,
     retweet: <Share2 className="size-3.5" />,
+    reply: <MessageCircleText className="size-3.5" />,
+    favorite: <StarCheck className="size-3.5" />,
+    coin: <CircleEuro className="size-3.5" />,
+    share: <Share2 className="size-3.5" />,
   };
   return workStatItems(pickWorkStat(data)).map((s) => ({
     key: s.key,
