@@ -141,8 +141,8 @@ const COL = {
   size: "w-[calc(1.5rem+4.4em)]",
   speed: "w-[calc(1.5rem+2.8em)]",
   eta: "w-[calc(1.5rem+2.8em)]",
-  created: "w-[calc(1.5rem+9em)]",
-  finished: "w-[calc(1.5rem+9em)]",
+  created: "w-[calc(1.5rem+7em)]",
+  finished: "w-[calc(1.5rem+7em)]",
   actions: "w-[calc(1.5rem+3.2em)]",
 } as const;
 
