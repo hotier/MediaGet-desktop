@@ -136,8 +136,8 @@ const clearOne = (id: string): Promise<unknown> => api.download.clear([id]);
  * 要整屏不滚只能砍列或砍字号，那由业主定。
  */
 const COL = {
-  status: "w-[calc(3.5rem+3.6em)]",
-  progress: "w-24",
+  status: "w-[calc(1.5rem+3.6em)]",
+  progress: "w-[calc(1.5rem+4.5em)]",
   size: "w-[calc(1.5rem+4.4em)]",
   speed: "w-[calc(1.5rem+5.2em)]",
   eta: "w-[calc(1.5rem+3.9em)]",
