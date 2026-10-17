@@ -501,6 +501,7 @@ export default function HistoryPage({
                         )
                       }
                       aria-label="全选可见记录"
+                      className="hover:border-foreground/50"
                     />
                   </span>
                 </TableHead>
@@ -560,6 +561,7 @@ export default function HistoryPage({
                         onCheckedChange={() => setSel((s) => clickToggle(s, visibleKeys, i))}
                         onClick={(e) => e.stopPropagation()}
                         aria-label={`选择 ${r.title}`}
+                        className="hover:border-foreground/50"
                       />
                     </span>
                   </TableCell>
