@@ -133,20 +133,15 @@ export default function HomePage({
   const parseOne = useCallback(
     async (id: number, source: string, retry = false) => {
       patchItem(id, { status: "pending", outcome: undefined, error: undefined, at: undefined });
-      let sourceUrl: string | undefined;
-      try {
-        sourceUrl = (await api.identify(source)).url ?? undefined;
-      } catch {
-        // identify 只服务 sourceUrl 落历史，失败不拦解析
-      }
       try {
         const r = await api.parse(retry ? { text: source, forceOnline: true } : { text: source });
         // at = 结果到手时刻：切页重挂载后卡片接着算直链年龄，不把过期的链显示成刚拿到
-        patchItem(id, { status: "done", outcome: r, sourceUrl, at: Date.now() });
+        // sourceUrl = 用户输入的原始分享链接/文案（续链要用它重新解析，不是 identify 提取的直链）
+        patchItem(id, { status: "done", outcome: r, sourceUrl: source, at: Date.now() });
       } catch (e) {
         patchItem(id, {
           status: "error",
-          sourceUrl,
+          sourceUrl: source,
           error:
             e instanceof BridgeError
               ? `${e.message}${e.failType ? `（${e.failType}）` : ""}`
