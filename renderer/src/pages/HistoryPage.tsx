@@ -487,7 +487,7 @@ export default function HistoryPage({
                       「标题行的选中框也需要遵循这个规则，不能常驻显示」）——
                       常态隐藏、hover 表头行显形、有选中则恒显（那时它要能一键清空）。
                       我原先把它当"这一列的说明"留着常驻，被他否掉：常态就该一颗框都不占屏 */}
-                  <span className={cn("flex items-center", sel.keys.length > 0 ? "visible" : "invisible group-hover:visible")}>
+                  <span className={cn("flex items-center group", sel.keys.length > 0 ? "visible" : "invisible group-hover:visible")}>
                     <Checkbox
                       checked={headerCheckState(sel, visibleKeys)}
                       // 判据读**当前**三态而不是回调送来的值：indeterminate 下 Radix 发的是 `true`
@@ -501,6 +501,7 @@ export default function HistoryPage({
                         )
                       }
                       aria-label="全选可见记录"
+                      className="group-hover:border-foreground/50"
                       className="hover:border-foreground/50"
                     />
                   </span>
