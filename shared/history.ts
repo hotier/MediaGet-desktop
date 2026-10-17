@@ -8,7 +8,7 @@
  * 零依赖：不 import zod / electron / node:crypto，主进程、渲染进程与 dev mock 共用同一份，
  * 所以 dev 预览里的历史形状与真版本一致（漂移 = 拿预览评审了一个不存在的界面）。
  */
-import type { AuthorSnapshot, HistoryEntry } from "../types/ipc";
+import type { AuthorSnapshot, HistoryEntry, WorkStat } from "../types/ipc";
 
 /** FNV-1a 32 位：纯算术、跨进程可复算，不需要 crypto */
 function fnv1a(s: string, seed: number): number {
@@ -46,9 +46,13 @@ export const isLanded = (entry: { files: string[] }): boolean => entry.files.len
 /**
  * 解析成功 → 一条历史行（未下载态）。
  *
- * 只取标题、平台与作者快照：**媒体直链一概不进这里**（隐私红线，`data.url` / `images[]` /
- * `qualities[].url` 都是直链）。放在共享层而不是主进程内联，是因为 dev mock 要写出同一形状的行，
- * 两处各写一遍迟早漏掉某个字段，而漏掉的字段在界面上只是「少了一块」，不会有人报错。
+ * 只取标题、平台、作者快照、发布时间与计数快照：**媒体直链一概不进这里**（隐私红线，
+ * `data.url` / `images[]` / `qualities[].url` 都是直链）。放在共享层而不是主进程内联，是因为
+ * dev mock 要写出同一形状的行，两处各写一遍迟早漏掉某个字段，而漏掉的字段在界面上只是
+ * 「少了一块」，不会有人报错。
+ *
+ * `stat` / `publishedAt` 由 `shared/work-stat.ts` 归一后再进来 —— 写入方不许自己挑内核字段，
+ * 否则主进程与 mock 会各挑一套，导出里的「点赞」在两处含义不同。
  */
 export function parseHistoryEntry(input: {
   /** 用户输入的分享链接（identify 归一后的那条），非直链 */
@@ -56,6 +60,10 @@ export function parseHistoryEntry(input: {
   platform?: string;
   title?: string;
   author?: AuthorSnapshot;
+  /** 作品在平台上的发布时刻（本地毫秒），归一见 shared/work-stat.ts */
+  publishedAt?: number;
+  /** 解析那一刻的公开互动数 */
+  stat?: WorkStat;
   /** 链接算不出作品键时（ID 直解模式）由调用方给一次性 id */
   fallbackId: string;
   at: number;
@@ -69,6 +77,8 @@ export function parseHistoryEntry(input: {
     title: input.title,
     sourceUrl: input.sourceUrl,
     author: input.author,
+    publishedAt: input.publishedAt,
+    stat: input.stat,
     files: [],
     createdAt: input.at,
   };

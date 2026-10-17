@@ -575,7 +575,7 @@ export default function HistoryPage({
                   </TableCell>
                   <TableCell>
                     {r.authorName ? (
-                      <TruncatedTooltip label={`@${r.authorName}`}>
+                      <TruncatedTooltip label={r.authorName}>
                         <button
                           type="button"
                           className="block w-full min-w-0 cursor-pointer truncate text-start font-medium hover:underline"
@@ -584,7 +584,7 @@ export default function HistoryPage({
                             openAuthor(r);
                           }}
                         >
-                          @{r.authorName}
+                          {r.authorName}
                         </button>
                       </TruncatedTooltip>
                     ) : (
@@ -984,7 +984,7 @@ function WorkDetail({
             className="cursor-pointer font-medium hover:underline"
             onClick={onOpenAuthor}
           >
-            @{row.authorName}
+            {row.authorName}
           </button>
         </Field>
       )}
