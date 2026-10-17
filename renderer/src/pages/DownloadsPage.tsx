@@ -474,7 +474,7 @@ function QueueTable({
           <TableHead className={COL.progress}>进度</TableHead>
           <TableHead className={COL.size}>大小</TableHead>
           <TableHead className={COL.speed}>速度</TableHead>
-          <TableHead className={COL.eta}>剩余时间</TableHead>
+          <TableHead className={COL.eta}>剩余</TableHead>
           <TableHead className={COL.created}>创建时间</TableHead>
           <TableHead className={COL.finished}>完成时间</TableHead>
           <TableHead className={COL.actions} aria-label="操作" />
