@@ -10,7 +10,8 @@
  *  - 选择层：清晰度 —— 改它只改下载计划，不被队列状态锁死；
  *  - 下载清单层：将要落盘的每一项（带勾选与回落标注），主按钮文案由它生成。
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { toast } from "sonner";
 import { AlertTriangle, ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
 import { api } from "../lib/bridge";
 import {
@@ -25,9 +26,10 @@ import {
   SHAPE_LABEL,
   summarize,
 } from "../lib/download-plan";
-import { fmtCount, fmtDuration } from "../lib/format";
+import { fmtClock, fmtCount, fmtDuration } from "../lib/format";
 import { buildAuthorSnapshot } from "../../../shared/author";
-import type { ParseRunOutcome } from "../../../types/ipc";
+import { pickWorkStat, workStatItems } from "../../../shared/work-stat";
+import type { ParseData, ParseRunOutcome } from "../../../types/ipc";
 import { displayName } from "../../../shared/platforms";
 import { PlatformIcon } from "./PlatformIcon";
 import { Button } from "./ui/button";
@@ -46,7 +48,13 @@ import {
   DialogTitle,
 } from "./ui/dialog";
 
-/** 直链时效：超过 5 分钟内核给的直链大概率已过期（README「分钟级」） */
+/**
+ * 直链计龄的标注阈值（不是过期判据）。业主质疑「你确定有效期只有 5 分钟吗」之后实测过：
+ * 抖音播放链整串查询里没有任何时间签名，封面图的签名约 14 天，内核 README 那句「分钟级」
+ * 只是各家 CDN 的经验下限。既然这个数在真实结果里无法验证，就不许再拿它改按钮语义
+ * （旧版会把主按钮换成「重新解析并下载」，用户以为不重新解析就下不动）；现在它只决定
+ * 什么时候在时间旁边补一句实话。真过期的处理在失败之后：见 `electron/main/link-renew.ts`。
+ */
 const LINK_TTL_MS = 5 * 60 * 1000;
 
 /** 超过这个条数就默认折叠，避免图集/多 P 把整屏占掉 */
@@ -66,7 +74,7 @@ export function ResultCard({
   /** 这条结果到手的时刻（epoch ms）：切页重挂载后直链计龄接着算，见下面的 resultAge */
   parsedAt?: number;
   onQueued: (count: number) => void;
-  /** 失败态 [重试] / 直链过期后 [重新解析并下载]：由页面重新发起解析 */
+  /** 失败态 [重试]：由页面重新发起解析（直链过期不再走这里，改由主进程下载侧续链） */
   onRetry?: () => void;
   /**
    * 失败态「去配置 Cookie」：打开设置并直达分类 id（引擎页 = "engine"）。
@@ -103,7 +111,7 @@ export function ResultCard({
       .catch(() => {});
   }, [outcome]);
 
-  // 解析成功后 15s 心跳计龄，超 TTL 按钮改为「重新解析并下载」
+  // 解析成功后 15s 心跳计龄：过阈值只改「下面那行时间怎么说」，不改按钮（见 LINK_TTL_MS 的注释）
   const [resultAge, setResultAge] = useState(0);
   useEffect(() => {
     if (result.code !== 200) return;
@@ -169,18 +177,6 @@ export function ResultCard({
       setErr(String(e instanceof Error ? e.message : e));
     }
   }
-
-  /** 直链已过期：先重新解析，新结果到手自动入队（按钮说的就是它做的事） */
-  const reparseQueueRef = useRef(false);
-  function reparseThenDownload(): void {
-    reparseQueueRef.current = true;
-    onRetry?.();
-  }
-  useEffect(() => {
-    if (!reparseQueueRef.current) return;
-    reparseQueueRef.current = false;
-    if (result.code === 200 && plan.length > 0) void enqueue();
-  }, [outcome, result.code, plan, selected]);
 
   // Ctrl+D = 下载全部（结果卡可见时，§3.4 L1）
   useEffect(() => {
@@ -444,19 +440,14 @@ export function ResultCard({
                 </a>
               </Button>
             ) : (
-              <Button onClick={() => void (linkAged && onRetry ? reparseThenDownload() : enqueue())} disabled={selected.length === 0}>
-                {linkAged && onRetry
-                  ? "重新解析并下载"
-                  : queued
-                    ? "再次下载所选"
-                    : selected.length === 1
-                      ? "下载"
-                      : `下载 ${selected.length} 项`}
+              <Button onClick={() => void enqueue()} disabled={selected.length === 0}>
+                {queued ? "再次下载所选" : selected.length === 1 ? "下载" : `下载 ${selected.length} 项`}
               </Button>
             )}
             {queued && <Badge variant="ok">已加入队列 ✓</Badge>}
-            {linkAged && !queued && (
-              <span className="text-xs text-muted-foreground">直链已超 {Math.round(LINK_TTL_MS / 60000)} 分钟，先重新解析</span>
+            {/* 过阈值只报事实与「接下来会发生什么」，不把按钮改成需要用户先动手的样子 */}
+            {linkAged && !data?.embedOnly && (
+              <span className="text-xs text-muted-foreground">链可能已过期，下载会自动重新取链</span>
             )}
             {!data?.embedOnly && data?.embedUrl && !data.url && !data.videos?.length && (
               <Button asChild variant="link" size="sm" className="h-auto px-0">
@@ -475,6 +466,8 @@ export function ResultCard({
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
             <ViaBadge via={via} />
             <span className="tabular-nums">{fmtDuration(durationMs)}</span>
+            {/* 到手时刻（契约 v12 起不再拿它改按钮）：想知道链新不新，看几点解析的 */}
+            {parsedAt && <span className="tabular-nums">解析于 {fmtClock(parsedAt)}</span>}
             {via === "local" && durationMs < 50 && <Badge variant="secondary">缓存命中</Badge>}
             {fallbackReason && (
               <span className="flex flex-wrap items-center gap-2">
@@ -528,37 +521,23 @@ export function ResultCard({
   );
 }
 
-/** stat / 频道 / 抖音微博等平台各异计数 → 统一「标签 数值」行（契约字段，此前全未消费） */
-function buildStatItems(data?: {
-  stat?: object;
-  subscriberCount?: number;
-  videoCount?: number;
-  channelViews?: number;
-  views?: number;
-  like?: number;
-  retweets?: number;
-  replies?: number;
-  followerCount?: number;
-  totalFavorited?: number;
-}): Array<{ label: string; value: string }> {
-  if (!data) return [];
-  const out: Array<{ label: string; value: string }> = [];
-  const push = (label: string, n: number | undefined) => {
-    if (typeof n === "number" && n >= 0) out.push({ label, value: fmtCount(n) });
-  };
-  const s = data.stat as Record<string, number | undefined> | undefined;
-  push("播放", s?.view ?? data.views ?? data.channelViews);
-  push("弹幕", s?.danmaku);
-  push("点赞", s?.like ?? data.like);
-  push("转发", data.retweets);
-  push("评论", s?.reply ?? data.replies);
-  push("收藏", s?.favorite);
-  push("投币", s?.coin);
-  push("分享", s?.share);
-  push("粉丝", data.followerCount ?? data.subscriberCount);
-  push("投稿", data.videoCount);
-  push("获赞", data.totalFavorited);
-  return out;
+/** stat / 频道 / 抖音微博等平台各异计数 → 统一「标签 数值」行。
+ *
+ *  作品级那八档走 `pickWorkStat` + `workStatItems`——与历史 txt、表格导出读的是同一张
+ *  `WORK_STAT_SLOTS`，所以「屏幕上叫点赞、表里叫喜欢」这种漂移不会发生；
+ *  作者级三档（粉丝/投稿/获赞）走 `buildAuthorSnapshot`，与写进历史的那份同源。 */
+function buildStatItems(data?: ParseData): Array<{ label: string; value: string }> {
+  const fmt = (label: string, value: number) => ({ label, value: fmtCount(value) });
+  const a = buildAuthorSnapshot(data);
+  const authorSlots: Array<{ label: string; value?: number }> = [
+    { label: "粉丝", value: a?.followerCount },
+    { label: "投稿", value: a?.videoCount },
+    { label: "获赞", value: a?.totalFavorited },
+  ];
+  return [
+    ...workStatItems(pickWorkStat(data)).map((s) => fmt(s.label, s.value)),
+    ...authorSlots.flatMap((x) => (x.value === undefined ? [] : [fmt(x.label, x.value)])),
+  ];
 }
 
 function ViaBadge({ via }: { via: "local" | "online" | "mock" }): React.ReactElement {
@@ -636,12 +615,19 @@ async function openExternal(url: string): Promise<void> {
   }
 }
 
-/** 复制纯文字内容到剪贴板 */
+/** 复制纯文字内容：与 `openExternal` 同一条理由走主进程代发（契约 v11）——本窗口的
+ *  `navigator.clipboard` 被「所有权限请求一律拒」的权限钩子挡死，写下去永远 reject。
+ *  静默失败会被读成「按钮坏了」，所以动作要有回执。 */
 async function copyText(text: string): Promise<void> {
+  if (!text) {
+    toast.info("这条内容没有可复制的文字");
+    return;
+  }
   try {
-    await navigator.clipboard.writeText(text);
+    await api.app.copyText(text);
+    toast.success("已复制");
   } catch {
-    /* 剪贴板被拒时静默：内容已在页面上，用户可以手选 */
+    toast.error("复制失败");
   }
 }
 

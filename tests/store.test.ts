@@ -168,12 +168,12 @@ describe("历史：追加序与上限", () => {
     expect(list[list.length - 1].id).toBe("h5"); // h0..h4 已出局
   });
 
-  it("clearHistory 真正落盘", () => {
+  it("removeHistory 传全部键 = 整表清空，且当下降落盘（「清空历史」撤掉后这是唯一的全清路径）", () => {
     const s = new JsonStore(dir);
     s.appendHistory(entry("h1"));
-    expect(s.clearHistory()).toEqual([]);
+    s.appendHistory(entry("h2"));
+    expect(s.removeHistory(["h1", "h2"])).toEqual([]);
     expect(s.loadHistory()).toEqual([]);
-    // 清空是用户动作：不等合并窗口，盘上当下就是空的
     expect(JSON.parse(readFileSync(join(dir, "history.json"), "utf8"))).toEqual([]);
   });
 });

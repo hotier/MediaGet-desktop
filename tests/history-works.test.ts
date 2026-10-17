@@ -68,6 +68,28 @@ describe("groupWorks：解析行与下载行聚成一个作品", () => {
     expect(rows[0]).toMatchObject({ count: 2, kind: "image" });
     expect(rows[0].files).toEqual(["/tmp/1.jpg", "/tmp/2.jpg"]);
   });
+
+  it("发布时间与计数只有解析行有：同组里压着下载行也要穿过（导出吃这两个字段）", () => {
+    const withStat = parseHistoryEntry({
+      sourceUrl: SHARE,
+      platform: "kuaishou",
+      title: "秋日通勤",
+      fallbackId: "p-x",
+      at: 100,
+      publishedAt: 555,
+      stat: { view: 520000, like: 30 },
+    });
+    const [row] = groupWorks([fileRow("d1", 500), withStat]);
+    expect(row.publishedAt).toBe(555);
+    expect(row.stat).toEqual({ view: 520000, like: 30 });
+  });
+
+  it("v10 之前落的老行没记时间与计数：留空，不拿解析时间冒充发布时间", () => {
+    const [row] = groupWorks([parseRow(100)]);
+    expect(row.publishedAt).toBeUndefined();
+    expect(row.stat).toBeUndefined();
+    expect(row.createdAt).toBe(100);
+  });
 });
 
 describe("groupWorks：老记录与顺序", () => {

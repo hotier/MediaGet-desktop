@@ -21,6 +21,7 @@
  * 清理按钮的颗数跟搜索/平台走、不跟状态分段走：分段是「我在看哪一类」，清理是「这批结束的都要走」，两者不该互相牵制。
  */
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { ChevronDown, ChevronRight, Copy, DownloadCloud, FolderOpen, Info, Pause, Play, RotateCcw, Trash2, X } from "lucide-react";
 import { api } from "../lib/bridge";
 import { cn } from "../lib/utils";
@@ -49,7 +50,7 @@ import {
   TableHeader,
   TableRow,
 } from "../components/ui/table";
-import { Tooltip, TooltipContent, TooltipTrigger, TruncatedTooltip } from "../components/ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger, TruncatedTooltip, HintInfo } from "../components/ui/tooltip";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -91,6 +92,19 @@ interface GroupView extends TaskGroup {
 const ALL = "__all__";
 
 type StatusFilter = "all" | "active" | "done" | "error" | "canceled";
+type TimeRange = "all" | "today" | "7d" | "30d";
+
+/** 「今天」按自然日切；7/30 天按滚动 24h 窗口（记录量级下没人需要精确到零点） */
+const TIME_RANGES: Array<{ key: TimeRange; label: string; within: (ts: number, now: number) => boolean }> = [
+  { key: "all", label: "全部时间", within: () => true },
+  {
+    key: "today",
+    label: "今天",
+    within: (ts, now) => new Date(ts).toDateString() === new Date(now).toDateString(),
+  },
+  { key: "7d", label: "近 7 天", within: (ts, now) => now - ts <= 7 * 86_400_000 },
+  { key: "30d", label: "近 30 天", within: (ts, now) => now - ts <= 30 * 86_400_000 },
+];
 
 /** 分段是「文件状态」的桶（`paused` 归进行中——它就是暂停在那里的一组文件）；已取消与失败分开，重试动作不同 */
 const STATUS_FILTERS: Array<{ key: StatusFilter; label: string; match: (s: DownloadTaskView["status"]) => boolean }> = [
@@ -100,10 +114,6 @@ const STATUS_FILTERS: Array<{ key: StatusFilter; label: string; match: (s: Downl
   { key: "error", label: "失败", match: (s) => s === "error" },
   { key: "canceled", label: "已取消", match: (s) => s === "canceled" },
 ];
-
-/** 「已结束」= 不会再自己变的状态，清理只针对它们（与行内 canCancel 互为反面） */
-const isTerminal = (s: DownloadTaskView["status"]): boolean =>
-  s === "done" || s === "error" || s === "canceled";
 
 /** 行级移除：clear 的入参是数组，单行也包一颗。模块级引用，不随渲染重建 */
 const clearOne = (id: string): Promise<unknown> => api.download.clear([id]);
@@ -145,6 +155,7 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [query, setQuery] = useState("");
   const [platform, setPlatform] = useState("");
+  const [timeRange, setTimeRange] = useState<TimeRange>("all");
   const [toast, setToast] = useState<string>("");
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -187,7 +198,7 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
   /** groupId → 上一次的视图；筛选条件与组内任务引用都没变就复用同一个对象 */
   const viewCache = useRef(new Map<string, { key: string; view: GroupView }>());
 
-  const { rows, counts, clearable } = useMemo(() => {
+  const { rows, counts } = useMemo(() => {
     const byId = new Map<string, DownloadTaskView[]>();
     for (const t of tasks) {
       const g = byId.get(t.groupId);
@@ -196,16 +207,18 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
     }
     const q = query.trim().toLowerCase();
     const matchStatus = STATUS_FILTERS.find((f) => f.key === statusFilter)!.match;
+    const within = TIME_RANGES.find((f) => f.key === timeRange)!.within;
+    const now = Date.now();
     const inScope = (t: DownloadTaskView): boolean =>
       (platform === "" || t.platform === platform) &&
       (q === "" ||
         `${t.filename} ${t.title ?? ""} ${t.platform ?? ""} ${displayName(t.platform)} ${t.url} ${t.sourceUrl ?? ""}`
           .toLowerCase()
-          .includes(q));
-    const key = `${q}\u0000${statusFilter}\u0000${platform}`;
+          .includes(q)) &&
+      within(t.createdAt, now);
+    const key = `${q}\u0000${statusFilter}\u0000${platform}\u0000${timeRange}`;
     const nextCounts = Object.fromEntries(STATUS_FILTERS.map((f) => [f.key, 0])) as Record<StatusFilter, number>;
     const nextRows: GroupView[] = [];
-    const nextClearable: string[] = [];
     const cache = viewCache.current;
     for (const [groupId, groupTasks] of byId) {
       const prev = cache.get(groupId);
@@ -217,18 +230,18 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
       cache.set(groupId, { key, view });
       for (const f of STATUS_FILTERS)
         if (view.hits.some((t) => f.match(t.status))) nextCounts[f.key] += 1;
-      for (const t of view.hits) if (isTerminal(t.status)) nextClearable.push(t.taskId);
       if (view.visible.length > 0) nextRows.push(view);
     }
     // 队列里已经没有的组要从缓存退出去，否则清完队列缓存只进不出
     for (const id of [...cache.keys()]) if (!byId.has(id)) cache.delete(id);
-    return { rows: nextRows, counts: nextCounts, clearable: nextClearable };
-  }, [tasks, statusFilter, query, platform]);
+    return { rows: nextRows, counts: nextCounts };
+  }, [tasks, statusFilter, query, platform, timeRange]);
 
   function clearFilters(): void {
     setStatusFilter("all");
     setQuery("");
     setPlatform("");
+    setTimeRange("all");
   }
 
   /**
@@ -243,21 +256,6 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
       /* 状态竞争（已完成再取消等）忽略 */
     }
   }, []);
-
-  /**
-   * 批量清理：给的是当前筛选视图里的终态任务。`removed` 才是真被带走的颗数——
-   * 进行中就算被点名也会被主进程拒掉，所以播报照 removed 说，不报「清理完成」。
-   */
-  async function clearTerminal(): Promise<void> {
-    if (clearable.length === 0) return;
-    try {
-      const { removed } = await api.download.clear(clearable);
-      setTasks(await api.download.list());
-      setToast(`已清理 ${removed} 项`);
-    } catch {
-      setToast("清理失败，请稍后再试");
-    }
-  }
 
   const toggleGroup = useCallback((groupId: string): void => {
     setExpanded((prev) => {
@@ -288,29 +286,29 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
       {/* gap-0 同历史页：不让 Card 的 gap-4 在工具栏底线与表头之间垫出空带 */}
       <Card className="gap-0 py-0">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-2 py-1.5">
-          {STATUS_FILTERS.map((f) => (
-            <Button
-              key={f.key}
-              size="sm"
-              variant={statusFilter === f.key ? "default" : "outline"}
-              aria-pressed={statusFilter === f.key}
-              disabled={counts[f.key] === 0 && statusFilter !== f.key}
-              className="h-7 rounded-full px-3"
-              onClick={() => setStatusFilter(f.key)}
-            >
-              {f.label}
-              <span className="tabular-nums opacity-70">{counts[f.key]}</span>
-            </Button>
-          ))}
+          {/* 搜索框放最左，右边依次是状态/平台筛选 + 清理按钮（业主指令 2026-10-17） */}
+          <Input
+            ref={searchRef}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="搜索文件名 / 标题"
+            aria-label="搜索下载项"
+            className="h-8 w-52"
+          />
           <div className="ms-auto flex items-center gap-2">
-            <Input
-              ref={searchRef}
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="搜索文件名 / 标题"
-              aria-label="搜索下载项"
-              className="h-8 w-52"
-            />
+            <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+              <SelectTrigger size="sm" className="w-32" aria-label="按状态筛选">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {STATUS_FILTERS.map((f) => (
+                  <SelectItem key={f.key} value={f.key} disabled={counts[f.key] === 0 && statusFilter !== f.key}>
+                    {f.label}{" "}
+                    <span className="tabular-nums opacity-70">{counts[f.key]}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Select value={platform === "" ? ALL : platform} onValueChange={(v) => setPlatform(v === ALL ? "" : v)}>
               <SelectTrigger size="sm" className="w-36" aria-label="按平台筛选">
                 <SelectValue />
@@ -324,16 +322,19 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
                 ))}
               </SelectContent>
             </Select>
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 rounded-full px-3"
-              disabled={clearable.length === 0}
-              onClick={() => void clearTerminal()}
-            >
-              清理已结束
-              <span className="tabular-nums opacity-70">{clearable.length}</span>
-            </Button>
+            {/* 时间筛选：与历史页同口径，按创建时间过滤 */}
+            <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
+              <SelectTrigger size="sm" className="w-28" aria-label="按时间筛选">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {TIME_RANGES.map((f) => (
+                  <SelectItem key={f.key} value={f.key}>
+                    {f.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           </div>
         </div>
         {/* 只留 pb：pt 会把表头顶离工具栏底线，那 4px 又变成「表头比内容行高」 */}
@@ -616,7 +617,15 @@ const TaskRow = memo(function TaskRow({
 }): React.ReactElement {
   const action = rowAction(t, onAct);
   const canCancel = t.status === "queued" || t.status === "downloading" || t.status === "paused";
-  const copy = (text: string) => void navigator.clipboard.writeText(text);
+  // 复制走主进程代发（契约 v11）：renderer 的 `navigator.clipboard` 被「所有权限请求一律拒」
+  // 的权限钩子挡死，此前这三枚右键动作点了毫无回执。回执用浮空 toast 而不是页内 ToastLine——
+  // 后者在内容流里，会为一句「已复制」把整张队列表往下顶。
+  const copy = (text: string): void => {
+    void api.app
+      .copyText(text)
+      .then(() => toast.success("已复制"))
+      .catch(() => toast.error("复制失败"));
+  };
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
@@ -632,6 +641,9 @@ const TaskRow = memo(function TaskRow({
               <TruncatedTooltip label={t.error ?? t.filename}>
                 <span className="min-w-0 truncate">{t.filename}</span>
               </TruncatedTooltip>
+              {/* 「这一行刚刚自己动过」收进 info 图标（契约 v12 的 note）：常驻一列说明会把
+                  状态列撑破，而这条信息只在想知道「为什么它重试过」时才需要读 */}
+              {t.note && <HintInfo text={t.note} />}
             </div>
           </TableCell>
           <TableCell className={COL.status}>
@@ -705,10 +717,12 @@ const TaskRow = memo(function TaskRow({
           查看作品信息
         </ContextMenuItem>
         <ContextMenuSeparator />
-        <ContextMenuItem onSelect={() => copy(t.url)}>
-          <Copy />
-          复制下载链接
-        </ContextMenuItem>
+        {t.url && (
+          <ContextMenuItem onSelect={() => copy(t.url)}>
+            <Copy />
+            复制下载链接
+          </ContextMenuItem>
+        )}
         {t.status === "done" && t.filePath && (
           <ContextMenuItem onSelect={() => copy(t.filePath!)}>
             <Copy />

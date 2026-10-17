@@ -22,7 +22,11 @@ function makeDownloader(
   dir: string,
   fetchImpl: typeof fetch,
   maxConcurrent = 3,
-  tuning?: { stallTimeoutMs?: number; retryBaseDelayMs?: number }
+  tuning?: {
+    stallTimeoutMs?: number;
+    retryBaseDelayMs?: number;
+    renewUrl?: (failedUrl: string, sourceUrl?: string) => Promise<string | null>;
+  }
 ) {
   const events: DownloadTaskView[] = [];
   const history: { groupTask: DownloadTaskView; files: string[] }[] = [];
@@ -467,7 +471,11 @@ describe("Downloader 正确性收口", () => {
  * paused/error 照旧回来等用户处置（它们带着可点的动作）。
  */
 describe("Downloader 清理与恢复", () => {
-  const seeded = (id: string, status: PersistedQueueLike["status"]): PersistedQueueLike => ({
+  const seeded = (
+    id: string,
+    status: PersistedQueueLike["status"],
+    extra: Partial<PersistedQueueLike> = {}
+  ): PersistedQueueLike => ({
     taskId: id,
     groupId: "g-h",
     url: `https://cdn.example.com/${id}.mp4`,
@@ -477,6 +485,7 @@ describe("Downloader 清理与恢复", () => {
     total: 10,
     createdAt: 1,
     status,
+    ...extra,
   });
 
   /** ok 一次给完；bad 永远 404；hang 一块都不给，但听 abort（否则取消要等到空闲超时） */
@@ -553,13 +562,162 @@ describe("Downloader 清理与恢复", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("restore：done 与 canceled 不复活，paused/error 留在队列", () => {
+  // v13 起队列是全量台账（业主指令 2026-10-17「保留所有进过队列的数据」）。
+  // 这几条钉的是「终态行能不能被如实还原」——缺任一个字段，界面上就是一个会点空的按钮。
+  it("restore：进过队列的行全部回来，终态只是台账不会自己开跑", () => {
     const dir = makeTempDir();
     const { dl } = makeDownloader(dir, triFetch(), 1, { retryBaseDelayMs: 10 });
-    dl.restore([seeded("p1", "paused"), seeded("e1", "error"), seeded("x1", "canceled"), seeded("d1", "done")]);
-    const back = dl.list().map((t) => t.taskId);
-    expect(back).toEqual(["p1", "e1"]); // 顺序按 createdAt，这里同为 1 → 保持入参序
-    expect(dl.list().map((t) => t.status)).toEqual(["paused", "error"]);
+    dl.restore([
+      seeded("p1", "paused"),
+      seeded("e1", "error", { error: "HTTP 403 Forbidden" }),
+      seeded("x1", "canceled"),
+      seeded("d1", "done", { filePath: join(dir, "d1(1).mp4"), finishedAt: 777, url: "" }),
+      // 旧档（v13 之前）没有 filePath：这时才按「目录 + 文件名」兜一个
+      seeded("d2", "done", { finishedAt: 888, url: "" }),
+    ]);
+    // 同为 createdAt=1 → 稳定排序保持入参序；pump 只挑 queued，所以五条都没开始动
+    expect(dl.list().map((t) => t.taskId)).toEqual(["p1", "e1", "x1", "d1", "d2"]);
+    expect(dl.list().map((t) => t.status)).toEqual(["paused", "error", "canceled", "done", "done"]);
+    // 原因文本跟着档回来：旧实现无条件 error: undefined，重启后是一条「不知道为什么失败」的失败
+    expect(dl.list().find((t) => t.taskId === "e1")?.error).toBe("HTTP 403 Forbidden");
+    const d1 = dl.list().find((t) => t.taskId === "d1");
+    // 冲突避让后落的是 d1(1).mp4，按目录+名重算会指到一个从没落地的文件
+    expect(d1?.filePath).toBe(join(dir, "d1(1).mp4"));
+    expect(d1?.finishedAt).toBe(777);
+    expect(dl.list().find((t) => t.taskId === "d2")?.filePath).toBe(join(dir, "d2.mp4"));
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("snapshot：终态三件套落盘，done 行剥掉直链、还能续的状态留链", () => {
+    const dir = makeTempDir();
+    const { dl } = makeDownloader(dir, triFetch(), 1, { retryBaseDelayMs: 10 });
+    dl.restore([
+      seeded("d1", "done", { filePath: join(dir, "d1.mp4"), finishedAt: 5 }),
+      seeded("e1", "error", { error: "下载超时：30 秒没有收到新数据" }),
+      seeded("x1", "canceled"),
+    ]);
+    const snap = dl.snapshot();
+    // 隐私红线「队列不保留直链 URL」：队列从短命快照变成长期档之后，靠这句守住
+    expect(snap.find((s) => s.taskId === "d1")?.url).toBe("");
+    expect(snap.find((s) => s.taskId === "d1")?.filePath).toBe(join(dir, "d1.mp4"));
+    expect(snap.find((s) => s.taskId === "d1")?.finishedAt).toBe(5);
+    // error / canceled 都还能 resume，链一剥就等于把这两个动作废了
+    expect(snap.find((s) => s.taskId === "e1")?.url).toContain("cdn.example.com");
+    expect(snap.find((s) => s.taskId === "e1")?.error).toBe("下载超时：30 秒没有收到新数据");
+    expect(snap.find((s) => s.taskId === "x1")?.url).toContain("cdn.example.com");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("异常文本再长也只落 300 字符（写流错误会带本机路径，不灌进长期档）", () => {
+    const dir = makeTempDir();
+    const { dl } = makeDownloader(dir, triFetch(), 1, { retryBaseDelayMs: 10 });
+    dl.restore([seeded("e1", "error", { error: "E".repeat(500) })]);
+    const e1 = dl.snapshot().find((s) => s.taskId === "e1");
+    expect(e1?.error).toHaveLength(300); // 与 PersistedQueueTaskSchema 的 STR.max(300) 同口径
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/**
+ * 直链到期（HTTP 403）的自愈（契约 v12）。业主的问题是「这类情况静默重试会不会好一点」——
+ * 答案是：403 是唯一硬证据，所以反应式处理而不是提前预防。这四条钉住四条边界：
+ * 认得出就换链跑完、认不出就照原样报错、一次为限不许循环、换链不许把断点清空。
+ */
+describe("Downloader 403 自动续链", () => {
+  const OLD = "https://cdn.example.com/v.mp4?video_id=1&sign=S1&expires=100";
+  const NEW = "https://cdn.example.com/v.mp4?video_id=1&sign=S2&expires=200";
+  const SOURCE = "https://v.douyin.com/abc/";
+  const dead = () => new Response(null, { status: 403 });
+
+  it("换一条新链跑完：url 落地是新链，note 说明这一行刚自己动过", async () => {
+    const dir = makeTempDir();
+    const bytes = new TextEncoder().encode("FRESH-LINK");
+    const seen: [string, string | undefined][] = [];
+    const { dl, events } = makeDownloader(
+      dir,
+      async (input) => (String(input) === OLD ? dead() : fakeResponse(bytes)),
+      3,
+      {
+        retryBaseDelayMs: 10,
+        renewUrl: async (failedUrl, sourceUrl) => {
+          seen.push([failedUrl, sourceUrl]);
+          return NEW;
+        },
+      }
+    );
+    const [taskId] = dl.enqueue([{ url: OLD, filename: "v.mp4", kind: "video" }], "r1", { sourceUrl: SOURCE });
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "done"), 8000);
+
+    // 交给续链的是「失败那条 + 这个作品的链接」，不是别的任务的链
+    expect(seen).toEqual([[OLD, SOURCE]]);
+    expect(dl.list().find((t) => t.taskId === taskId)?.url).toBe(NEW);
+    expect(readFileSync(join(dir, "v.mp4"), "utf8")).toBe("FRESH-LINK");
+    expect(events.at(-1)?.note).toBe("直链已过期，已自动重新取链");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("认不出对象（返回 null）→ 不写 note，报错与原来一模一样", async () => {
+    const dir = makeTempDir();
+    const { dl, events } = makeDownloader(dir, async () => dead(), 3, {
+      retryBaseDelayMs: 10,
+      renewUrl: async () => null,
+    });
+    const [taskId] = dl.enqueue([{ url: OLD, filename: "v.mp4", kind: "video" }], "r2", { sourceUrl: SOURCE });
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "error"), 8000);
+    expect(dl.list().find((t) => t.taskId === taskId)?.error).toBe("HTTP 403");
+    expect(events.every((e) => e.note === undefined)).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("一次为限：新链也 403 也不会再解析第二次（下架的作品不该被反复捶）", async () => {
+    const dir = makeTempDir();
+    let calls = 0;
+    const { dl } = makeDownloader(dir, async () => dead(), 3, {
+      retryBaseDelayMs: 10,
+      renewUrl: async () => {
+        calls++;
+        return `${NEW}&attempt=${calls}`; // 每次都给一条不同的链，排除「返回同一条」的干扰
+      },
+    });
+    const [taskId] = dl.enqueue([{ url: OLD, filename: "v.mp4", kind: "video" }], "r3", { sourceUrl: SOURCE });
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "error"), 8000);
+    expect(calls).toBe(1);
+    expect(dl.list().find((t) => t.taskId === taskId)?.error).toBe("HTTP 403");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("续链只换签名不换资源：.part 断点保留，从已收字节接着下", async () => {
+    const dir = makeTempDir();
+    // 上一轮留下的半成品 + 身份（meta 记的还是那条死链）
+    writeFileSync(join(dir, "v.mp4.part"), "HEAD");
+    writeFileSync(join(dir, "v.mp4.part.meta"), OLD);
+    const tail = new TextEncoder().encode("TAIL");
+    let range: string | null = null;
+    const { dl } = makeDownloader(
+      dir,
+      async (input, init) => {
+        const h = new Headers(init?.headers);
+        if (String(input) === OLD) return dead();
+        range = h.get("range");
+        // 认下 Range 才给 206：内容 = 缺的那一段，总长跟着 start 相加
+        return new Response(tail as unknown as BodyInit, {
+          status: 206,
+          headers: { "content-length": String(tail.byteLength), "content-range": `bytes 4-7/8` },
+        });
+      },
+      3,
+      {
+        retryBaseDelayMs: 10,
+        renewUrl: async () => NEW,
+      }
+    );
+    const [taskId] = dl.enqueue([{ url: OLD, filename: "v.mp4", kind: "video" }], "r4", { sourceUrl: SOURCE });
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "done"), 8000);
+    // 没有那次 meta 同步，这里会变成 `bytes=0-`：用户看到进度从 4 字节跳回 0
+    expect(range).toBe("bytes=4-");
+    expect(dl.list().find((t) => t.taskId === taskId)?.received).toBe(8);
+    expect(readFileSync(join(dir, "v.mp4"), "utf8")).toBe("HEADTAIL");
+    expect(existsSync(join(dir, "v.mp4.part.meta"))).toBe(false);
     rmSync(dir, { recursive: true, force: true });
   });
 });

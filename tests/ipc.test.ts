@@ -49,6 +49,9 @@ function harness(opts: { forceMode?: KernelMode } = {}) {
           url: "https://cdn-direct.example.com/a.mp4?sign=SECRET",
           title: "快手作品",
           author: "测试作者",
+          // 秒级发布时刻 + stat 计数：与真内核各平台的填法同构，用来钉「归一后落盘」这条链
+          time: 1759000000,
+          stat: { view: 520000, like: 30, favorite: 9 },
         },
       }),
     }),
@@ -97,6 +100,9 @@ function harness(opts: { forceMode?: KernelMode } = {}) {
   });
   // 真计数器（内存档）：stats:get 的出参形状由 validateOutputs 顺带守住，造假桩等于放弃这条保障
   const stats = createStats({ load: () => null, save: () => {} });
+  // 剪贴板写入的捕获点：真实现是 Electron 的 `clipboard`（测试环境没有），这里收的就是
+  // handler 真正交出去的那串字符 —— 下面的用例靠它验「文本原样到、被拒的那次没落到写入」。
+  const clipboardWrites: string[] = [];
   registerIpc({
     ipcMain: fakeIpc,
     engine,
@@ -105,6 +111,7 @@ function harness(opts: { forceMode?: KernelMode } = {}) {
     getAppMeta: () => ({ version: "0.0.0-test", electron: "44" }),
     kernelMode: () => "local",
     getFonts: async () => ["Arial", "Segoe UI", "微软雅黑"],
+    writeClipboard: (text) => clipboardWrites.push(text),
     logger,
     cache,
     stats,
@@ -118,7 +125,7 @@ function harness(opts: { forceMode?: KernelMode } = {}) {
     if (!h) throw new Error(`no handler for ${channel}`);
     return h({}, input);
   };
-  return { call, store, dir, logger, cache, netCache, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  return { call, store, dir, logger, cache, netCache, clipboardWrites, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 
 describe("IPC 信封与校验", () => {
@@ -492,6 +499,22 @@ describe("IPC 信封与校验", () => {
     cleanup();
   });
 
+  it("app:copyText 文本原样交给主进程；空串与超限在写入之前就被拒（v11）", async () => {
+    const { call, clipboardWrites, cleanup } = harness();
+    const text = "标题：示例视频\n作者：小满";
+    const r = await call(IPC.appCopyText, { text });
+    expect(r.ok && r.data).toEqual({ ok: true });
+    expect(clipboardWrites).toEqual([text]);
+    // 空串＝「复制不到东西」，超限＝renderer 被攻破后拿通道灌巨串：两次都不许落到写入
+    for (const bad of [{ text: "" }, { text: "x".repeat(200_001) }]) {
+      const r = await call(IPC.appCopyText, bad);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe("bad-input");
+    }
+    expect(clipboardWrites).toHaveLength(1);
+    cleanup();
+  });
+
   it("settings:set 拒绝未知字段（strict schema）", async () => {
     const { call, cleanup } = harness();
     const r = await call(IPC.settingsSet, { evilField: 1 });
@@ -560,6 +583,9 @@ describe("IPC 信封与校验", () => {
       files: [],
     });
     expect(list[0].author?.name).toBe("测试作者");
+    // v10：发布时间归一到毫秒、计数按档位落盘 —— 导出要的「完整作品信息」就在这一行里
+    expect(list[0].publishedAt).toBe(1759000000000);
+    expect(list[0].stat).toEqual({ view: 520000, like: 30, favorite: 9 });
     // 历史页/首页「最近解析」读的是同一条通道：这里必须已经是 1 行而不是 0 行
     const listed = await call(IPC.historyList, { limit: 5 });
     expect(listed.ok && (listed.data as unknown[]).length).toBe(1);
@@ -591,16 +617,6 @@ describe("IPC 信封与校验", () => {
     expect(outcome.result.code).toBe(200);
     expect(outcome.via).toBe("mock");
     expect(store.loadHistory()).toEqual([]);
-    cleanup();
-  });
-
-  it("history:clear 真正落盘（回归：不得注册占位假实现）", async () => {
-    const { call, store, cleanup } = harness();
-    store.appendHistory({ id: "h1", files: ["/tmp/x.mp4"], createdAt: Date.now() });
-    expect(store.loadHistory().length).toBe(1);
-    const r = await call(IPC.historyClear);
-    expect(r.ok).toBe(true);
-    expect(store.loadHistory().length).toBe(0);
     cleanup();
   });
 });

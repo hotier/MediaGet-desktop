@@ -135,7 +135,6 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
           },
         ];
       },
-      clearHistory: () => {},
       // parse:run 成功时写一条解析历史（files 为空）。这条链的真实语义归 history-record.test.ts，
       // 这里只要「handler 调得到、返回值不影响出参校验」。
       upsertHistory: () => [],
@@ -163,6 +162,8 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
       ],
     }),
     getFonts: async () => ["Arial", "微软雅黑"],
+    /** 剪贴板写入在契约测试里只是「调得到」：真写入归 Electron，桩在这里不验内容 */
+    writeClipboard: () => {},
     /**
      * 日志/缓存两个服务在契约测试里只要「形状真」：轮转、按天清理、避让活断点
      * 这些行为归 logger.test.ts / cache.test.ts 管，这里守的是通道登记与信封。
@@ -218,6 +219,8 @@ const BAD_INPUT: Record<string, unknown> = {
   [IPC.appLog]: { level: "off", message: "x" },
   // openExternal 只放行 http/https：file:// 之类是提权动作，必须拒
   [IPC.appOpenExternal]: { url: "file:///C:/Windows/system32/cmd.exe" },
+  // 空串不算「复制」：点了复制却什么都进不去，界面无从表达，必须在契约层就拒掉
+  [IPC.appCopyText]: { text: "" },
 };
 
 /** 每个通道的一份合法调用（无入参通道传 undefined） */
@@ -242,6 +245,7 @@ const GOOD_INPUT: Record<string, unknown> = {
   [IPC.appCacheClear]: { keys: ["net", "logs"] },
   [IPC.appLog]: { level: "error", message: "渲染层炸了一处" },
   [IPC.appOpenExternal]: { url: "https://www.bilibili.com/video/BV1xx411c7mD" },
+  [IPC.appCopyText]: { text: "标题：示例视频" },
 };
 
 /** CONTRACT 的键是字面量通道名，测试里按 string 索引需要这一层 widening */

@@ -83,6 +83,8 @@ describe("parseHistoryEntry：解析成功 → 未下载态的历史行", () => 
 
   it("字段是封闭集：新增键要过这条用例，直链想搭车必须先被看见", () => {
     const row = parseHistoryEntry(base);
+    // v10 加的 `publishedAt` / `stat` 是这一条显式放行的：只有公开数字与时刻，
+    // 直链（`data.url` / `images[]` / `qualities[].url`）依旧无处搭车 —— 见下面那条用例。
     expect(Object.keys(row).sort()).toEqual([
       "author",
       "createdAt",
@@ -90,7 +92,9 @@ describe("parseHistoryEntry：解析成功 → 未下载态的历史行", () => 
       "groupId",
       "id",
       "platform",
+      "publishedAt",
       "sourceUrl",
+      "stat",
       "title",
     ]);
   });

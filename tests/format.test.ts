@@ -8,7 +8,7 @@ import { fmtCreated, fmtEta } from "../renderer/src/lib/format";
 const at = (y: number, m: number, d: number, h = 0, mi = 0, s = 0): number =>
   new Date(y, m - 1, d, h, mi, s).getTime();
 
-describe("fmtCreated（历史页创建时间列）", () => {
+describe("fmtCreated（历史页解析时间列）", () => {
   it("当天 → 今天，且始终到秒、个位数补零", () => {
     expect(fmtCreated(at(2026, 10, 15, 9, 5, 3), at(2026, 10, 15, 12, 0, 0))).toBe("今天 09:05:03");
     expect(fmtCreated(at(2026, 10, 15, 23, 59, 59), at(2026, 10, 15, 23, 59, 59))).toBe("今天 23:59:59");
