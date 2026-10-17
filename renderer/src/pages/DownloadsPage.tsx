@@ -684,16 +684,6 @@ const TaskRow = memo(function TaskRow({
                   取消
                 </Button>
               )}
-              {t.status === "done" && t.filePath && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 px-2 text-sm"
-                  onClick={() => void api.app.showInFolder(t.filePath!)}
-                >
-                  位置
-                </Button>
-              )}
             </div>
           </TableCell>
         </TableRow>
