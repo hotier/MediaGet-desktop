@@ -12,7 +12,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { AlertTriangle, ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, ExternalLink } from "lucide-react";
 import { api } from "../lib/bridge";
 import {
   buildPlan,
@@ -22,8 +22,6 @@ import {
   type FilenameExtra,
   type FilenamePreset,
   type QualityStrategy,
-  type ResourceShape,
-  SHAPE_LABEL,
 } from "../lib/download-plan";
 import { fmtClock, fmtCount, fmtDuration } from "../lib/format";
 import { buildAuthorSnapshot } from "../../../shared/author";
@@ -210,13 +208,12 @@ export function ResultCard({
   const images = (data?.images ?? []).filter(Boolean);
   const stats = buildStatItems(data);
   const shape = deriveShape(data);
-  const [detailsOpen, setDetailsOpen] = useState(false);
 
   return (
     <>
       <Card>
-        <CardContent className="flex flex-col gap-4 py-4">
-          {/* —— 第一眼：这是什么（封面 + 标题 + 平台）—— */}
+        <CardContent className="flex flex-col gap-3 py-4">
+          {/* —— 第一眼：封面 + 标题（平台图标在标题左边）—— */}
           <div className="flex gap-3">
             {data?.cover && (
               <img
@@ -228,34 +225,19 @@ export function ResultCard({
             )}
             <div className="flex min-w-0 flex-1 flex-col gap-1.5">
               <TruncatedTooltip label={data?.title || data?.desc || "（无标题）"}>
-                <h2 className="truncate font-semibold text-[15px]">{data?.title || data?.desc || "（无标题）"}</h2>
+                <h2 className="truncate font-semibold text-[15px]">
+                  {platformName && (
+                    <span className="inline-flex items-center gap-1.5 me-1">
+                      <PlatformIcon platform={result.platform} />
+                    </span>
+                  )}
+                  {data?.title || data?.desc || "（无标题）"}
+                </h2>
               </TruncatedTooltip>
-              <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                <Badge variant="secondary">{SHAPE_LABEL[shape]}</Badge>
-                {platformName && (
-                  <Badge variant="outline" className="gap-1.5 ps-1">
-                    <PlatformIcon platform={result.platform} />
-                    {platformName}
-                  </Badge>
-                )}
-              </div>
-              {/* 次要信息收进可折叠区 */}
-              <button
-                type="button"
-                onClick={() => setDetailsOpen((v) => !v)}
-                className="self-start text-xs text-muted-foreground hover:text-foreground outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-              >
-                {detailsOpen ? "收起详情" : "查看详情"}
-              </button>
-            </div>
-          </div>
-
-          {/* —— 详情区：作者/统计/时长/描述/音乐 —— */}
-          {detailsOpen && (
-            <div className="flex flex-col gap-2 rounded-md bg-muted/30 px-3 py-2.5 text-xs">
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-muted-foreground">
+              {/* 视频详细直接展示，不做收起展开 */}
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
                 {data?.author && (
-                  <span className="inline-flex items-center gap-1.5">
+                  <span className="inline-flex items-center gap-1">
                     {data.avatar && (
                       <img
                         src={data.avatar}
@@ -272,100 +254,72 @@ export function ResultCard({
                     {Math.round(data.duration > 100000 ? data.duration / 1000 : data.duration)}s
                   </span>
                 )}
-                {data?.type && !(TYPE_COVERED_BY_SHAPE[data.type] ?? []).includes(shape) && (
-                  <Badge variant="secondary">{typeLabel(data.type)}</Badge>
-                )}
+                {stats.length > 0 && stats.slice(0, 2).map((s) => (
+                  <span key={s.label} className="tabular-nums">
+                    {s.label}{s.value}
+                  </span>
+                ))}
               </div>
-              {stats.length > 0 && (
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 tabular-nums text-muted-foreground">
-                  {stats.map((s) => (
-                    <span key={s.label}>
-                      {s.label} {s.value}
-                    </span>
-                  ))}
-                  {data?.statsUnreliable && (
-                    <Badge variant="warn" className="gap-1">
-                      <AlertTriangle />
-                      数据可能不准
-                    </Badge>
-                  )}
-                </div>
+            </div>
+          </div>
+
+          {/* —— 形态专属区块：直接展示 —— */}
+          {shape === "gallery" && <GalleryBlock images={images} onPreview={setPreviewIdx} />}
+
+          {shape === "audio" && (
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-3 py-2 text-xs">
+              {data?.music?.author && (
+                <span className="font-medium">
+                  ♪ {data.music.author}
+                  {data.music.title ? ` - ${data.music.title}` : ""}
+                </span>
               )}
-              {(data?.music?.author || data?.core) && (
-                <p className="text-muted-foreground">
-                  {data.music?.author && `♪ ${data.music.author}${data.music.title ? ` - ${data.music.title}` : ""}`}
-                  {data.core && (data.music?.author ? ` · 高潮片段 ${data.core}` : `高潮片段 ${data.core}`)}
-                </p>
-              )}
-              {data?.desc && data.desc !== data.title && (
-                <TruncatedTooltip label={data.desc} contentClassName="max-w-96">
-                  <p className="line-clamp-3 leading-relaxed text-muted-foreground">{data.desc}</p>
-                </TruncatedTooltip>
+              {data?.lyrics && (
+                <button
+                  type="button"
+                  onClick={() => setLyricsOpen((v) => !v)}
+                  className="text-muted-foreground underline-offset-2 hover:underline"
+                >
+                  {lyricsOpen ? "收起歌词" : "查看歌词"}
+                </button>
               )}
             </div>
           )}
+          {shape === "audio" && lyricsOpen && data?.lyrics && (
+            <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+              {data.lyrics}
+            </pre>
+          )}
 
-          {/* —— 形态专属区块：收进详情区 —— */}
-          {detailsOpen && (
-            <>
-              {shape === "gallery" && <GalleryBlock images={images} onPreview={setPreviewIdx} />}
+          {shape === "multi-video" && (
+            <ol className="flex flex-col gap-1.5">
+              {(data?.videos ?? []).map((v, i) => (
+                <li key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] tabular-nums">
+                    {i + 1}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{v.title || `分 P ${i + 1}`}</span>
+                  {v.durationFormat && <span className="shrink-0 tabular-nums">{v.durationFormat}</span>}
+                </li>
+              ))}
+            </ol>
+          )}
 
-              {shape === "audio" && (
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-3 py-2 text-xs">
-                  {data?.music?.author && (
-                    <span className="font-medium">
-                      ♪ {data.music.author}
-                      {data.music.title ? ` - ${data.music.title}` : ""}
-                    </span>
-                  )}
-                  {data?.lyrics && (
-                    <button
-                      type="button"
-                      onClick={() => setLyricsOpen((v) => !v)}
-                      className="text-muted-foreground underline-offset-2 hover:underline"
-                    >
-                      {lyricsOpen ? "收起歌词" : "查看歌词"}
-                    </button>
-                  )}
-                </div>
-              )}
-              {shape === "audio" && lyricsOpen && data?.lyrics && (
-                <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-                  {data.lyrics}
-                </pre>
-              )}
-
-              {shape === "multi-video" && (
-                <ol className="flex flex-col gap-1.5">
-                  {(data?.videos ?? []).map((v, i) => (
-                    <li key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] tabular-nums">
-                        {i + 1}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate">{v.title || `分 P ${i + 1}`}</span>
-                      {v.durationFormat && <span className="shrink-0 tabular-nums">{v.durationFormat}</span>}
-                    </li>
-                  ))}
-                </ol>
-              )}
-
-              {shape === "text" && (
-                <div className="flex flex-col gap-2 rounded-md border border-dashed border-border px-3 py-4 text-center">
-                  <p className="text-xs text-muted-foreground">纯文字内容，没有可下载的文件</p>
-                  <div className="flex flex-wrap items-center justify-center gap-2">
-                    <Button size="sm" variant="outline" onClick={() => void copyText(data?.title ?? data?.desc ?? "")}>
-                      复制文字
-                    </Button>
-                    {sourceUrl && (
-                      <Button size="sm" variant="outline" onClick={() => void openExternal(sourceUrl)}>
-                        <ExternalLink />
-                        打开原页面
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </>
+          {shape === "text" && (
+            <div className="flex flex-col gap-2 rounded-md border border-dashed border-border px-3 py-4 text-center">
+              <p className="text-xs text-muted-foreground">纯文字内容，没有可下载的文件</p>
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => void copyText(data?.title ?? data?.desc ?? "")}>
+                  复制文字
+                </Button>
+                {sourceUrl && (
+                  <Button size="sm" variant="outline" onClick={() => void openExternal(sourceUrl)}>
+                    <ExternalLink />
+                    打开原页面
+                  </Button>
+                )}
+              </div>
+            </div>
           )}
 
           {/* —— 操作区：与上方信息拉开 —— */}
@@ -551,30 +505,6 @@ function ViaBadge({ via }: { via: "local" | "online" | "mock" }): React.ReactEle
   return <Badge variant={via === "local" ? "ok" : via === "online" ? "warn" : "secondary"}>{label}</Badge>;
 }
 
-/** 契约里的 type 是英文枚举，界面不能直接把枚举值当文案（未知值原样显示，便于排查新平台） */
-const TYPE_LABEL: Record<string, string> = {
-  video: "视频",
-  image: "图集",
-  music: "音乐",
-  text: "文字",
-};
-
-function typeLabel(type: string): string {
-  return TYPE_LABEL[type] ?? type;
-}
-
-/**
- * 契约 type → 它已被哪些形态徽标覆盖（覆盖了就不再重复显示 type 徽标）。
- *
- * 注意 type 是平台各填的、不可靠（实测抖音图集会填 text），所以这里只用来**去重**，
- * 绝不参与形态判定（那是 deriveShape 按实际媒体数组算的）。
- * music 故意不入表：形态里没有「音乐」，它的信息不能被吞掉。
- */
-const TYPE_COVERED_BY_SHAPE: Record<string, ResourceShape[]> = {
-  video: ["single-video", "multi-video"],
-  image: ["gallery", "multi-video"],
-  text: ["text"],
-};
 
 /** 图集形态的主视觉：缩略网格 + 大图预览（Radix Dialog 接管 Esc 与焦点） */
 function GalleryBlock({
