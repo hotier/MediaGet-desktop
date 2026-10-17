@@ -553,7 +553,7 @@ export default function HistoryPage({
                         表头那枚吃同一条规则（他二次修订「标题行的选中框也需要遵循这个规则，
                         不能常驻显示」），所以常态整张表一颗框都不占屏。
                         代价如实记一笔：`invisible` 会把框移出 Tab 顺序，键盘用户只能走 Ctrl+A / Esc。 */}
-                    <span className={cn("flex items-center", sel.keys.length > 0 ? "visible" : "invisible group-hover:visible")}>
+                    <span className={cn("flex items-center group", sel.keys.length > 0 ? "visible" : "invisible group-hover:visible")}>
                       <Checkbox
                         checked={isSelected(sel, r.key)}
                         // 与 Ctrl+点同一个 clickToggle：所以点框选完接着 Shift 点还能扩范围，
@@ -561,7 +561,7 @@ export default function HistoryPage({
                         onCheckedChange={() => setSel((s) => clickToggle(s, visibleKeys, i))}
                         onClick={(e) => e.stopPropagation()}
                         aria-label={`选择 ${r.title}`}
-                        className="hover:border-foreground/50"
+                        className="group-hover:border-foreground/50"
                       />
                     </span>
                   </TableCell>
