@@ -1,5 +1,5 @@
 /**
- * 历史页：**解析**历史清单（作品 / 作者 / 类型 / 文件数 / 创建时间）。
+ * 历史页：**解析**历史清单（作品 / 作者 / 类型 / 文件数 / 解析时间）。
  * 一条记录在解析成功时就写进历史（业主指令 2026-10-17），下不下载都在 —— 所以这一页不是下载台账：
  * 「文件数」那列写「未下载」的行就是只解析过、还没落地任何文件的作品。
  * 分工（2026-10-14）：本页只讲「哪个作品」——平台、标题、作者、类型、文件数、来源链接；
@@ -11,18 +11,27 @@
  * 作者列显示的是解析那一刻的快照（点昵称开卡片）；客户端不拉实时主页，
  * 所以粉丝量停在记录当天，这是设计而非缺陷。
  * 行 = 作品：同 groupId（= 分享链接算出的作品键，见 shared/history.ts）的解析行与下载行聚合成一行，
- * 图集的多文件同样一行。旧记录缺 kind/sourceUrl/author（本版本前写入）显示「—」优雅降级；
+ * 图集的多文件同样一行。旧记录缺 kind/sourceUrl/author/publishedAt/stat（本版本前写入）显示「—」优雅降级；
  * 不存媒体直链（§3 隐私）。
  * 行 = 作品的入口（业主指令 2026-10-15）：点行从底部弹出该作品的详细信息浮层，
  * 开着时点别的行直接换成那个作品、点当前这行收起；
  * 队列页右键「查看作品信息」跳到本页并定位高亮对应行。
  * 多选（业主指令 2026-10-15，spec：docs/superpowers/specs/2026-10-15-history-multiselect-design.md）：
  * Ctrl/⌘+点切换、Shift+点范围、Ctrl+A 全选可见、Esc 清空 —— 无修饰点行照旧开详情，两者不打架。
- * 入口在 10-17 改成**可见的**（业主指令「加可见勾选框 + 表头全选」，推翻 spec 里「勾选框列：不做」）：
- * 首列一枚勾选框，表头那枚是三态（部分选中必须显示成半勾 —— 画成勾则下次点击变清空）。
+ * 入口在 10-17 改成**可见的**（业主指令「加可见勾选框 + 表头全选」，推翻 spec 里「勾选框列：不做」），
+ * 同日再收一档（业主指令「正常状态下隐藏多选框」「标题行的选中框也遵循这个规则，不能常驻显示」）：
+ * 表头那枚与行内那枚**同一条显隐规则**——常态不显、鼠标落到哪一行（含表头行）哪一行显、
+ * 一旦有选中就全显。三态本身照旧：部分选中必须显示成半勾，画成勾则下次点击变清空。
  * 勾选框走的是与 Ctrl+点**同一个** clickToggle，所以点框选完还能接着 Shift 扩展范围，一条真源。
- * 选中 ≥1 行时动作条以**浮窗**停在窗口底部（业主指令 2026-10-17「不要占位」，工具栏不再被它换掉）：
- * 复制 / 导出 txt / 导出 CSV / 重新解析 / 移除记录（二次确认）· 取消选择。
+ * 选中 ≥1 行时动作条以**浮窗**停在窗口底部（业主指令 2026-10-17「不要占位」）：
+ * 导出（弹格式窗：xlsx / csv / json / txt）· 重新解析 / 移除记录（二次确认）· 取消选择。
+ * 「复制」与「导出 txt / 导出 CSV」那三枚在 10-17 撤了（业主指令）：单条复制仍走详情浮层，
+ * 批量侧只留一枚「导出」，格式在弹窗里单选（默认 CSV）。
+ * 导出带的是**完整作品信息**（业主指令 2026-10-17）：发布时间 + 八档互动计数 + 作者 ID/主页/粉丝关注获赞投稿。
+ * 界面那一行**不加**这两类列（同日裁定「只在导出不进界面」），表头那一列因此改名「解析时间」——
+ * 它是本机记下这条的时刻，与作品在平台上的「发布时间」是两件事，都叫「时间」就分不清谁是谁。
+ * 工具栏右侧不放按钮：「清空历史」与 `history:clear` 通道同日一起撤了（契约 v9），
+ * 整表清空走「表头全选 → 移除记录」，走的是同一条 history:remove。
  * 底部那条带一次只放一层：详情浮层开着时浮窗让位（只让可见性，选择集不动），收起浮层即回来。
  * 「移除记录」不写成「删除」是刻意的：它只撤台账那一行，磁盘上的文件不动，按钮得说它做的事。
  * 重新解析 = 把选中作品的分享链接送回首页输入面（与「导入文件」同一条 识别→批量 流水线，
@@ -48,18 +57,23 @@ import { displayName } from "../../../shared/platforms";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { cn } from "../lib/utils";
 import { groupWorks, type WorkRow } from "../lib/history-works";
-import { buildWorkInfoText } from "../lib/work-info";
+import { buildWorkInfoText, type WorkInfoInput } from "../lib/work-info";
 import {
   buildWorksCsv,
+  buildWorksJson,
+  buildWorksXlsx,
   clickRange,
   clickToggle,
   concatWorkInfo,
   EMPTY_SEL,
+  EXPORT_FORMATS,
+  EXPORT_FORMAT_ORDER,
   headerCheckState,
   isSelected,
   reparseLinks,
   selectAllVisible,
-  type CsvWork,
+  type ExportFormat,
+  type ExportWork,
   type SelState,
 } from "../lib/history-selection";
 import { fmtBytes, fmtCount, fmtCreated, kindLabel } from "../lib/format";
@@ -98,6 +112,7 @@ import {
   TableHeader,
   TableRow,
 } from "../components/ui/table";
+import { RadioGroup, RadioGroupItem } from "../components/ui/radio-group";
 import { TruncatedTooltip } from "../components/ui/tooltip";
 
 /** Radix Select 不接受空串作为 value，「全部平台」用一个不会与平台 key 撞车的哨兵 */
@@ -126,8 +141,11 @@ const TIME_RANGES: Array<{ key: TimeRange; label: string; within: (ts: number, n
  * 所以列宽跟着「设置→外观→界面字号」那一档缩放，换档不截字也不重排。
  */
 const COL = {
-  /** 勾选框列：`size-4` = 1rem 是 rem 定值（不随界面字号伸缩），所以这里加的是 rem 不是 em */
-  select: "w-[calc(1.5rem+1rem)]",
+  /** 勾选框列：`size-4` = 1rem 是 rem 定值（不随界面字号伸缩），所以这里加的是 rem 不是 em。
+   *  右内边距归零（业主指令 2026-10-17「缩小作品列和多选框列的间距」）：原先框与作品文字之间隔着
+   *  两格 `px-3` = 24px，那是两列各自的内边距、不是设计出来的间距；改成 左 12 + 框 16 = 28px 一列，
+   *  框到文字只剩作品列自己的 12px */
+  select: "w-[calc(0.75rem+1rem)] pe-0",
   kind: "w-[calc(1.5rem+2.4em)]",
   /** 约 7 个汉字；再窄会把五字昵称切成「@胶片…」这种半截词（超长仍在此截断 + tooltip） */
   author: "w-[calc(1.5rem+5.6em)]",
@@ -159,7 +177,6 @@ export default function HistoryPage({
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
   const [query, setQuery] = useState("");
   const searchRef = useRef<HTMLInputElement>(null);
-  const [clearOpen, setClearOpen] = useState(false);
   const [authorRow, setAuthorRow] = useState<WorkRow | null>(null);
   // 作者卡片可见态与数据态分开：关闭只翻 visible，行留着 —— Radix 收起动画（200ms）期间这层还在 DOM，
   // 若把行一起置 null，卡片会先被抽空再淡出，看不见「向下收起」那一段（业主指令 2026-10-15 增强）
@@ -186,8 +203,12 @@ export default function HistoryPage({
   const [flashKey, setFlashKey] = useState<string | null>(null);
   /** 多选态（行键集合 + Shift 锚点）；状态机在 lib/history-selection.ts，可无 DOM 测 */
   const [sel, setSel] = useState<SelState>(EMPTY_SEL);
-  /** 多选·删除的二次确认（destructive，与「清空历史」同形制） */
+  /** 多选·移除记录的二次确认（destructive） */
   const [selDelOpen, setSelDelOpen] = useState(false);
+  /** 多选·导出：一枚「导出」按钮呼出格式弹窗（业主指令 2026-10-17：撤掉复制，txt/CSV 合成一个入口）。
+   *  默认 csv——四档里它最通用；xlsx 要现场动态载 exceljs，不该是默认挨的那一下。 */
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportFmt, setExportFmt] = useState<ExportFormat>("csv");
   // 全局 keydown 只挂一次，但 Ctrl+A 要读**最新的可见行键** —— 用 ref 桥接，避免把 rows 塞进依赖数组反复重挂
   const visibleKeysRef = useRef<string[]>([]);
 
@@ -292,29 +313,21 @@ export default function HistoryPage({
     return () => clearTimeout(h);
   }, [focusKey, rows.length]);
 
+  /** 复制走主进程代发（`app:copyText`）：本窗口的 renderer 被「所有权限请求一律拒」的
+   *  权限钩子挡死，`navigator.clipboard` 在这里永远 reject —— 契约 v11。 */
   function copyInfo(r: WorkRow): void {
-    const text = buildWorkInfoText({
-      title: r.title,
-      platformName: displayName(r.platform),
-      kindLabel: r.kind ? kindLabel(r.kind) : undefined,
-      fileCount: r.count,
-      createdAt: r.createdAt,
-      sourceUrl: r.sourceUrl,
-      author: r.author,
-    });
-    void navigator.clipboard
-      .writeText(text)
+    const text = buildWorkInfoText(workInfoInput(r));
+    void api.app
+      .copyText(text)
       .then(() => toast.success("已复制作品信息"))
       .catch(() => toast.error("复制失败"));
   }
 
-  /** 保存文本文件：Blob + a[download]，零 IPC（Electron 里落系统「另存为」）；
-   *  前置 BOM —— 记事本与 Excel 都靠它认 UTF-8，CSV 缺 BOM 中文直接成乱码。
+  /** 存文件：Blob + a[download]，零 IPC（Electron 里落系统「另存为」）。
    *  与首页 saveImportTemplate 同一段五行：两处行为不同（那边固定模板、这边动态拼接），
    *  第三处消费出现时再抽公用（spec §6）。 */
-  function saveTextFile(fileName: string, text: string, mime: string): void {
-    const blob = new Blob([`\uFEFF${text}`], { type: `${mime};charset=utf-8` });
-    const url = URL.createObjectURL(blob);
+  function saveBlob(fileName: string, parts: BlobPart[], mime: string): void {
+    const url = URL.createObjectURL(new Blob(parts, { type: mime }));
     const a = document.createElement("a");
     a.href = url;
     a.download = fileName;
@@ -322,51 +335,48 @@ export default function HistoryPage({
     URL.revokeObjectURL(url);
   }
 
+  /** 文本档一律前置 BOM —— 记事本与 Excel 都靠它认 UTF-8，CSV 缺 BOM 中文直接成乱码。
+   *  xlsx 不走这条路：它是二进制，头前多一个字节就打不开。 */
+  function saveTextFile(fileName: string, text: string, mime: string): void {
+    saveBlob(fileName, [`\uFEFF${text}`], `${mime};charset=utf-8`);
+  }
+
   /** 选中行 → 「作品信息」文本列表（复制与 txt 导出共用，与单行复制同一真源） */
   function workTexts(rs: WorkRow[]): string[] {
-    return rs.map((r) =>
-      buildWorkInfoText({
-        title: r.title,
-        platformName: displayName(r.platform),
-        kindLabel: r.kind ? kindLabel(r.kind) : undefined,
-        fileCount: r.count,
-        createdAt: r.createdAt,
-        sourceUrl: r.sourceUrl,
-        author: r.author,
-      })
-    );
+    return rs.map((r) => buildWorkInfoText(workInfoInput(r)));
   }
 
-  /** 多选·复制：整段进剪贴板 */
-  function copySelected(): void {
-    const text = concatWorkInfo(workTexts(selectedRows));
-    void navigator.clipboard
-      .writeText(text)
-      .then(() => toast.success(`已复制 ${selectedRows.length} 条作品信息`))
-      .catch(() => toast.error("复制失败"));
-  }
-
-  /** 多选·导出：txt 全量信息 / CSV 表格档（Excel）。文件名带条数，多次导出可分辨 */
-  function exportSelected(fmt: "txt" | "csv"): void {
+  /** 多选·导出：四档共用同一批选中行，文件名带条数，多次导出可分辨。
+   *  表格三档（xlsx / csv / json）吃同一张列表，所以列不会互相漂；txt 是另一条内容——
+   *  它拼的是「作品信息」全文，与单行复制同源。
+   *  xlsx 是唯一异步的一档（动态载 exceljs 再拼字节），整条链因此是 async。 */
+  async function exportSelected(fmt: ExportFormat): Promise<void> {
     const n = selectedRows.length;
+    const name = `即刻解析-历史-${n}条`;
     if (fmt === "txt") {
-      saveTextFile(`即刻解析-历史-${n}条.txt`, concatWorkInfo(workTexts(selectedRows)), "text/plain");
-    } else {
-      const works: CsvWork[] = selectedRows.map((r) => ({
-        title: r.title,
-        authorName: r.authorName,
-        platformName: displayName(r.platform),
-        kindLabel: r.kind ? kindLabel(r.kind) : undefined,
-        count: r.count,
-        bytes: r.bytes,
-        createdAt: r.createdAt,
-        sourceUrl: r.sourceUrl,
-        // 落地目录取第一个文件的父目录：单元格里塞 N 条全路径没法看，「在哪」够用
-        dir: r.files.length > 0 ? dirOf(r.files[0]) : undefined,
-      }));
-      saveTextFile(`即刻解析-历史-${n}条.csv`, buildWorksCsv(works, fmtCreated), "text/csv");
+      saveTextFile(`${name}.txt`, concatWorkInfo(workTexts(selectedRows)), EXPORT_FORMATS.txt.mime);
+      return;
     }
-    toast.success(`已导出 ${n} 条（${fmt.toUpperCase()}）`);
+    const works = selectedRows.map(exportWork);
+    if (fmt === "json") {
+      saveTextFile(`${name}.json`, buildWorksJson(works), EXPORT_FORMATS.json.mime);
+    } else if (fmt === "csv") {
+      saveTextFile(`${name}.csv`, buildWorksCsv(works, fmtCreated), EXPORT_FORMATS.csv.mime);
+    } else {
+      saveBlob(`${name}.xlsx`, [await buildWorksXlsx(works)], EXPORT_FORMATS.xlsx.mime);
+    }
+  }
+
+  /** 弹窗里的「导出」按下去：先收弹窗再导 —— xlsx 那档要现场载库，按钮停在原地震一下不动，
+   *  会被读成没响应。失败必须播报（用户已经在等文件了），不静默吞。 */
+  function runExport(): void {
+    const fmt = exportFmt;
+    setExportOpen(false);
+    const n = selectedRows.length;
+    void exportSelected(fmt).then(
+      () => toast.success(`已导出 ${n} 条（${fmt.toUpperCase()}）`),
+      () => toast.error(`导出 ${fmt.toUpperCase()} 失败`)
+    );
   }
 
   /** 多选·重新解析：链接交给首页输入面（与「导入文件」同一条 识别→批量 流），本页只送件。
@@ -413,8 +423,10 @@ export default function HistoryPage({
 
   return (
     <section className="flex flex-col gap-3">
-      {/* gap-0：Card 自带 gap-4，会在工具栏底线与表头之间垫出 16px 空带——表头看上去比内容行高出一截 */}
-      <Card className="gap-0 py-0">
+      {/* gap-0：Card 自带 gap-4，会在工具栏底线与表头之间垫出 16px 空带——表头看上去比内容行高出一截。
+          overflow-hidden：行底色（选中蓝 / hover 灰）铺满整行是方角，最后一行贴着卡片下缘就顶出 12px 圆角。
+          裁在卡片自己身上而不是给表格容器补圆角：浏览器的裁剪半径已减去 1px 边框，天然与卡片那条曲线重合 */}
+      <Card className="gap-0 py-0 overflow-hidden">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-2 py-1.5">
           <Input
             ref={searchRef}
@@ -449,11 +461,9 @@ export default function HistoryPage({
               ))}
             </SelectContent>
           </Select>
-          {/* 工具栏只有这一枚常驻按钮：多选动作条 10-17 起浮到窗口底部、不再来这里换掉它
-              （业主指令「多选操作栏不要占位」）。ms-auto 仍挂在本容器上，让按钮单独贴右端 */}
-          <Button variant="destructive" size="sm" className="ms-auto" onClick={() => setClearOpen(true)}>
-            清空历史
-          </Button>
+          {/* 工具栏没有右侧按钮：「清空历史」已随 history:clear 一起撤（业主指令 2026-10-17）。
+              整表清空 = 表头全选 → 浮窗「移除记录」，走 history:remove（keys 上限 = HISTORY_MAX，
+              一次点得掉整张表），不再留第二条语义重复的通道 */}
         </div>
 
         {rows.length === 0 ? (
@@ -465,12 +475,16 @@ export default function HistoryPage({
           </div>
         ) : (
           /* 底线 = 定宽列 + 作品列可读下限（约 17em）；窗口更窄时横向滚，而不是把作品列压成 0 宽。
-             勾选框列宽是 rem 定值（1.5rem 内边距 + 1rem 方框），所以它单独加在 calc 里、不折进 em */
-          <Table className="min-w-[calc(41em+2.5rem)]">
+             勾选框列宽是 rem 定值（左内边距 0.75rem + 方框 1rem，右侧不留内边距），所以它单独加在 calc 里、不折进 em */
+          <Table className="min-w-[calc(41em+1.75rem)]">
             <TableHeader>
-              <TableRow>
+              <TableRow className="group">
                 <TableHead className={COL.select}>
-                  <span className="flex items-center">
+                  {/* 表头这枚与行内那枚同一条显隐规则（业主指令 2026-10-17 二次修订：
+                      「标题行的选中框也需要遵循这个规则，不能常驻显示」）——
+                      常态隐藏、hover 表头行显形、有选中则恒显（那时它要能一键清空）。
+                      我原先把它当"这一列的说明"留着常驻，被他否掉：常态就该一颗框都不占屏 */}
+                  <span className={cn("flex items-center", sel.keys.length > 0 ? "visible" : "invisible group-hover:visible")}>
                     <Checkbox
                       checked={headerCheckState(sel, visibleKeys)}
                       // 判据读**当前**三态而不是回调送来的值：indeterminate 下 Radix 发的是 `true`
@@ -491,7 +505,7 @@ export default function HistoryPage({
                 <TableHead className={COL.author}>作者</TableHead>
                 <TableHead className={COL.kind}>类型</TableHead>
                 <TableHead className={COL.count}>文件数</TableHead>
-                <TableHead className={COL.time}>创建时间</TableHead>
+                <TableHead className={COL.time}>解析时间</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -513,14 +527,29 @@ export default function HistoryPage({
                     openDetail(r);
                   }}
                   className={cn(
-                    "cursor-pointer",
-                    // 描边保留（整行扫一眼才知道哪些进了动作条，光看左端那枚框要逐行找）
-                    isSelected(sel, r.key) && "bg-primary/15 outline outline-1 -outline-offset-1 outline-primary/50",
-                    flashKey === r.key && "bg-primary/15 outline outline-1 -outline-offset-1 outline-primary/50"
+                    // `group` 是给行内那枚勾选框用的：常态隐藏，鼠标落到这一行才显形（业主指令 2026-10-17）
+                    "group cursor-pointer",
+                    // 带主色底的行（选中 / 跳转定位闪烁）把 kit 那颗 hover 灰底换成一档更深的蓝：
+                    // 两种底色叠在同一行就是「选中是蓝、hover 是灰」的脏色冲突（业主指令 2026-10-17）。
+                    // 只压暗、不取消 hover——光标仍是 pointer、行仍要点得动，hover 得有反馈，只是别换色相。
+                    isSelected(sel, r.key) || flashKey === r.key
+                      ? "bg-primary/15 hover:bg-primary/25"
+                      : undefined,
+                    // 选中态只上底色、不描边（业主指令 2026-10-17：整行已经跟着底色走，
+                    // 再框一道就是把一行切成格子）。跳转定位那一下仍留描边——它要指认的
+                    // 是「这一行在这儿」，且 1.8 秒就退，不是常驻状态。
+                    flashKey === r.key && "outline outline-1 -outline-offset-1 outline-primary/50"
                   )}
                 >
                   <TableCell className={COL.select}>
-                    <span className="flex items-center">
+                    {/* 勾选框显隐三态（业主指令 2026-10-17「正常状态下隐藏，浮到某行显示那行，
+                        一旦有选中就全显」）：走 `invisible` 而不是拿掉元素——列宽占位不变，
+                        鼠标划过不会让整张表左右抖；且隐藏态不可点，不会有「点中看不见的框」。
+                        一旦有选中就整列常驻：那时用户的目标是「接着挑第二行」，不该逼他逐行悬停找框。
+                        表头那枚吃同一条规则（他二次修订「标题行的选中框也需要遵循这个规则，
+                        不能常驻显示」），所以常态整张表一颗框都不占屏。
+                        代价如实记一笔：`invisible` 会把框移出 Tab 顺序，键盘用户只能走 Ctrl+A / Esc。 */}
+                    <span className={cn("flex items-center", sel.keys.length > 0 ? "visible" : "invisible group-hover:visible")}>
                       <Checkbox
                         checked={isSelected(sel, r.key)}
                         // 与 Ctrl+点同一个 clickToggle：所以点框选完接着 Shift 点还能扩范围，
@@ -595,15 +624,10 @@ export default function HistoryPage({
             aria-label="多选批量操作"
           >
             <span className="tabular-nums text-muted-foreground">已选 {sel.keys.length} 项</span>
-            <Button variant="outline" size="sm" onClick={copySelected}>
-              <Copy />
-              复制
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => exportSelected("txt")}>
-              导出 txt
-            </Button>
-            <Button variant="outline" size="sm" onClick={() => exportSelected("csv")}>
-              导出 CSV
+            {/* 复制撤了、两枚导出合成一枚（业主指令 2026-10-17）：格式是导出的**参数**，
+                不是两个动作——它该进弹窗，不该在动作条上各占一颗按钮 */}
+            <Button variant="outline" size="sm" onClick={() => setExportOpen(true)}>
+              导出
             </Button>
             <Button variant="outline" size="sm" onClick={reparseSelected}>
               重新解析
@@ -619,33 +643,42 @@ export default function HistoryPage({
           document.body
         )}
 
-      <Dialog open={clearOpen} onOpenChange={setClearOpen}>
+      {/* 多选·导出格式弹窗（业主指令 2026-10-17）：单选列表四行 + 底部「导出」，默认 CSV。
+          四行都写清后缀，是因为「导出」的结果物就是那个文件——名字里带不带你打开方式不同的东西，
+          用户点下去之前必须看得见。 */}
+      <Dialog open={exportOpen} onOpenChange={setExportOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle>清空全部历史？</DialogTitle>
-            <DialogDescription>只删除本机的记录，已下载的文件不会被动。</DialogDescription>
+            <DialogTitle>导出 {selectedRows.length} 条记录</DialogTitle>
+            <DialogDescription>表格三档（xlsx / csv / json）列相同，txt 是「作品信息」全文。</DialogDescription>
           </DialogHeader>
+          <RadioGroup
+            value={exportFmt}
+            onValueChange={(v) => setExportFmt(v as ExportFormat)}
+            className="gap-1"
+          >
+            {EXPORT_FORMAT_ORDER.map((f) => (
+              <label
+                key={f}
+                className="flex cursor-pointer items-center gap-2.5 rounded-md px-2 py-1.5 text-sm transition-colors hover:bg-accent"
+              >
+                <RadioGroupItem value={f} />
+                {EXPORT_FORMATS[f].label}
+              </label>
+            ))}
+          </RadioGroup>
           <DialogFooter>
-            <Button variant="outline" size="sm" onClick={() => setClearOpen(false)}>
+            <Button variant="outline" size="sm" onClick={() => setExportOpen(false)}>
               取消
             </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => {
-                void api.history.clear().then(() => {
-                  setList([]);
-                  setClearOpen(false);
-                });
-              }}
-            >
-              清空
+            <Button size="sm" onClick={runExport}>
+              导出
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
 
-      {/* 多选·移除记录二次确认（spec §3A：destructive，与「清空历史」同形制）。
+      {/* 多选·移除记录二次确认（spec §3A：destructive）。
           文案带条数 —— 「移除几条」必须出现在确认位上，误删的唯一防线就是这句话。 */}
       <Dialog open={selDelOpen} onOpenChange={setSelDelOpen}>
         <DialogContent className="max-w-sm">
@@ -873,6 +906,48 @@ function dirOf(path: string): string {
   return path.replace(/[\\/][^\\/]*$/, "");
 }
 
+/** WorkRow → 「作品信息」入参。单行复制与 txt 批量导出共用这一份映射：
+ *  两处各写一遍的话，加一个字段只会漏掉其中一处，而 txt 与复制读起来一样、看不出少了东西。
+ *  字段集与表格档对齐（指令 2026-10-17），所以这里与 `exportWork` 取的是同一批来源表达式。 */
+function workInfoInput(r: WorkRow): WorkInfoInput {
+  return {
+    title: r.title,
+    platformName: displayName(r.platform),
+    kindLabel: r.kind ? kindLabel(r.kind) : undefined,
+    fileCount: r.count,
+    bytes: r.bytes,
+    createdAt: r.createdAt,
+    publishedAt: r.publishedAt,
+    stat: r.stat,
+    sourceUrl: r.sourceUrl,
+    dir: landedDir(r),
+    author: r.author,
+  };
+}
+
+/** 落地目录取第一个文件的父目录：塞 N 条全路径没法看，「在哪」够用（表格档与复制文本同一口径） */
+function landedDir(r: WorkRow): string | undefined {
+  return r.files.length > 0 ? dirOf(r.files[0]) : undefined;
+}
+
+/** WorkRow → 表格三档（xlsx / csv / json）的一行。缺项留空由 `EXPORT_COLUMNS` 统一处理 */
+function exportWork(r: WorkRow): ExportWork {
+  return {
+    title: r.title,
+    authorName: r.authorName,
+    author: r.author,
+    platformName: displayName(r.platform),
+    kindLabel: r.kind ? kindLabel(r.kind) : undefined,
+    count: r.count,
+    bytes: r.bytes,
+    createdAt: r.createdAt,
+    publishedAt: r.publishedAt,
+    stat: r.stat,
+    sourceUrl: r.sourceUrl,
+    dir: landedDir(r),
+  };
+}
+
 /**
  * 底部浮层的作品详情：表格六列放不下的全量信息 —— 标题全文、字节总量、
  * 来源链接与落地文件（路径本身就是一枚按钮，点了即在资源管理器里定位）。
@@ -910,7 +985,7 @@ function WorkDetail({
       )}
       {row.kind && <Field label="类型">{kindLabel(row.kind)}</Field>}
       <Field label="文件数">{filesCell(row.count)}{row.bytes != null ? ` · ${fmtBytes(row.bytes)}` : ""}</Field>
-      <Field label="创建时间">{fmtCreated(row.createdAt)}</Field>
+      <Field label="解析时间">{fmtCreated(row.createdAt)}</Field>
       {row.sourceUrl && (
         <Field label="来源链接">
           <a

@@ -108,7 +108,7 @@ const TIME_RANGES: Array<{ key: TimeRange; label: string; within: (ts: number, n
 
 /** 分段是「文件状态」的桶（`paused` 归进行中——它就是暂停在那里的一组文件）；已取消与失败分开，重试动作不同 */
 const STATUS_FILTERS: Array<{ key: StatusFilter; label: string; match: (s: DownloadTaskView["status"]) => boolean }> = [
-  { key: "all", label: "全部", match: () => true },
+  { key: "all", label: "全部状态", match: () => true },
   { key: "active", label: "进行中", match: (s) => s === "queued" || s === "downloading" || s === "paused" },
   { key: "done", label: "完成", match: (s) => s === "done" },
   { key: "error", label: "失败", match: (s) => s === "error" },
@@ -297,20 +297,19 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
           />
           <div className="ms-auto flex items-center gap-2">
             <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
-              <SelectTrigger size="sm" className="w-32" aria-label="按状态筛选">
+              <SelectTrigger size="sm" className="w-28" aria-label="按状态筛选">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 {STATUS_FILTERS.map((f) => (
                   <SelectItem key={f.key} value={f.key} disabled={counts[f.key] === 0 && statusFilter !== f.key}>
-                    {f.label}{" "}
-                    <span className="tabular-nums opacity-70">{counts[f.key]}</span>
+                    {f.label}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <Select value={platform === "" ? ALL : platform} onValueChange={(v) => setPlatform(v === ALL ? "" : v)}>
-              <SelectTrigger size="sm" className="w-36" aria-label="按平台筛选">
+              <SelectTrigger size="sm" className="w-28" aria-label="按平台筛选">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
