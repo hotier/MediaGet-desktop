@@ -236,16 +236,16 @@ export function ResultCard({
               </TruncatedTooltip>
               {/* 视频详细直接展示，不做收起展开 */}
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                {typeof data?.duration === "number" && data.duration > 0 && (
-                  <span className="tabular-nums">
-                    {Math.round(data.duration > 100000 ? data.duration / 1000 : data.duration)}s
-                  </span>
-                )}
                 {stats.length > 0 && stats.map((s) => (
                   <span key={s.label} className="tabular-nums">
                     {s.label}{s.value}
                   </span>
                 ))}
+                {typeof data?.duration === "number" && data.duration > 0 && (
+                  <span className="tabular-nums">
+                    时长{Math.round(data.duration > 100000 ? data.duration / 1000 : data.duration)}s
+                  </span>
+                )}
               </div>
             </div>
           </div>
