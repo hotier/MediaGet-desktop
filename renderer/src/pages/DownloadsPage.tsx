@@ -469,7 +469,7 @@ function QueueTable({
     <Table className={TABLE_MIN_W}>
       <TableHeader>
         <TableRow>
-          <TableHead className="max-w-[20em]">文件</TableHead>
+          <TableHead className="w-[calc(1.5rem+16em)]">文件</TableHead>
           <TableHead className={COL.status}>状态</TableHead>
           <TableHead className={COL.progress}>进度</TableHead>
           <TableHead className={COL.size}>大小</TableHead>
