@@ -289,7 +289,7 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
           {/* 筛选器在左，搜索框在右（与历史页同口径） */}
           <div className="flex items-center gap-2">
             <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
-              <SelectTrigger size="sm" className="w-30" aria-label="按状态筛选">
+              <SelectTrigger size="sm" className="w-28" aria-label="按状态筛选">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -301,7 +301,7 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
               </SelectContent>
             </Select>
             <Select value={platform === "" ? ALL : platform} onValueChange={(v) => setPlatform(v === ALL ? "" : v)}>
-              <SelectTrigger size="sm" className="w-30" aria-label="按平台筛选">
+              <SelectTrigger size="sm" className="w-28" aria-label="按平台筛选">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -315,7 +315,7 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
             </Select>
             {/* 时间筛选：与历史页同口径，按创建时间过滤 */}
             <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
-              <SelectTrigger size="sm" className="w-30" aria-label="按时间筛选">
+              <SelectTrigger size="sm" className="w-28" aria-label="按时间筛选">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

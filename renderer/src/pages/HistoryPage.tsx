@@ -431,7 +431,7 @@ export default function HistoryPage({
           {/* 筛选器在左，搜索框在右 */}
           <div className="flex items-center gap-2">
             <Select value={platform === "" ? ALL : platform} onValueChange={(v) => setPlatform(v === ALL ? "" : v)}>
-              <SelectTrigger size="sm" className="w-30" aria-label="按平台筛选">
+              <SelectTrigger size="sm" className="w-28" aria-label="按平台筛选">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -444,7 +444,7 @@ export default function HistoryPage({
               </SelectContent>
             </Select>
             <Select value={timeRange} onValueChange={(v) => setTimeRange(v as TimeRange)}>
-              <SelectTrigger size="sm" className="w-30" aria-label="按时间筛选">
+              <SelectTrigger size="sm" className="w-28" aria-label="按时间筛选">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
