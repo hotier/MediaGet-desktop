@@ -146,7 +146,7 @@ const COL = {
   actions: "w-[calc(1.5rem+3.2em)]",
 } as const;
 
-const TABLE_MIN_W = "min-w-[86em]";
+const TABLE_MIN_W = "min-w-[68em]";
 
 export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactElement {
   const [tasks, setTasks] = useState<DownloadTaskView[]>([]);
