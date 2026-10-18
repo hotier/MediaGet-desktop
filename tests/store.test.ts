@@ -19,9 +19,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { HISTORY_MAX, JsonStore } from "../electron/main/store";
+import { HISTORY_MAX, JsonStore, queueDigest } from "../electron/main/store";
 import { emptyStats } from "../electron/main/stats";
 import { parseHistoryEntry, workKeyOf } from "../shared/history";
+import { HistoryEntrySchema } from "../types/ipc-contract";
 import type { HistoryEntry, PersistedQueueTask, StatsSnapshot } from "../types/ipc";
 
 let dir: string;
@@ -63,7 +64,7 @@ describe("配置：读写 / 缓存 / 缺省合并", () => {
     const cur = s.loadConfig();
     s.saveConfig({ settings: { ...cur.settings, maxConcurrent: 7 }, kernel: { X: "1" } });
     expect(s.loadConfig().settings.maxConcurrent).toBe(7);
-    expect(s.loadConfig().settings.fallbackOnline).toBe(true); // 未动字段保留
+    expect(s.loadConfig().settings.downloadDir).toBe(""); // 未动字段保留
   });
 
   it("getKernelValue 读内核键", () => {
@@ -156,7 +157,43 @@ describe("历史：追加序与上限", () => {
       ])
     );
     const list = new JsonStore(dir).loadHistory();
-    expect(list.map((h) => h.platform)).toEqual(["redbook", "pipixia", "brandNewPlatform"]);
+    // ppxia 的平台已随内核 1.0.0 下线，别名不存在了 → 与未登记键同一条出路（原样回吐）
+    expect(list.map((h) => h.platform)).toEqual(["redbook", "ppxia", "brandNewPlatform"]);
+  });
+
+  /**
+   * 事故回归（2026-10-18）：bilibili 内核把 `uid` 填成数字，旧口径下它被抄进
+   * `author.id` 落盘。`AuthorSnapshotSchema.id` 是 STR，而 dev 下 `history:list` 的**出参**
+   * 也过校验 —— 一个脏字段让整次调用判成 contract-drift，渲染层 `.catch(() => {})` 再把它
+   * 读成「暂无历史记录」。满盘 21 行在屏幕上凭空消失，盘上一个字节都没少。
+   * 所以读侧必须自己把这类存量洗成契约形状：数字 mid 收成字符串（信息留着），而不是等下一行把它冲掉。
+   */
+  it("盘上的脏作者快照读侧归一：整表仍过得出契约（一行脏字段不许锁死一整页）", () => {
+    writeFileSync(
+      join(dir, "history.json"),
+      JSON.stringify([
+        {
+          id: "h-clean",
+          platform: "douyin",
+          title: "干净的一行",
+          files: [],
+          author: { name: "小满", id: "MS4wLjAB", followerCount: 12 },
+          createdAt: 1,
+        },
+        {
+          id: "h-dirty",
+          platform: "bilibili",
+          title: "数字 mid 那一行",
+          files: [],
+          author: { name: "王刚", id: 290526283, followerCount: 6787452 },
+          createdAt: 2,
+        },
+      ])
+    );
+    const list = new JsonStore(dir).loadHistory();
+    expect(list[1]?.author?.id).toBe("290526283");
+    expect(list[1]?.author?.name).toBe("王刚"); // 归一只改形状，不牵连同行好字段
+    expect(() => HistoryEntrySchema.array().parse(list)).not.toThrow();
   });
 
   it("超过 HISTORY_MAX 条截断，丢的是最旧的", () => {
@@ -241,6 +278,46 @@ describe("历史：解析行按作品键刷新（upsertHistory）", () => {
     s.appendHistory(fileRow("d1"));
     s.appendHistory(fileRow("d1"));
     expect(s.loadHistory()).toHaveLength(2);
+  });
+
+  it("读侧补算作品键：旧键 + 尾部斜杠变体加载时合成一行，按新键能删整组", () => {
+    const rows: HistoryEntry[] = [
+      {
+        id: "w-old-slash",
+        groupId: "w-old-slash",
+        platform: "bilibili",
+        title: "同一个作品",
+        files: [],
+        sourceUrl: "https://www.bilibili.com/video/BV1VTYT6tEV2/",
+        createdAt: 300,
+      },
+      {
+        id: "w-old-bare",
+        groupId: "w-old-bare",
+        platform: "bilibili",
+        title: "同一个作品",
+        files: [],
+        sourceUrl: "https://www.bilibili.com/video/BV1VTYT6tEV2",
+        createdAt: 100,
+      },
+      {
+        id: "dl-1",
+        groupId: "w-old-slash",
+        platform: "bilibili",
+        title: "同一个作品",
+        kind: "video",
+        files: ["/tmp/BV1VTYT6tEV2.mp4"],
+        sourceUrl: "https://www.bilibili.com/video/BV1VTYT6tEV2/",
+        createdAt: 200,
+      },
+    ];
+    writeFileSync(join(dir, "history.json"), JSON.stringify(rows));
+    const s = new JsonStore(dir);
+    const key = workKeyOf("https://www.bilibili.com/video/BV1VTYT6tEV2") ?? "w-broken";
+    const list = s.loadHistory();
+    expect(list.map((e) => e.id)).toEqual([key, "dl-1"]);
+    expect(new Set(list.map((e) => e.groupId))).toEqual(new Set([key]));
+    expect(s.removeHistory([key])).toEqual([]);
   });
 });
 
@@ -375,6 +452,84 @@ describe("队列节流落盘（P2「重启后队列完整」回归）", () => {
     };
     s.saveQueue([t]);
     expect(s.loadQueue()[0]).toEqual(t);
+  });
+});
+
+/**
+ * 队列落盘留痕（业主指令 2026-10-18：「队列落盘也写日志吧，需要保证队列数据能够正确存储和读取」）。
+ *
+ * 起因是一次「谁在 00:57 把 queue.json 写成了 []」的排查：那条链路上只有启动时的一行
+ * 「队列恢复 N 项」，写失败被 catch 静默吞掉、坏档自愈也不出声，最后只能靠两个 mtime 反推。
+ * 所以这里钉五件事：形状变了必留痕、同形状不刷屏、写失败出声、坏档/异形出声且读回空、截断出声。
+ * 日志只投「条数 + 状态分布」两维：文件日志与 config 同处 userData，直链与文件名一律不进（§6）。
+ */
+describe("队列落盘留痕", () => {
+  it("摘要按固定状态序排；空档只剩一个数", () => {
+    expect(queueDigest([])).toBe("0 项");
+    expect(
+      queueDigest([task("a", 1, "done"), task("b", 2, "downloading"), task("c", 3, "error")])
+    ).toBe("3 项（downloading 1 · done 1 · error 1）");
+  });
+
+  it("形状变了才留痕：进度 tick 不刷屏，一行消失看得见", () => {
+    const infos: string[] = [];
+    const s = new JsonStore(dir, () => {}, (m) => infos.push(m));
+    s.saveQueue([task("a", 10)]);
+    s.saveQueue([task("a", 999)]); // 只有 received 变了，状态分布没动
+    expect(infos).toEqual(["[store] 队列落盘 1 项（downloading 1）"]);
+    s.saveQueue([task("a", 999, "done"), task("b", 1)]);
+    expect(infos[1]).toBe("[store] 队列落盘 2 项（downloading 1 · done 1）");
+  });
+
+  it("摘要里没有直链、文件名与落地路径（隐私红线）", () => {
+    const infos: string[] = [];
+    const s = new JsonStore(dir, () => {}, (m) => infos.push(m));
+    s.saveQueue([
+      {
+        ...task("secret-id", 1, "done"),
+        url: "https://cdn.example.com/a.mp4?sign=abc",
+        filename: "秘密作品.mp4",
+        filePath: "D:\\Downloads\\秘密作品.mp4",
+      },
+    ]);
+    expect(infos[0]).not.toContain("secret-id");
+    expect(infos[0]).not.toContain("cdn.example.com");
+    expect(infos[0]).not.toContain("秘密");
+  });
+
+  it("写失败必须出声（旧版是静默 catch：它丢的是「重启后那条还没下完的任务」）", () => {
+    vi.useFakeTimers();
+    const errors: string[] = [];
+    const s = new JsonStore(dir, (m) => errors.push(m));
+    s.saveQueueThrottled([task("a", 10)]);
+    // 窗口到点之前把目标名占成目录：tmp→rename 的收尾必然失败
+    mkdirSync(join(dir, "queue.json"), { recursive: true });
+    vi.advanceTimersByTime(2000);
+    expect(errors.some((m) => m.includes("队列落盘失败"))).toBe(true);
+  });
+
+  it("坏档自愈也出声：原档留成备份，读回空", () => {
+    const errors: string[] = [];
+    writeFileSync(join(dir, "queue.json"), "{ 半截的", "utf8");
+    const s = new JsonStore(dir, (m) => errors.push(m));
+    expect(s.loadQueue()).toEqual([]);
+    expect(errors.some((m) => m.includes("queue.json 读取失败，按空处理"))).toBe(true);
+    expect(readdirSync(dir).some((f) => f.startsWith("queue.json.corrupt-"))).toBe(true);
+  });
+
+  it("queue.json 是异形对象时按空队列处理并出声（不把非数组交给 downloader.restore）", () => {
+    const errors: string[] = [];
+    writeFileSync(join(dir, "queue.json"), JSON.stringify({ tasks: [] }), "utf8");
+    const s = new JsonStore(dir, (m) => errors.push(m));
+    expect(s.loadQueue()).toEqual([]);
+    expect(errors.some((m) => m.includes("不是数组"))).toBe(true);
+  });
+
+  it("截断超上限要说出声（用户不清理时的丢档动作不能无声）", () => {
+    const errors: string[] = [];
+    const s = new JsonStore(dir, (m) => errors.push(m));
+    s.saveQueue(Array.from({ length: 205 }, (_, i) => task(`t${i}`, i, "paused")));
+    expect(errors.some((m) => m.includes("丢弃最旧的 5 条"))).toBe(true);
   });
 });
 

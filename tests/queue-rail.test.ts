@@ -23,6 +23,8 @@ function task(over: Partial<DownloadTaskView>): DownloadTaskView {
     received: 50,
     total: 100,
     speed: 1024 * 1024,
+    transferMs: 0,
+    transferBytes: 50,
     createdAt: 0,
     ...over,
   };

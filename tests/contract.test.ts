@@ -38,6 +38,8 @@ const TASK_VIEW: DownloadTaskView = {
   received: 1024,
   total: 4096,
   speed: 512,
+  transferMs: 2000,
+  transferBytes: 1024,
   platform: "douyin",
   title: "示例视频",
   sourceUrl: "https://v.douyin.com/abc/",
@@ -107,6 +109,9 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
       }),
       localCoverage: async () => ["douyin"],
     },
+    // 来源链接归一在契约测试里只验「字段穿得过」：真跟跳归 source-url.test.ts 管，
+    // 这里不发网络（本仓测试禁真网络）。
+    resolveSourceUrl: async ({ raw }: { raw?: string | null }) => raw ?? undefined,
     downloader: {
       enqueue: () => ["t-1"],
       cancel: () => true,
@@ -210,6 +215,8 @@ const BAD_INPUT: Record<string, unknown> = {
   // 空数组＝「清理但一颗都不给」，那是调用方没算清可清理集，不该被执行（也不该被当成全清）
   [IPC.downloadClear]: { taskIds: [] },
   [IPC.settingsSet]: { evilField: 1 },
+  // 抓取通道的权限面比 settings:set 大（开窗 + 直接写档）：不在规则表里的键名一律拒
+  [IPC.settingsCookieLogin]: { cookieKey: "NOT_A_COOKIE_KEY" },
   [IPC.historyList]: { limit: 0 },
   // 空集合不是合法请求（min(1) 拒「删 0 条」的误触），超上限说明 UI 状态坏了
   [IPC.historyRemove]: { keys: [] },
@@ -240,6 +247,8 @@ const GOOD_INPUT: Record<string, unknown> = {
   [IPC.downloadResume]: { taskId: "t-1" },
   [IPC.downloadClear]: { taskIds: ["t-1"] },
   [IPC.settingsSet]: { throttleMs: 100 },
+  // 测试桩不注入 cookieLogin：出参是 { captured:false, reason:"error" }，形状必须过 out schema
+  [IPC.settingsCookieLogin]: { cookieKey: "BILIBILI_COOKIE" },
   [IPC.historyRemove]: { keys: ["h-1"] },
   [IPC.appShowInFolder]: "C:/Downloads/a.mp4",
   [IPC.appCacheClear]: { keys: ["net", "logs"] },

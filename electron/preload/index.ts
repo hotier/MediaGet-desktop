@@ -34,11 +34,11 @@ const mg: MgBridge = {
   settings: {
     get: () => invoke(IPC.settingsGet),
     set: (patch) => invoke(IPC.settingsSet, patch),
+    cookieLogin: (input) => invoke(IPC.settingsCookieLogin, input),
   },
   history: {
     list: (filter) => invoke(IPC.historyList, filter),
     remove: (keys) => invoke(IPC.historyRemove, { keys }),
-    clear: () => invoke(IPC.historyClear),
   },
   probe: {
     engines: () => invoke(IPC.probeEngines),
@@ -55,6 +55,7 @@ const mg: MgBridge = {
     clearCache: (keys) => invoke(IPC.appCacheClear, { keys }),
     openLogDir: () => invoke(IPC.appOpenLogDir),
     openExternal: (url) => invoke(IPC.appOpenExternal, { url }),
+    copyText: (text) => invoke(IPC.appCopyText, { text }),
     log: (level, message) => invoke(IPC.appLog, { level, message }),
     onClipboardLink: (cb) => on(IPC.evClipboardLink, cb),
     update: {

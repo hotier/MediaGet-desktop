@@ -2,7 +2,7 @@
  * 本机占用与清理（设置→通用→本地缓存）。
  *
  * 扫描范围只包含**应用自己产生、删了不丢人**的东西：
- * - net      Chromium 网络缓存（session 磁盘缓存，解析与线上回落的 HTTP 副本）
+ * - net      Chromium 网络缓存（session 磁盘缓存，解析留下的 HTTP 副本）
  * - partials 下载目录里没人认领的 `.part` / `.part.meta` 断点
  * - junk     userData 里的 `*.corrupt-<ts>`（坏档备份）与残留 `*.tmp`（原子写半成品）
  * - logs     日志目录（见 logger.ts）

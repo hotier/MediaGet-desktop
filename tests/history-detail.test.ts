@@ -11,25 +11,39 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
+/**
+ * 按 LF 视图读入：本机 `core.autocrlf=true`，签出来的源文件是 CRLF，而下面的判据要找的是
+ * 「顶格那行只有一个 `}`」——带着 `\r` 就永远匹配不到函数结尾，同一份代码在 Windows 上红、
+ * 在 CI 上绿。判据针对的是结构而不是行尾，所以归一化放在读入这一步。
+ */
 const SRC = readFileSync(
   fileURLToPath(new URL("../renderer/src/pages/HistoryPage.tsx", import.meta.url)),
   "utf8"
-);
+).replace(/\r\n/g, "\n");
+
+/**
+ * 作者卡片 2026-10-19 从历史页抽成独立组件（结果卡共用同一份），
+ * 断言要跟着搬家：留在 HistoryPage 里找 `function AuthorCard(` 会永远落空。
+ */
+const AUTHOR_SRC = readFileSync(
+  fileURLToPath(new URL("../renderer/src/components/AuthorCard.tsx", import.meta.url)),
+  "utf8"
+).replace(/\r\n/g, "\n");
 
 /**
  * 取 `function Name(` 起到函数收尾那枚顶格 `}` 为止。
  * 只认 `\n}\n`：解构参数那行 `}: {` 的 `}` 也顶格，认 `\n}` 会在第一个属性后就截断。
  */
-function fn(name: string): string {
-  const at = SRC.indexOf(`function ${name}(`);
+function fn(src: string, name: string): string {
+  const at = src.indexOf(`function ${name}(`);
   expect(at, `找不到组件 ${name}`).toBeGreaterThan(-1);
-  const end = SRC.indexOf("\n}\n", at);
+  const end = src.indexOf("\n}\n", at);
   expect(end, `${name} 之后收不到函数结尾`).toBeGreaterThan(at);
-  return SRC.slice(at, end);
+  return src.slice(at, end);
 }
 
-const AUTHOR_CARD = fn("AuthorCard");
-const WORK_DETAIL = fn("WorkDetail");
+const AUTHOR_CARD = fn(AUTHOR_SRC, "AuthorCard");
+const WORK_DETAIL = fn(SRC, "WorkDetail");
 
 /** 作者卡片那层 Dialog：从 Root 的 open 态到标题行结束（DialogContent 的属性都在这一段里） */
 const AUTHOR_DIALOG = (() => {
@@ -46,6 +60,7 @@ describe("作者卡片（业主指令 2026-10-17 四项精简）", () => {
     expect(AUTHOR_CARD).not.toContain("不会自动更新");
     // 快照语义仍在文件头注释与文档里（机制口径归文档，界面不常驻说明书）
     expect(SRC).toContain("解析那一刻的快照");
+    expect(AUTHOR_SRC).toContain("解析那一刻的快照");
   });
 
   it("底部不再重复作品标题（信息浮层里已经有「标题」那一行）", () => {
@@ -55,7 +70,7 @@ describe("作者卡片（业主指令 2026-10-17 四项精简）", () => {
 
   it("「在浏览器中打开主页」按钮已撤，作者名本身就是那条外链", () => {
     expect(AUTHOR_CARD).not.toContain("在浏览器中打开主页");
-    expect(AUTHOR_CARD).toMatch(/<a\b[^>]*href=\{a\.url\}[^>]*target="_blank"[^>]*rel="noreferrer"/);
+    expect(AUTHOR_CARD).toMatch(/<a\b[^>]*href=\{author\.url\}[^>]*target="_blank"[^>]*rel="noreferrer"/);
     // 没有主页的作者退回纯文本，不渲染一个点了没反应的假链接
     expect(AUTHOR_CARD).toContain('<span className="block truncate font-semibold text-sm">');
   });

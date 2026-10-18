@@ -10,6 +10,8 @@
  *
  * 与注册表的分工：注册表说「供不供 + 谁号称能解」，runner 说「今天真的解不解得了」。
  * 两者不一致时以 runner 为准 —— 宁可少供，不许假装有能力。
+ *
+ * 2026-10-18 起线上回落引擎已移除：列表里只剩本地内核，失败就是最终答复。
  */
 import { normalizeResult } from "@mediaget/parse-core";
 import type { EngineHealth, ParseResult } from "../../types/ipc";
@@ -54,24 +56,23 @@ export type EngineOutcome =
 
 export interface ParseEngine {
   id: EngineId;
-  /** 面向用户的引擎名（体检行与 fallbackReason 都用它，不再出现「通道 1」这类内部编号） */
+  /** 面向用户的引擎名（体检行的「可解引擎」用它，不再出现「通道 1」这类内部编号） */
   label: string;
   covers(platform: string): Promise<boolean>;
   run(req: EngineRequest): Promise<EngineOutcome>;
 }
 
 /**
- * 契约 `via` 仍是 local/online/mock 三值：它回答的是「结果从本机还是从线上来的」（隐私与
- * 计费语义），不是「哪个引擎解的」。引擎 id 想进界面走 probe 的能力矩阵，不改这个枚举。
+ * 契约 `via` 只剩 local/mock（线上回落在 2026-10-18 移除）。引擎 id 想进界面走 probe 的
+ * 能力矩阵，不改这个枚举；将来接入远端引擎时再按「结果从哪来」补值。
  */
-const VIA_OF: Record<EngineId, "local" | "online" | "mock"> = {
+const VIA_OF: Record<EngineId, "local" | "mock"> = {
   parseCore: "local",
   ytdlp: "local",
-  onlineApi: "online",
   mock: "mock",
 };
 
-export function viaOf(id: EngineId): "local" | "online" | "mock" {
+export function viaOf(id: EngineId): "local" | "mock" {
   return VIA_OF[id];
 }
 
@@ -118,7 +119,7 @@ export function createParseCoreEngine(loadCore: () => Promise<CoreEntry>): Parse
             },
           };
         }
-        // ID 模式未命中（解析器没挂 parseVideoId）= 换线上入口，不是最终答复
+        // ID 模式未命中（解析器没挂 parseVideoId）= 这次没解出来，不是最终答复
         if (!url && result.code !== 200) {
           return { ok: false, reason: "本地内核 ID 解析未命中", result };
         }
@@ -130,35 +131,6 @@ export function createParseCoreEngine(loadCore: () => Promise<CoreEntry>): Parse
           ok: false,
           reason: msg,
           result: { code: 500, msg: `本地解析失败：${msg}`, platform, failType: "script-error" },
-        };
-      }
-    },
-  };
-}
-
-export function createOnlineApiEngine(opts: {
-  call: (url: string, o: { source?: string; id?: string }) => Promise<ParseResult | null>;
-}): ParseEngine {
-  return {
-    id: "onlineApi",
-    label: "线上 API",
-    async covers(platform) {
-      // 线上通道没有自报清单：注册表的能力位就是唯一依据（未验证的写 unknown → 不路由）
-      return engineCoverage(platform, "onlineApi") === "ready";
-    },
-    async run({ platform, url, source, id }) {
-      // 线上是本机侧的最后一站：拿到什么都算最终答复，不再往下换人（旧行为原样）
-      try {
-        const online = await opts.call(url, { source, id });
-        if (online && online.code === 200) {
-          return { ok: true, result: normalizeResult(online) as unknown as ParseResult };
-        }
-        return { ok: true, result: online ?? { code: 502, msg: "线上回落无结果", platform, failType: "sources-down" } };
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return {
-          ok: true,
-          result: { code: 502, msg: `线上回落失败：${msg}`, platform, failType: "sources-down" },
         };
       }
     },

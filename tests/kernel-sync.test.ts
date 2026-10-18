@@ -112,6 +112,18 @@ const LOCAL_SCHEMAS: Record<string, z.ZodObject<z.ZodRawShape>> = {
   ParseResult: ParseResultSchema,
 };
 
+/**
+ * 镜像允许多出、而上游 `.d.ts` **尚未声明**的键（唯一一档例外，其余多出仍是红叉）。
+ *
+ * 依据是内核运行时真的写它们，只是自己的接口没声明：
+ *  - `dist/index.cjs:1393` 把 kuaishou 的 `likeCount / viewCount / commentCount / shareCount /
+ *    forwardCount` 原样平铺到 data（`likeCount` 等三个上游已声明，这四个才是缺口）；
+ *  - `dist/index.cjs:1033 / 1038 / 1221` 写 `authorSign` 与 `worksCount`。
+ * 客户端要读、要验形状，只能在镜像侧补声明 —— 上游把 `.d.ts` 补齐后，这里应该清空；
+ * 往里加一条 = 承认一次上游缺口，必须同时写上内核行号证据。
+ */
+const LOCAL_ONLY_FIELDS = new Set(["worksCount", "authorSign", "viewCount", "forwardCount"]);
+
 const pairs = [
   ["ParsedVideoQuality", "ParsedVideoQuality"],
   ["ParsedVideoItem", "ParsedVideoItem"],
@@ -132,8 +144,9 @@ describe("types/ipc-contract.ts 镜像与 @mediaget/parse-core 的 .d.ts 字段�
       expect(kernel, `工件缺少 interface ${kernelName}（内核重构改名？核对消费点后同步本测试）`).not.toBeNull();
 
       const missing = [...kernel!.keys()].filter((f) => !local.has(f));
-      const extra = [...local.keys()].filter((f) => !kernel!.has(f));
+      const extra = [...local.keys()].filter((f) => !kernel!.has(f) && !LOCAL_ONLY_FIELDS.has(f));
       // 工件新增而镜像缺 → 结果卡静默漏渲染；镜像多出 → 协议面漂移，必须跟工件对齐
+      // （`LOCAL_ONLY_FIELDS` 是点名豁免的上游未声明键，见文件头那张表）
       expect(missing, `${localName} 落后于工件，缺字段`).toEqual([]);
       expect(extra, `${localName} 有工件不存在的字段`).toEqual([]);
 

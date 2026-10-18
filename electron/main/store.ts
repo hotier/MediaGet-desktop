@@ -24,7 +24,7 @@ import {
   fsyncSync,
   closeSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import {
   DEFAULT_SETTINGS,
   type AppSettings,
@@ -33,6 +33,8 @@ import {
   type StatsSnapshot,
 } from "../../types/ipc";
 import { resolveKey } from "../../shared/platforms";
+import { normalizeAuthorSnapshot } from "../../shared/author";
+import { normalizeHistoryKeys } from "../../shared/history";
 
 /**
  * 历史窗口。5000 是给统计页的「逐文件粒度」用的：作者榜、单文件大小分布、
@@ -45,21 +47,38 @@ import { resolveKey } from "../../shared/platforms";
 export const HISTORY_MAX = 5000;
 
 /**
- * 落盘队列条数上限。快照里只剩待办（done 不进快照、canceled 不再恢复），
+ * 落盘队列条数上限。v13 起进过队列的行全部留档（done 也写，重启后照样回来），
  * 正常用量远到不了这条线；到了就说明用户不清理，那就丢最旧的，
  * 而不是让 queue.json 无界增长（每次节流写盘都是整档重写）。
  */
 const QUEUE_MAX = 200;
 
+/** 状态档的固定顺序：摘要按它排，两次落盘的日志才可直接比对（跟着插入序走会漂） */
+const QUEUE_STATUS_ORDER = ["queued", "downloading", "paused", "done", "error", "canceled"] as const;
+
+/**
+ * 队列快照 → 一行摘要（`5 项（downloading 1 · done 3 · error 1）`）。
+ *
+ * 只带条数与状态分布两维：隐私红线（§6）不让直链进日志，而排查「谁把 queue.json 写空了」
+ * 要的恰好也是这两维 —— 一行记录消失必然改变条数或某个状态的计数。进度字节不进摘要，
+ * 所以 2 秒一次的进度落盘不会刷屏（`saveQueue` 那边按摘要变化决定是否留痕）。
+ */
+export function queueDigest(tasks: readonly PersistedQueueTask[]): string {
+  const counts = new Map<string, number>();
+  for (const t of tasks) counts.set(t.status, (counts.get(t.status) ?? 0) + 1);
+  const parts = QUEUE_STATUS_ORDER.filter((s) => counts.has(s)).map((s) => `${s} ${counts.get(s)}`);
+  return `${tasks.length} 项${parts.length === 0 ? "" : `（${parts.join(" · ")}）`}`;
+}
+
 /** 历史落盘合并窗口：批量下载连环完成时，一秒内几十次追加只重写一次整档 */
 const HISTORY_WRITE_DEBOUNCE_MS = 1000;
-
 /** 计数档合并窗口：整档很小（几 KB），但收尾风暴同样不该钉几十次写 */
 const STATS_WRITE_DEBOUNCE_MS = 1000;
 
-export type { PersistedQueueTask };
+/** 异常 → 一行文本：落盘失败的原因要进日志，不能只留 `[object Object]` */
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-export interface StoreShape {
+export type { PersistedQueueTask };export interface StoreShape {
   settings: AppSettings;
   /** 内核配置键（DOUYIN_COOKIE 等） */
   kernel: Record<string, string>;
@@ -82,14 +101,20 @@ export class JsonStore {
   /** 计数档的内存对象（stats.ts 的 recorder 持有同一引用，这里只负责读盘与落盘） */
   private statsCache: StatsSnapshot | null = null;
   private statsTimer: NodeJS.Timeout | null = null;
+  /** 上一次队列落盘的摘要；只有它变了才留痕（进度每 2 秒写一次，不该刷屏） */
+  private lastQueueDigest = "";
 
   /**
-   * @param onError 落盘失败的去处（默认 console.error；主进程注入文件日志）。
-   * 历史写失败必须留痕 —— 合并窗口意味着失败不会在用户眼前重现第二次。
+   * @param onError 落盘/读盘失败的去处（默认 console.error；主进程注入文件日志）。
+   * 历史与队列写失败必须留痕 —— 合并窗口意味着失败不会在用户眼前重现第二次。
+   * @param onInfo 关键落盘动作的留痕（默认 console.info；主进程注入 `logger.info`）。
+   * 队列是这里唯一的主动留痕方：档内一行凭空没了，症状是「重启后任务不见了」，
+   * 而没有任何一行日志能回答「什么时候写的、写了什么形状」。
    */
   constructor(
     private dir: string,
-    private onError: (message: string) => void = (message: string): void => console.error(message)
+    private onError: (message: string) => void = (message: string): void => console.error(message),
+    private onInfo: (message: string) => void = (message: string): void => console.info(message)
   ) {
     mkdirSync(this.dir, { recursive: true });
   }
@@ -99,17 +124,23 @@ export class JsonStore {
   }
 
   private readJson<T>(file: string, fallback: T): T {
+    const name = basename(file);
     try {
       if (!existsSync(file)) return fallback;
       return JSON.parse(readFileSync(file, "utf8")) as T;
-    } catch {
+    } catch (e) {
       // 文件损坏按空处理（不让坏档阻断启动）；备份保留供人工恢复
+      const bak = file + ".corrupt-" + Date.now();
+      let kept = "";
       try {
-        const bak = file + ".corrupt-" + Date.now();
         renameSync(file, bak);
+        kept = `，原档留在 ${basename(bak)}`;
       } catch {
-        /* 备份失败也继续 */
+        kept = "，备份也失败（原档已不可读）";
       }
+      // 这条必须留痕：按空处理的症状是「历史记录/队列凭空没了」，而盘上一个字节都没少 ——
+      // 静默吞掉就等于把一次数据事故变成用户口中的「应用自己把档清了」
+      this.onError(`[store] ${name} 读取失败，按空处理：${errText(e)}${kept}`);
       return fallback;
     }
   }
@@ -188,11 +219,21 @@ export class JsonStore {
     const stamp = this.historyStamp();
     if (this.historyCache && this.historyStampOnDisk === stamp) return this.historyCache;
     const onDisk = this.readJson<HistoryEntry[]>(this.path("history"), []);
-    // 读侧归一（P2）：写入口归一只管得住今后，盘上的 xhs/ppxia 存量要在这里变回契约键，
+    // 读侧归一（P2）：写入口归一只管得住今后，盘上的 xhs 存量要在这里变回契约键，
     // 否则历史页按 `redbook` 筛选永远筛不出老记录。幂等，所以不必重写文件。
-    const migrated = onDisk.map((e) => (e.platform ? { ...e, platform: resolveKey(e.platform) } : e));
-    // 还没落盘的追加接回最前面（新在前），外部改档不能把它们吃掉
-    this.historyCache = [...this.historyPending, ...migrated].slice(0, HISTORY_MAX);
+    // author 同一条口径：`toText` 之前落过数字 uid（bilibili 的 mid），一个脏字段就足以让
+    // 整次 history:list 出参校验失败 —— 症状不是「这行少个作者」而是整页空态。
+    // 作品键同理：旧行的键算自原始链接（尾部斜杠/分享参数会各成一行），读侧补算成归一后的键。
+    const migrated = onDisk.map((e) => {
+      const keyed = e.platform ? { ...e, platform: resolveKey(e.platform) } : e;
+      return keyed.author ? { ...keyed, author: normalizeAuthorSnapshot(keyed.author) } : keyed;
+    });
+    // 还没落盘的追加接回最前面（新在前），外部改档不能把它们吃掉。
+    // 键归一连同 pending 一起跑：刚解析的同作品行与盘上旧键行也要当场合成一行。
+    this.historyCache = normalizeHistoryKeys([...this.historyPending, ...migrated]).slice(
+      0,
+      HISTORY_MAX
+    );
     this.historyStampOnDisk = stamp;
     return this.historyCache;
   }
@@ -232,24 +273,13 @@ export class JsonStore {
     return next;
   }
 
-  /** 清空历史：用户动作，立即落盘（不等合并窗口） */
-  clearHistory(): HistoryEntry[] {
-    this.historyCache = [];
-    this.historyPending = [];
-    if (this.historyTimer) {
-      clearTimeout(this.historyTimer);
-      this.historyTimer = null;
-    }
-    this.writeHistoryNow();
-    return [];
-  }
-
   /**
    * 删除选中记录（history:remove）。传入的是**行键**集合 —— UI 一行可能聚了图集的
    * 多条条目（同 groupId），故删除口径是「条目 id 命中 **或** 其 groupId 命中」都删，
    * 保证选一行删掉整组、不留下半截图集。返回删除后的剩余列表，UI 直接拿去刷新，
    * 省一次回读（也不给「删完刚好空表」留特判：空数组就是空态）。
-   * 用户动作，立即落盘（与 clearHistory 同一条语义）。必须先走 loadHistory 把合并窗口里
+   * 整表清空也走这条（界面上是「表头全选 → 移除记录」，v9 起没有独立的 clear 方法）。
+   * 用户动作，立即落盘。必须先走 loadHistory 把合并窗口里
    * 待写的追加折进缓存再筛，再经 writeHistoryNow 清掉 pending —— 绕过缓存直接写盘，
    * 节流定时器到点会拿旧缓存把删掉的行复活。
    */
@@ -279,7 +309,7 @@ export class JsonStore {
       this.historyPending = [];
       this.historyStampOnDisk = this.historyStamp(); // 我们自己写的这份，缓存与盘重新对齐
     } catch (e) {
-      this.onError(`history.json 落盘失败: ${e instanceof Error ? e.message : String(e)}`);
+      this.onError(`[store] history.json 落盘失败：${errText(e)}`);
     }
   }
 
@@ -321,19 +351,39 @@ export class JsonStore {
       this.writeJson(this.path("stats"), this.statsCache);
     } catch (e) {
       // 计数写失败是静默倒退：不留痕就没人知道统计页少了这一段
-      this.onError(`stats.json 落盘失败: ${e instanceof Error ? e.message : String(e)}`);
+      this.onError(`[store] stats.json 落盘失败：${errText(e)}`);
     }
   }
 
   // —— queue（下载队列恢复用；写走节流，进度高频不逐条落盘）——
 
   loadQueue(): PersistedQueueTask[] {
-    return this.readJson<PersistedQueueTask[]>(this.path("queue"), []);
+    const raw = this.readJson<unknown>(this.path("queue"), []);
+    if (!Array.isArray(raw)) {
+      // 盘上那份算外部输入（手工编辑过、半截写、老版本形状都算）。异形只当没队列，
+      // 但必须留痕：把非数组交给 `downloader.restore` 是启动级崩溃，而崩之前一行日志都没有
+      this.onError(`[store] queue.json 不是数组（${typeof raw}），按空队列处理`);
+      this.lastQueueDigest = "";
+      return [];
+    }
+    const tasks = raw as PersistedQueueTask[];
+    // 盘上现值作摘要基线：形状没变的第一次落盘不必再报一行
+    this.lastQueueDigest = queueDigest(tasks);
+    return tasks;
   }
 
   saveQueue(tasks: PersistedQueueTask[]): void {
     // 快照已是展示序（新在前），截断即丢最旧的，不再排序
-    this.writeJson(this.path("queue"), tasks.slice(0, QUEUE_MAX));
+    const keep = tasks.slice(0, QUEUE_MAX);
+    this.writeJson(this.path("queue"), keep);
+    const digest = queueDigest(keep);
+    if (digest !== this.lastQueueDigest) {
+      this.lastQueueDigest = digest;
+      this.onInfo(`[store] 队列落盘 ${digest}`);
+    }
+    if (keep.length < tasks.length) {
+      this.onError(`[store] 队列超过 ${QUEUE_MAX} 条上限，丢弃最旧的 ${tasks.length - keep.length} 条`);
+    }
   }
 
   /**
@@ -363,8 +413,10 @@ export class JsonStore {
     if (!pending) return;
     try {
       this.saveQueue(pending);
-    } catch {
-      /* 队列快照写失败不影响下载本身 */
+    } catch (e) {
+      // 写失败不影响下载本身，但必须留痕：节流窗口意味着这事不会在用户眼前重演第二次，
+      // 而它丢的是「重启后那条还没下完的任务」——静默就等于 P2 验收失败却没人知道
+      this.onError(`[store] 队列落盘失败：${errText(e)}`);
     }
   }
 

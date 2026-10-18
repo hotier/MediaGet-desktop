@@ -38,9 +38,8 @@ describe("队列页空态", () => {
     expect(QUEUE).not.toContain("py-16");
   });
 
-  it("播报行留在顶部，不被卷进居中块", () => {
-    expect(QUEUE).toContain("<ToastLine");
-    expect(QUEUE.indexOf("<ToastLine")).toBeLessThan(QUEUE.indexOf("flex-1 flex-col items-center justify-center"));
+  it("空态分支里不许再长出页内播报（回执只走浮空 toast，见 tests/toast-sonner.test.ts）", () => {
+    expect(QUEUE).not.toMatch(/<Alert\b|ToastLine/);
   });
 });
 

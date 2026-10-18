@@ -54,6 +54,8 @@ import { ChevronDown, ChevronUp, Clock3, Copy } from "lucide-react";
 import { api } from "../lib/bridge";
 import type { HistoryEntry } from "../../../types/ipc";
 import { displayName } from "../../../shared/platforms";
+import { AuthorAvatar } from "../components/AuthorAvatar";
+import { AuthorCard } from "../components/AuthorCard";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { cn } from "../lib/utils";
 import { groupWorks, type WorkRow } from "../lib/history-works";
@@ -76,7 +78,7 @@ import {
   type ExportWork,
   type SelState,
 } from "../lib/history-selection";
-import { fmtBytes, fmtCount, fmtCreated, kindLabel } from "../lib/format";
+import { fmtBytes, fmtCreated, fmtFileStamp, kindLabel } from "../lib/format";
 import { HISTORY_WINDOW } from "../lib/local-limits";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
@@ -96,6 +98,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  dialogSlideMotion,
 } from "../components/ui/dialog";
 import {
   Sheet,
@@ -147,8 +150,9 @@ const COL = {
    *  框到文字只剩作品列自己的 12px */
   select: "w-[calc(0.75rem+1rem)] pe-0",
   kind: "w-[calc(1.5rem+2.4em)]",
-  /** 约 9 个汉字；再窄会把五字昵称切成「@胶片…」这种半截词（超长仍在此截断 + tooltip） */
-  author: "w-[calc(1.5rem+7em)]",
+  /** 约 9 个汉字；再窄会把五字昵称切成「@胶片…」这种半截词（超长仍在此截断 + tooltip）。
+   *  头像与它前面的 gap 是 em / rem 定值，加进列宽里，昵称的可用宽度因此与加头像前一致 */
+  author: "w-[calc(1.5rem+8.4em+0.5rem)]",
   /** 表头「文件数」比数字值宽，按表头取 */
   count: "w-[calc(1.5rem+3.2em)]",
   /** 容纳最宽形态「2026-10-13 12:32:04」（8.8em） */
@@ -213,7 +217,15 @@ export default function HistoryPage({
   const visibleKeysRef = useRef<string[]>([]);
 
   useEffect(() => {
-    void api.history.list({ limit: HISTORY_LIMIT }).then(setList).catch(() => {});
+    // 失败必须出声：这里原先是 `.catch(() => {})`，而 `list` 的初值就是空数组 ——
+    // 一次 `history:list` 报错（例：某行有个脏字段过不了出参校验）在屏幕上和「真没记录」
+    // 完全同形，满盘记录被读成空态还没人报错。文案只挂在动作上，不进空态分支。
+    void api.history
+      .list({ limit: HISTORY_LIMIT })
+      .then(setList)
+      .catch((e: unknown) =>
+        toast.error(`历史记录读取失败：${String(e instanceof Error ? e.message : e)}`)
+      );
   }, []);
 
   // 统计页点榜 → 本页筛到那个平台。平台选项池来自全量数据，所以榜上的键一定在这页可选
@@ -346,13 +358,15 @@ export default function HistoryPage({
     return rs.map((r) => buildWorkInfoText(workInfoInput(r)));
   }
 
-  /** 多选·导出：四档共用同一批选中行，文件名带条数，多次导出可分辨。
+  /** 多选·导出：四档共用同一批选中行。
+   *  文件名 = `MediaGet-export-<年月日时分>`（业主指令 2026-10-19）：旧名「即刻解析-历史-N条」
+   *  既带着已废弃的产品名，同一数量导两次还会撞成同名文件；换成时间戳后不带品牌旧称、
+   *  也能和下载目录里别的导出区分开。时刻口径见 `fmtFileStamp`。
    *  表格三档（xlsx / csv / json）吃同一张列表，所以列不会互相漂；txt 是另一条内容——
    *  它拼的是「作品信息」全文，与单行复制同源。
    *  xlsx 是唯一异步的一档（动态载 exceljs 再拼字节），整条链因此是 async。 */
   async function exportSelected(fmt: ExportFormat): Promise<void> {
-    const n = selectedRows.length;
-    const name = `即刻解析-历史-${n}条`;
+    const name = `MediaGet-export-${fmtFileStamp(Date.now())}`;
     if (fmt === "txt") {
       saveTextFile(`${name}.txt`, concatWorkInfo(workTexts(selectedRows)), EXPORT_FORMATS.txt.mime);
       return;
@@ -479,7 +493,7 @@ export default function HistoryPage({
         ) : (
           /* 底线 = 定宽列 + 作品列可读下限（约 17em）；窗口更窄时横向滚，而不是把作品列压成 0 宽。
              勾选框列宽是 rem 定值（左内边距 0.75rem + 方框 1rem，右侧不留内边距），所以它单独加在 calc 里、不折进 em */
-          <Table className="min-w-[calc(41em+1.75rem)]">
+          <Table className="min-w-[calc(42.4em+2.25rem)]">
             <TableHeader>
               <TableRow className="group">
                 <TableHead className={COL.select}>
@@ -502,7 +516,6 @@ export default function HistoryPage({
                       }
                       aria-label="全选可见记录"
                       className="group-hover:border-foreground/50"
-                      className="hover:border-foreground/50"
                     />
                   </span>
                 </TableHead>
@@ -576,18 +589,27 @@ export default function HistoryPage({
                   </TableCell>
                   <TableCell>
                     {r.authorName ? (
-                      <TruncatedTooltip label={r.authorName}>
-                        <button
-                          type="button"
-                          className="block w-full min-w-0 cursor-pointer truncate text-start font-medium hover:underline"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            openAuthor(r);
-                          }}
-                        >
-                          {r.authorName}
-                        </button>
-                      </TruncatedTooltip>
+                      <span className="flex min-w-0 items-center gap-2">
+                        <AuthorAvatar
+                          avatar={r.author?.avatar}
+                          name={r.authorName}
+                          platform={r.platform}
+                          sizeClassName="size-[1.4em]"
+                          textClassName="text-[0.72em]"
+                        />
+                        <TruncatedTooltip label={r.authorName}>
+                          <button
+                            type="button"
+                            className="block min-w-0 flex-1 cursor-pointer truncate text-start font-medium hover:underline"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              openAuthor(r);
+                            }}
+                          >
+                            {r.authorName}
+                          </button>
+                        </TruncatedTooltip>
+                      </span>
                     ) : (
                       <span className="text-muted-foreground">—</span>
                     )}
@@ -705,9 +727,7 @@ export default function HistoryPage({
 
       {/* 作者卡片：两个入口（表格作者列 / 作品信息作者行）同一层浮层，无遮罩 + 非模态
           （业主指令 2026-10-15「作者卡片的呼出不做背景遮罩」）——背景照常可见可点，点卡片外只收这层。
-          进出对称：向上出现 / 向下收起（slide ±2rem）。
-          曲线单独调：基类退场用 ease，淡出被前置（实测 0.59@50ms）→ 看起来「直接消失」；
-          改进入 ease-out / 退场 ease-in + 250ms，前半段留住不透明度，位移才看得见 */}
+          进出对称：上浮出现 / 下沉收起，曲线由 `dialogSlideMotion` 统一提供（预览弹窗同款） */}
       <Dialog
         modal={false}
         open={authorShown}
@@ -720,13 +740,18 @@ export default function HistoryPage({
           // 说明行已删（业主指令 2026-10-17：卡片只摆作者本身的信息）；Radix 要求显式声明
           // 「这层没有 description」，否则控制台告警并把 aria-describedby 指向空元素
           aria-describedby={undefined}
-          className="max-w-sm slide-in-from-bottom-8 data-[state=closed]:slide-out-to-bottom-8 data-[state=open]:ease-out data-[state=closed]:ease-in data-[state=closed]:duration-250"
+          className={cn("max-w-sm", dialogSlideMotion)}
         >
           <DialogHeader>
             <DialogTitle>作者卡片</DialogTitle>
           </DialogHeader>
           {authorRow && (
-            <AuthorCard row={authorRow} platformName={displayName(authorRow.platform)} />
+            <AuthorCard
+              author={authorRow.author}
+              platform={authorRow.platform}
+              platformName={displayName(authorRow.platform)}
+              emptyHint="该记录未保存作者信息（此后生效）。"
+            />
           )}
         </DialogContent>
       </Dialog>
@@ -793,114 +818,26 @@ export default function HistoryPage({
   );
 }
 
-/**
- * 作者卡片：快照字段逐项展示，缺项不占行；头像加载失败退回首字占位。
- * 名字本身就是「在浏览器打开主页」那条链接（业主指令 2026-10-17 撤掉单独的外链按钮）；
- * 「快照、之后不自动更新」不再写在卡片里 —— 机制口径归文档，界面不常驻说明书（§8.4 同一条原则）。
- */
-function AuthorCard({
-  row,
-  platformName,
-}: {
-  row: WorkRow;
-  platformName: string;
-}): React.ReactElement {
-  const [avatarFailed, setAvatarFailed] = useState(false);
-  const a = row.author;
-  if (!a) return <p className="text-muted-foreground">该记录未保存作者信息（此后生效）。</p>;
-
-  const name = a.name ?? a.id ?? "?";
-
-  const stats: Array<{ label: string; value: string }> = [];
-  if (a.followerCount != null) stats.push({ label: "粉丝", value: fmtCount(a.followerCount) });
-  if (a.followingCount != null) stats.push({ label: "关注", value: fmtCount(a.followingCount) });
-  if (a.totalFavorited != null) stats.push({ label: "获赞", value: fmtCount(a.totalFavorited) });
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-3">
-        {a.avatar && !avatarFailed ? (
-          <img
-            src={a.avatar}
-            alt=""
-            referrerPolicy="no-referrer"
-            onError={() => setAvatarFailed(true)}
-            className="size-12 shrink-0 rounded-full object-cover"
-          />
-        ) : (
-          <span
-            className="flex size-12 shrink-0 items-center justify-center rounded-full bg-muted font-semibold text-sm"
-            aria-hidden="true"
-          >
-            {name.slice(0, 1)}
-          </span>
-        )}
-        <div className="min-w-0">
-          {/* 外链走 <a target=_blank>，由主进程 setWindowOpenHandler 转交系统浏览器；
-              不套 text-primary —— 那是动态魔法色，历史页没有封面去设它，会停在中性初值上
-              （对比度 1.9:1，看着像禁用）；可点性只靠 hover 下划线与光标 */}
-          {a.url ? (
-            <TruncatedTooltip label={name}>
-              <a
-                href={a.url}
-                target="_blank"
-                rel="noreferrer"
-                className="block cursor-pointer truncate font-semibold text-sm hover:underline"
-              >
-                {name}
-              </a>
-            </TruncatedTooltip>
-          ) : (
-            <TruncatedTooltip label={name}>
-              <span className="block truncate font-semibold text-sm">{name}</span>
-            </TruncatedTooltip>
-          )}
-          {/* 抖音 uid 这类长 ID 一定会被切，截断处同样要给 tooltip（全仓基准） */}
-          {a.id && (
-            <TruncatedTooltip label={`ID ${a.id}`}>
-              <div className="truncate text-muted-foreground">ID {a.id}</div>
-            </TruncatedTooltip>
-          )}
-          {platformName && (
-            <TruncatedTooltip label={platformName}>
-              <div className="truncate text-muted-foreground">{platformName}</div>
-            </TruncatedTooltip>
-          )}
-        </div>
-      </div>
-
-      {stats.length > 0 && (
-        <div className="flex gap-5">
-          {stats.map((s) => (
-            <div key={s.label} className="flex flex-col gap-0.5">
-              <span className="text-muted-foreground">{s.label}</span>
-              <span className="text-sm font-semibold tabular-nums">{s.value}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {a.sign && (
-        <TruncatedTooltip label={a.sign}>
-          <p className="truncate text-muted-foreground">{a.sign}</p>
-        </TruncatedTooltip>
-      )}
-    </div>
-  );
-}
-
 /** 浮层里的一行信息：缺项不占行；`valueClassName` 让「作品标题」这一行跟表格主信息列同字重 */
 function Field({
   label,
   children,
   valueClassName,
+  rowClassName,
 }: {
   label: string;
   children: React.ReactNode;
   valueClassName?: string;
+  /** 行内有头像这类非文字元素时改 `items-center`：baseline 会拿图片底边当基线，文字看着往下掉 */
+  rowClassName?: string;
 }): React.ReactElement {
   return (
-    <div className="grid grid-cols-[5rem_1fr] items-baseline gap-2 border-b border-border py-2">
+    <div
+      className={cn(
+        "grid grid-cols-[5rem_1fr] items-baseline gap-2 border-b border-border py-2",
+        rowClassName
+      )}
+    >
       <span className="text-muted-foreground">{label}</span>
       <span className={cn("min-w-0", valueClassName)}>{children}</span>
     </div>
@@ -979,14 +916,25 @@ function WorkDetail({
         </TruncatedTooltip>
       </Field>
       {row.authorName && (
-        <Field label="作者">
-          <button
-            type="button"
-            className="cursor-pointer font-medium hover:underline"
-            onClick={onOpenAuthor}
-          >
-            {row.authorName}
-          </button>
+        <Field label="作者" rowClassName="items-center">
+          <span className="flex min-w-0 items-center gap-2">
+            <AuthorAvatar
+              avatar={row.author?.avatar}
+              name={row.authorName}
+              platform={row.platform}
+              sizeClassName="size-[1.4em]"
+              textClassName="text-[0.72em]"
+            />
+            <TruncatedTooltip label={row.authorName}>
+              <button
+                type="button"
+                className="min-w-0 flex-1 cursor-pointer truncate text-start font-medium hover:underline"
+                onClick={onOpenAuthor}
+              >
+                {row.authorName}
+              </button>
+            </TruncatedTooltip>
+          </span>
         </Field>
       )}
       {row.kind && <Field label="类型">{kindLabel(row.kind)}</Field>}
@@ -1018,7 +966,7 @@ function WorkDetail({
               <li key={f} className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => void api.app.showInFolder(dirOf(f))}
+                  onClick={() => void api.app.showInFolder(f)}
                   className="min-w-0 cursor-pointer text-left hover:underline"
                 >
                   <TruncatedTooltip label={f} contentClassName="max-w-96">

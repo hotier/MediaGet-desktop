@@ -1,18 +1,22 @@
 /**
- * 队列页：下载的资源视图（文件 / 状态 / 进度 / 大小 / 速度 / 剩余时间 / 创建时间 / 完成时间 / 操作）。
+ * 队列页：下载的资源视图（文件 / 状态 / 进度 / 大小 / 速度 / 剩余时间 / 创建时间 / 完成时间）。
  * 分工（2026-10-14）：本页讲「哪些文件、下得多大、下到哪、什么时候下的」；「哪个作品」归历史页。
  * 队列只有**一张表**（一个卡片）：表头一份，所有链接的行顺序排在同个 TableBody 里（2026-10-15 业主指令）。
- * 一个链接多条资源（同 groupId）= 表里的「主线程行 + 子行」：主线程行不是另一种卡片，它就是这张九列表格
+ * 一个链接多条资源（同 groupId）= 表里的「主线程行 + 子行」：主线程行不是另一种卡片，它就是这张八列表格
  * 的一行，只是**自己没有资源**——每格都从子行算出来：
  * 大小 sum、速度 均值、剩余 sum、创建时间 最早、完成时间 最晚（子行不全 done 则「—」）。
+ * 速度与剩余的取值口径（业主指令 2026-10-18）：**在动报实时、暂停报暂停那一刻的快照、完成报平均速度**；
+ * 排队/失败/已取消没有可信的数，一律「—」（详见 `speedCell()` 与 `aggregate()`）。
  * 默认收起（点标题右侧的箭头展开子行，箭头不放行首——那样主标题会被推离统一的 x）；单资源链接没有主线程行，那一行文件本身就是主线程。
- * 「状态」列 = 徽标 + 至多一颗动作图标（暂停/继续/重试），动作说的就是徽标那个词；「操作」列只留取消与位置。
+ * 「状态」列 = 徽标 + 至多一颗动作图标（暂停/继续/重试），动作说的就是徽标那个词；
+ * 「取消」不再单独占列（2026-10-18 业主指令移除操作列），改由右键菜单「取消下载」承接 ——
+ * 暂停/继续仍在徽标里，取消是破坏性动作，藏在菜单里反而少误触。
  * 排版（业主指令 2026-10-15 统一，与历史页同口径）：表格只有一个字号档位（「设置→外观→界面字号」，默认 13px），
  * 列与列之间不分大小；层级只靠字重与色彩 —— 主信息（作品标题）`font-medium` + 前景、子行文件名常规 + 前景、
  * 元数据（大小/速度/剩余/时间/百分比）常规 + muted；数字列 tabular-nums；字体族全 UI 栈，不混等宽。
  * 右键菜单（业主指令 2026-10-15）：不显示文件名（行里就是它）；「查看作品信息」跳历史页定位该作品行。
- * 「完成时间」只在本进程存活期内有值：重启后已完成任务不再回队列（见 downloader.snapshot 过滤 done），
- * 要找历史时刻去历史页。
+ * 「完成时间」取档内 `finishedAt`（契约 v13：进过队列的行全部留档，重启后照样回来）；
+ * 要看这个作品本身去历史页，这里只是下载台账。
  * 筛选（UIUX-DESIGN §2.2）：状态分段 + 搜索 + 平台，全部是**渲染层过滤**（`download:list` 返回的就是全量，零契约变更）。
  * 筛选的单位是**作品（组）**：组里任一文件命中就出现在列表里，展开时只画命中的子行；组行的数值仍是整组的真实聚合
  * ——进度与 `完成/总数` 说的是这个作品，不是筛选结果。分段计数按「含 N 个此类文件的组」数，所以各段之和可以大于「全部」。
@@ -25,11 +29,10 @@ import { toast } from "sonner";
 import { ChevronDown, ChevronRight, Copy, DownloadCloud, FolderOpen, Info, Pause, Play, RotateCcw, Trash2, X } from "lucide-react";
 import { api } from "../lib/bridge";
 import { cn } from "../lib/utils";
-import { fmtBytes, fmtCreated, fmtEta } from "../lib/format";
+import { avgSpeed, fmtBytes, fmtCreated, fmtEta, fmtSpeed } from "../lib/format";
 import type { DownloadTaskView } from "../../../types/ipc";
 import { displayName } from "../../../shared/platforms";
 import { PlatformIcon } from "../components/PlatformIcon";
-import { Alert, AlertDescription } from "../components/ui/alert";
 import { Button } from "../components/ui/button";
 import { badgeVariants } from "../components/ui/badge";
 import { Card, CardContent } from "../components/ui/card";
@@ -55,7 +58,6 @@ import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
-  ContextMenuSeparator,
   ContextMenuTrigger,
 } from "../components/ui/context-menu";
 
@@ -127,26 +129,31 @@ const clearOne = (id: string): Promise<unknown> => api.download.clear([id]);
  * 最坏内容实测（13px 档）：状态徽标「失败 12」+ 重试图标 74（汉字 3.2em + 图标 12 + 间距 4 + 徽标内边距 16，
  * 动作图标就在徽标里面：下载中→暂停、已暂停→继续、失败/已取消→重试，排队与完成没有可给的动作就不是按钮）；
  * 大小「999.9 MB」54；速度「999.9 MB/s」65；剩余「99:59:59」48；时间「2025-12-31 23:59:59」114；
- * 操作一颗 40px 文本按钮（取消 与 位置 互斥，同一行不会同现）；进度列 96 = 内边距 24 + 条 34 + 间距 6 + 百分比。
  * 百分比 `w-[2.4em]`（「100%」30、「0%」16 —— 不固定位数会让每行的条长短不一），条吃掉剩下的并且每行等长。
- * MIN_W = 86em（13px 档 = 1118）：定宽约 794 + 文件列底线 320。文件列要装下主线程行的
- * 「15 平台图标 + 标题 + 28 箭头 + 18 完成数」，实测这些固定件占 113，
+ * 2026-10-18 业主指令「加宽状态列 + 保留速度列的数值」：状态 3.6em（46.8 < 74）根本装不下带图标的徽标，
+ * 速度 4em（52 < 65）会让「999.9 MB/s」溢出到剩余列 —— 两列各自提到装得下的宽度（5.7 / 5.2em）。
+ * MIN_W = 69.7em：定宽内容合计 54.6em + 8 格内边距 14.8em ≈ 69.4em，剩下那点给文件列。
+ * 文件列要装下主线程行的「15 平台图标 + 标题 + 28 箭头 + 18 完成数」，实测这些固定件占 113，
  * 底线给到 320 标题才有 211px ≈ 14 个汉字可读（再窄一档只剩 7 个字，等于没标题）。
- * 单行九列放不进默认 1080 窗口（内容宽 794），由表格容器 overflow-x-auto 横向滚；
+ * 单行八列放不进默认 1080 窗口（内容宽 794），由表格容器 overflow-x-auto 横向滚；
  * 要整屏不滚只能砍列或砍字号，那由业主定。
  */
 const COL = {
-  status: "w-[calc(1.5rem+3.6em)]",
-  progress: "w-[calc(1.5rem+4.5em)]",
-  size: "w-[calc(1.5rem+4.4em)]",
-  speed: "w-[calc(1.5rem+2.8em)]",
-  eta: "w-[calc(1.5rem+2.8em)]",
+  // 2026-10-18 业主指令：状态列与速度列各自放宽到「最坏内容装得下」——
+  // 状态徽标含动作图标要 74（5.7em），速度「999.9 MB/s」要 65（5em，给到 5.2em 留余量）。
+  // 不从速度列刮宽度去补状态列：**速度列的数值必须完整可见**，两列各长各的，总宽交给 TABLE_MIN_W。
+  status: "w-[calc(1.5rem+5.7em)]",
+  // 进度/大小/剩余四列（2026-10-18 业主指令：取消列移除，腾出的宽度分给它们）
+  progress: "w-[calc(1.5rem+5.7em)]",
+  size: "w-[calc(1.5rem+4em)]",
+  speed: "w-[calc(1.5rem+5.2em)]",
+  eta: "w-[calc(1.5rem+4em)]",
   created: "w-[calc(1.5rem+7em)]",
   finished: "w-[calc(1.5rem+7em)]",
-  actions: "w-[calc(1.5rem+3.2em)]",
 } as const;
 
-const TABLE_MIN_W = "min-w-[68em]";
+/** 定宽内容 54.6em + 8 格内边距 14.8em ≈ 69.4em；66.4 → 69.7 加的就是状态 +2.1em 与速度 +1.2em */
+const TABLE_MIN_W = "min-w-[69.7em]";
 
 export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactElement {
   const [tasks, setTasks] = useState<DownloadTaskView[]>([]);
@@ -156,11 +163,17 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
   const [query, setQuery] = useState("");
   const [platform, setPlatform] = useState("");
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
-  const [toast, setToast] = useState<string>("");
   const searchRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    void api.download.list().then(setTasks).catch(() => {});
+    // 失败必须出声（同 HistoryPage 那条）：`tasks` 的初值就是空数组，一次 `download:list`
+    // 报错在屏幕上与「队列真没记录」完全同形。文案只挂在动作上，不进空态分支。
+    void api.download
+      .list()
+      .then(setTasks)
+      .catch((e: unknown) =>
+        toast.error(`下载队列读取失败：${String(e instanceof Error ? e.message : e)}`)
+      );
     const offs = [
       api.download.onProgress((t) => setTasks((prev) => upsert(prev, t))),
       api.download.onDone((t) => setTasks((prev) => upsert(prev, t))),
@@ -180,12 +193,6 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  useEffect(() => {
-    if (!toast) return;
-    const h = setTimeout(() => setToast(""), 2400);
-    return () => clearTimeout(h);
-  }, [toast]);
 
   // 显示名直接查本仓注册表（模块常量，不经 getMeta 异步到达）——
   // 平台名不再需要参与缓存键：以前要加那一维，是因为名字表来自 getMeta、比任务晚到
@@ -269,9 +276,8 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
   if (tasks.length === 0) {
     return (
       // 空态只留标题一行，说明段删掉（业主指令 2026-10-17）；剩下这一组在可用高度里垂直居中，
-      // 不再顶着页头悬在半空——ToastLine 仍钉在顶部，居中的是它下面那片可用区
+      // 不再顶着页头悬在半空
       <section className="flex min-h-full flex-col gap-3">
-        <ToastLine text={toast} />
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
           <DownloadCloud className="size-11 text-faint" strokeWidth={1.5} aria-hidden="true" />
           <div className="font-medium">暂无下载任务</div>
@@ -282,7 +288,6 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
 
   return (
     <section className="flex flex-col gap-3">
-      <ToastLine text={toast} />
       {/* gap-0 同历史页：不让 Card 的 gap-4 在工具栏底线与表头之间垫出空带 */}
       <Card className="gap-0 py-0">
         <div className="flex flex-wrap items-center gap-2 border-b border-border px-2 py-1.5">
@@ -346,27 +351,19 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
               </Button>
             </div>
           ) : (
-            <QueueTable
-              groups={rows}
-              expanded={expanded}
-              onToggle={toggleGroup}
-              onAct={act}
-              onNav={onNav}
-            />
+            <div className="overflow-x-auto">
+              <QueueTable
+                groups={rows}
+                expanded={expanded}
+                onToggle={toggleGroup}
+                onAct={act}
+                onNav={onNav}
+              />
+            </div>
           )}
         </CardContent>
       </Card>
     </section>
-  );
-}
-
-/** 页内播报（与首页/历史页同口径：一行 Alert，两秒多自动消失）。清空到最后一条也要报，所以两个分支都挂它 */
-function ToastLine({ text }: { text: string }): React.ReactElement | null {
-  if (!text) return null;
-  return (
-    <Alert>
-      <AlertDescription>{text}</AlertDescription>
-    </Alert>
   );
 }
 
@@ -379,9 +376,12 @@ type OnNav = (page: "history", groupId: string) => void;
 interface Aggregate {
   total: number;
   pct: number;
-  meanSpeed: number;
+  /**
+   * 「速度」列与「剩余」列的同一个分母：在动取实时均速 → 只剩暂停取暂停快照均速 →
+   * 全完成取各文件平均速度的均值（同一组里不把三种口径混着平均，那会造出一个谁也不是的数）。
+   */
+  speed: number;
   remaining: number;
-  anyActive: boolean;
   anyPaused: boolean;
   running: number;
   failed: number;
@@ -391,24 +391,43 @@ interface Aggregate {
 }
 
 /**
+ * 「速度」列该显示的数（字节/秒）；0 = 这一格没有可报的数，渲染「—」。
+ * - 下载中：实时采样值
+ * - 已暂停：**暂停那一刻的快照** —— 主进程 `pause()` 故意不清 speed，且它随队列档落盘（契约 v17），
+ *   所以暂停行在重启后照样说得清「当时多快」
+ * - 完成：平均速度 = `transferBytes ÷ transferMs`（实际传输时长，契约 v18）。
+ *   分子分母必须取自同一段区间：接着旧 `.part` 写的行，`transferBytes` 只覆盖后半程，
+ *   用整个 `received` 当分子会把速度凭空翻倍。暂停多久都不进分母 —— 那是「停了」不是「下得慢」
+ * - 排队 / 失败 / 已取消：没有可信的数，宁可空着也不报一个别处的值
+ */
+function speedCell(t: DownloadTaskView): number {
+  if (t.status === "downloading" || t.status === "paused") return t.speed > 0 ? t.speed : 0;
+  if (t.status !== "done") return 0;
+  return avgSpeed(t.transferBytes, t.transferMs > 0 ? t.transferMs : null) ?? 0;
+}
+
+/**
  * 主线程行的数据来源：它自己没有资源，每一格都是从子行算出来的。
- * 大小 sum、剩余 sum（= sum(未下完字节) / 均速）、创建时间取最早、完成时间取最晚（子行不全 done 则不报）。
- * 均速只平均「在动的那些文件」——排队与完成的 speed 是 0，参与平均会把 30 图组里 3 张在动的速度压成 1/10。
+ * 大小 sum、剩余 sum（= sum(未下完字节)）、创建时间取最早、完成时间取最晚（子行不全 done 则不报）。
+ * 速度按状态分档取（见 `speedCell()`）：在动的均速／暂停快照的均速／完成行平均速度的均值。
+ * 均速只平均「有数的那几颗」——排队与失败的 speed 是 0，参与平均会把 30 图组里 3 张在动的速度压成 1/10。
  */
 function aggregate(tasks: DownloadTaskView[]): Aggregate {
   const sum = (f: (t: DownloadTaskView) => number): number => tasks.reduce((s, t) => s + f(t), 0);
   const total = sum((t) => Math.max(t.total, 0));
   const recv = sum((t) => t.received);
   const allDone = tasks.every((t) => t.status === "done");
+  const mean = (xs: number[]): number => (xs.length > 0 ? xs.reduce((a, b) => a + b, 0) / xs.length : 0);
+  const speedsOf = (status: DownloadTaskView["status"]): number[] =>
+    tasks.filter((t) => t.status === status).map(speedCell).filter((v) => v > 0);
+  const live = speedsOf("downloading");
+  const paused = speedsOf("paused");
+  const done = speedsOf("done");
   return {
     total,
     pct: total > 0 ? Math.min(100, (recv / total) * 100) : 0,
-    meanSpeed: (() => {
-      const moving = tasks.filter((t) => t.speed > 0);
-      return moving.length > 0 ? sum((t) => t.speed) / moving.length : 0;
-    })(),
+    speed: live.length > 0 ? mean(live) : paused.length > 0 ? mean(paused) : mean(done),
     remaining: sum((t) => Math.max(t.total - t.received, 0)),
-    anyActive: tasks.some((t) => t.status === "downloading" || t.status === "queued"),
     anyPaused: tasks.some((t) => t.status === "paused"),
     running: tasks.filter((t) => t.status === "downloading").length,
     failed: tasks.filter((t) => t.status === "error").length,
@@ -466,7 +485,7 @@ function QueueTable({
   onNav: OnNav;
 }): React.ReactElement {
   return (
-    <Table className={`${TABLE_MIN_W} w-fit`}>
+    <Table className={TABLE_MIN_W}>
       <TableHeader>
         <TableRow>
           <TableHead className="w-[calc(1.5rem+16em)]">文件</TableHead>
@@ -477,7 +496,6 @@ function QueueTable({
           <TableHead className={COL.eta}>剩余</TableHead>
           <TableHead className={COL.created}>创建时间</TableHead>
           <TableHead className={COL.finished}>完成时间</TableHead>
-          <TableHead className={COL.actions} aria-label="操作" />
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -579,10 +597,10 @@ const GroupRow = memo(function GroupRow({
         {a.total > 0 ? fmtBytes(a.total) : "—"}
       </TableCell>
       <TableCell className={`${COL.speed} whitespace-nowrap tabular-nums text-muted-foreground`}>
-        {a.meanSpeed > 0 ? `${fmtBytes(a.meanSpeed)}/s` : "—"}
+        {fmtSpeed(a.speed)}
       </TableCell>
       <TableCell className={`${COL.eta} whitespace-nowrap tabular-nums text-muted-foreground`}>
-        {a.anyActive ? fmtEta(a.remaining, a.meanSpeed) : "—"}
+        {fmtEta(a.remaining, a.speed)}
       </TableCell>
       <TableCell className={COL.created}>
         <TimeCell ts={a.created} />
@@ -590,7 +608,6 @@ const GroupRow = memo(function GroupRow({
       <TableCell className={COL.finished}>
         {a.finished > 0 ? <TimeCell ts={a.finished} /> : <Dash />}
       </TableCell>
-      <TableCell className={COL.actions} />
     </TableRow>
   );
 });
@@ -615,9 +632,11 @@ const TaskRow = memo(function TaskRow({
   onNav: OnNav;
 }): React.ReactElement {
   const action = rowAction(t, onAct);
+  // 取消/移除的互斥判据（原来喂给操作列那颗按钮，列撤掉后只剩右键菜单在用）：
+  // 在动的行给「取消下载」，终态行给「从队列移除」，同一行不会两个都给
   const canCancel = t.status === "queued" || t.status === "downloading" || t.status === "paused";
   // 复制走主进程代发（契约 v11）：renderer 的 `navigator.clipboard` 被「所有权限请求一律拒」
-  // 的权限钩子挡死，此前这三枚右键动作点了毫无回执。回执用浮空 toast 而不是页内 ToastLine——
+  // 的权限钩子挡死，此前这三枚右键动作点了毫无回执。回执用浮空 toast 而不是页内一行 Alert——
   // 后者在内容流里，会为一句「已复制」把整张队列表往下顶。
   const copy = (text: string): void => {
     void api.app
@@ -666,10 +685,13 @@ const TaskRow = memo(function TaskRow({
             {t.total > 0 ? fmtBytes(t.total) : t.received > 0 ? fmtBytes(t.received) : "—"}
           </TableCell>
           <TableCell className={`${COL.speed} whitespace-nowrap tabular-nums text-muted-foreground`}>
-            {t.speed > 0 ? `${fmtBytes(t.speed)}/s` : "—"}
+            {fmtSpeed(speedCell(t))}
           </TableCell>
+          {/* 暂停行保留「暂停那一刻」的剩余时间：remaining 与 speed 都冻结在暂停时，重算即快照 */}
           <TableCell className={`${COL.eta} whitespace-nowrap tabular-nums text-muted-foreground`}>
-            {t.status === "downloading" ? fmtEta(t.total - t.received, t.speed) : "—"}
+            {t.status === "downloading" || t.status === "paused"
+              ? fmtEta(t.total - t.received, t.speed)
+              : "—"}
           </TableCell>
           <TableCell className={COL.created}>
             <TimeCell ts={t.createdAt} />
@@ -677,18 +699,9 @@ const TaskRow = memo(function TaskRow({
           <TableCell className={COL.finished}>
             {t.status === "done" && t.finishedAt ? <TimeCell ts={t.finishedAt} /> : <Dash />}
           </TableCell>
-          <TableCell className={COL.actions}>
-            <div className="flex items-center justify-end gap-1">
-              {canCancel && (
-                <Button size="sm" variant="ghost" className="h-7 px-2 text-sm" onClick={() => void onAct(api.download.cancel, t.taskId)}>
-                  取消
-                </Button>
-              )}
-            </div>
-          </TableCell>
         </TableRow>
       </ContextMenuTrigger>
-      <ContextMenuContent className="w-60">
+      <ContextMenuContent>
         {t.status === "done" && t.filePath && (
           <ContextMenuItem onSelect={() => void api.app.showInFolder(t.filePath!)}>
             <FolderOpen />
@@ -701,11 +714,6 @@ const TaskRow = memo(function TaskRow({
             {action.label}
           </ContextMenuItem>
         )}
-        <ContextMenuItem onSelect={() => onNav("history", t.groupId)}>
-          <Info />
-          查看作品信息
-        </ContextMenuItem>
-        <ContextMenuSeparator />
         {t.url && (
           <ContextMenuItem onSelect={() => copy(t.url)}>
             <Copy />
@@ -725,22 +733,20 @@ const TaskRow = memo(function TaskRow({
           </ContextMenuItem>
         )}
         {canCancel && (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuItem variant="destructive" onSelect={() => void onAct(api.download.cancel, t.taskId)}>
-              <X />
-              取消下载
-            </ContextMenuItem>
-          </>
+          <ContextMenuItem variant="destructive" onSelect={() => void onAct(api.download.cancel, t.taskId)}>
+            <X />
+            取消下载
+          </ContextMenuItem>
         )}
+        <ContextMenuItem onSelect={() => onNav("history", t.groupId)}>
+          <Info />
+          查看作品信息
+        </ContextMenuItem>
         {!canCancel && (
-          <>
-            <ContextMenuSeparator />
-            <ContextMenuItem variant="destructive" onSelect={() => void onAct(clearOne, t.taskId)}>
-              <Trash2 />
-              从队列移除
-            </ContextMenuItem>
-          </>
+          <ContextMenuItem variant="destructive" onSelect={() => void onAct(clearOne, t.taskId)}>
+            <Trash2 />
+            从队列移除
+          </ContextMenuItem>
         )}
       </ContextMenuContent>
     </ContextMenu>

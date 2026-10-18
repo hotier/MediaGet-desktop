@@ -287,10 +287,13 @@ describe("Downloader 流式落盘", () => {
         return false;
       }
     });
+    const speedBeforePause = dl.list().find((t) => t.taskId === taskId)?.speed ?? 0;
     dl.pause(taskId);
     await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "paused"));
     expect(readFileSync(join(dir, "slow.mp4.part"), "utf8")).toBe("PART");
     expect(existsSync(join(dir, "slow.mp4.part") + ".meta")).toBe(true);
+    // v17 暂停快照：pause 不清 speed —— 界面据它显示「暂停时的速度 / 剩余」，重启后也一样
+    expect(dl.list().find((t) => t.taskId === taskId)?.speed).toBe(speedBeforePause);
 
     // 模拟重启：snapshot → 新实例 restore
     // paused 态重启后保持 paused（用户意图保留），须显式 resume 才续传
@@ -298,6 +301,7 @@ describe("Downloader 流式落盘", () => {
     expect(snap.some((s) => s.taskId === taskId)).toBe(true);
     // 作者快照要跟着落 queue.json，否则重启后历史页作者列凭空少一批
     expect(snap.find((s) => s.taskId === taskId)?.author?.name).toBe("晚风合唱团");
+    expect(snap.find((s) => s.taskId === taskId)?.speed).toBe(speedBeforePause);
     const { dl: dl2 } = makeDownloader(dir, async (_i, init2) => {
       const h = new Headers(init2?.headers);
       expect(h.get("range")).toBe("bytes=4-");
@@ -310,6 +314,7 @@ describe("Downloader 流式落盘", () => {
     const revived = dl2.list().find((t) => t.taskId === taskId);
     expect(revived?.status).toBe("paused"); // 恢复不越权自动开跑
     expect(revived?.author?.name).toBe("晚风合唱团");
+    expect(revived?.speed).toBe(speedBeforePause); // 暂停快照跨重启还在
     dl2.resume(taskId);
     await waitUntil(
       () => dl2.list().some((t) => t.taskId === taskId && t.status === "done"),
@@ -568,8 +573,10 @@ describe("Downloader 清理与恢复", () => {
     const dir = makeTempDir();
     const { dl } = makeDownloader(dir, triFetch(), 1, { retryBaseDelayMs: 10 });
     dl.restore([
-      seeded("p1", "paused"),
-      seeded("e1", "error", { error: "HTTP 403 Forbidden" }),
+      // v17 暂停快照：paused 行的 speed 是「暂停那一刻多快」，重启后照样生效
+      seeded("p1", "paused", { speed: 1234 }),
+      // 档里混进来的 speed 只在 paused 行被承认：非 paused 的实时速度不是可持久事实
+      seeded("e1", "error", { error: "HTTP 403 Forbidden", speed: 999 }),
       seeded("x1", "canceled"),
       seeded("d1", "done", { filePath: join(dir, "d1(1).mp4"), finishedAt: 777, url: "" }),
       // 旧档（v13 之前）没有 filePath：这时才按「目录 + 文件名」兜一个
@@ -580,6 +587,8 @@ describe("Downloader 清理与恢复", () => {
     expect(dl.list().map((t) => t.status)).toEqual(["paused", "error", "canceled", "done", "done"]);
     // 原因文本跟着档回来：旧实现无条件 error: undefined，重启后是一条「不知道为什么失败」的失败
     expect(dl.list().find((t) => t.taskId === "e1")?.error).toBe("HTTP 403 Forbidden");
+    expect(dl.list().find((t) => t.taskId === "p1")?.speed).toBe(1234);
+    expect(dl.list().find((t) => t.taskId === "e1")?.speed).toBe(0);
     const d1 = dl.list().find((t) => t.taskId === "d1");
     // 冲突避让后落的是 d1(1).mp4，按目录+名重算会指到一个从没落地的文件
     expect(d1?.filePath).toBe(join(dir, "d1(1).mp4"));
@@ -592,8 +601,9 @@ describe("Downloader 清理与恢复", () => {
     const dir = makeTempDir();
     const { dl } = makeDownloader(dir, triFetch(), 1, { retryBaseDelayMs: 10 });
     dl.restore([
+      seeded("p1", "paused", { speed: 2048 }),
       seeded("d1", "done", { filePath: join(dir, "d1.mp4"), finishedAt: 5 }),
-      seeded("e1", "error", { error: "下载超时：30 秒没有收到新数据" }),
+      seeded("e1", "error", { error: "下载超时：30 秒没有收到新数据", speed: 512 }),
       seeded("x1", "canceled"),
     ]);
     const snap = dl.snapshot();
@@ -601,6 +611,10 @@ describe("Downloader 清理与恢复", () => {
     expect(snap.find((s) => s.taskId === "d1")?.url).toBe("");
     expect(snap.find((s) => s.taskId === "d1")?.filePath).toBe(join(dir, "d1.mp4"));
     expect(snap.find((s) => s.taskId === "d1")?.finishedAt).toBe(5);
+    // v17 暂停快照：只有 paused 行落 speed，其余状态不把实时值写进长期档
+    expect(snap.find((s) => s.taskId === "p1")?.speed).toBe(2048);
+    expect(snap.find((s) => s.taskId === "e1")?.speed).toBeUndefined();
+    expect(snap.find((s) => s.taskId === "d1")?.speed).toBeUndefined();
     // error / canceled 都还能 resume，链一剥就等于把这两个动作废了
     expect(snap.find((s) => s.taskId === "e1")?.url).toContain("cdn.example.com");
     expect(snap.find((s) => s.taskId === "e1")?.error).toBe("下载超时：30 秒没有收到新数据");
@@ -718,6 +732,145 @@ describe("Downloader 403 自动续链", () => {
     expect(dl.list().find((t) => t.taskId === taskId)?.received).toBe(8);
     expect(readFileSync(join(dir, "v.mp4"), "utf8")).toBe("HEADTAIL");
     expect(existsSync(join(dir, "v.mp4.part.meta"))).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/**
+ * 「首次没下完，后续接着下」的两条保证（业主问题 2026-10-18）：
+ * ① 直链没过期 → 靠 `.part` + `Range` 续（上面的 restore / pause 用例钉着）；
+ * ② 直链过期了 → 403 续链拿新签名，`.part` 照旧接着写（`isSameResource` 判身份）。
+ * 这里钉的是**第二类里最容易漏掉的两处**：重新解析后重新入队（新 URL 是新签名，不是新资源）、
+ * 以及「续链失败之后按重试还能再换一次链」。
+ */
+describe("断点续传：跨签名 / 跨会话接着下", () => {
+  const OLD = "https://cdn.example.com/dir/v.mp4?video_id=1&sign=S1&expires=100";
+  const NEW = "https://cdn.example.com/dir/v.mp4?video_id=1&sign=S2&expires=200";
+  /** 同名但确实是另一份资源（路径不同 = 别的清晰度/分 P） */
+  const OTHER = "https://cdn.example.com/dir/other.mp4?video_id=1&sign=S9&expires=200";
+
+  it("隔天重新解析：换签名的同一个文件沿用 .part，从已收字节续（不再从 0 重下）", async () => {
+    const dir = makeTempDir();
+    writeFileSync(join(dir, "v.mp4.part"), "HEAD");
+    writeFileSync(join(dir, "v.mp4.part.meta"), OLD);
+    const tail = new TextEncoder().encode("TAIL");
+    let range: string | null = null;
+    const { dl } = makeDownloader(dir, async (_input, init) => {
+      range = new Headers(init?.headers).get("range");
+      return new Response(tail as unknown as BodyInit, {
+        status: 206,
+        headers: { "content-length": String(tail.byteLength), "content-range": "bytes 4-7/8" },
+      });
+    });
+    const [taskId] = dl.enqueue([{ url: NEW, filename: "v.mp4", kind: "video" }], "k1");
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "done"), 8000);
+    // 旧实现按 URL 字符串比 meta：签名一变就判「异 URL」，把 HEAD 删掉从头下
+    expect(range).toBe("bytes=4-");
+    expect(readFileSync(join(dir, "v.mp4"), "utf8")).toBe("HEADTAIL");
+    // 采样分子只覆盖「本任务真正收到的那 4 字节」：HEAD 是本任务之前就在盘上的
+    const done = dl.list().find((t) => t.taskId === taskId);
+    expect(done?.received).toBe(8);
+    expect(done?.transferBytes).toBe(4);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("同名但换了资源（路径不同）→ 半成品不属于它，清掉从 0 下", async () => {
+    const dir = makeTempDir();
+    writeFileSync(join(dir, "v.mp4.part"), "HEAD");
+    writeFileSync(join(dir, "v.mp4.part.meta"), OTHER);
+    const full = new TextEncoder().encode("FULLBODY");
+    let range: string | null = "未发出";
+    const { dl } = makeDownloader(dir, async (_input, init) => {
+      range = new Headers(init?.headers).get("range");
+      return fakeResponse(full);
+    });
+    const [taskId] = dl.enqueue([{ url: NEW, filename: "v.mp4", kind: "video" }], "k2");
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "done"), 8000);
+    expect(range).toBeNull();
+    expect(readFileSync(join(dir, "v.mp4"), "utf8")).toBe("FULLBODY");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * 平均速度的分母是**实际传输时长**（契约 v18，业主追问 2026-10-18）。
+   * 旧口径用 `finishedAt − createdAt`：暂停一小时再续，那个文件的速度就变成零头，
+   * 而「暂停」根本不是「下得慢」。这里暂停 120ms 再续，钉住这段空档不进分母。
+   */
+  it("暂停一段再继续：transferMs 只算在传的时间，暂停的空档不进分母", async () => {
+    const dir = makeTempDir();
+    const enc = new TextEncoder();
+    const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const { dl } = makeDownloader(dir, async (_input, init) => {
+      const range = new Headers(init?.headers).get("range");
+      if (range) {
+        // 续传这一段延迟 25ms 才给最后一块：transferMs 必须记到这段时间
+        const tail = new ReadableStream<Uint8Array>({
+          async start(c) {
+            await wait(25);
+            c.enqueue(enc.encode("TAIL"));
+            c.close();
+          },
+        });
+        return new Response(tail, {
+          status: 206,
+          headers: { "content-length": "4", "content-range": "bytes 4-7/8" },
+        });
+      }
+      // 首程只给第一块然后挂住，等用户按暂停
+      const head = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode("HEAD"));
+        },
+      });
+      return new Response(head, { status: 200, headers: { "content-length": "8" } });
+    });
+
+    const [taskId] = dl.enqueue([{ url: NEW, filename: "v.mp4", kind: "video" }], "k4");
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.received === 4), 8000);
+    expect(dl.pause(taskId)).toBe(true);
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "paused"), 8000);
+    await wait(120); // 用户的「暂停一段时间」
+    expect(dl.resume(taskId)).toBe(true);
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "done"), 8000);
+
+    const t = dl.list().find((x) => x.taskId === taskId);
+    expect(t?.received).toBe(8);
+    expect(t?.transferBytes).toBe(8);
+    expect(t?.transferMs).toBeGreaterThan(0);
+    // 墙钟 − 传输时长 ≥ 暂停空档：那 120ms 一秒都不许算进平均速度的分母
+    expect((t?.finishedAt ?? 0) - (t?.createdAt ?? 0)).toBeGreaterThanOrEqual((t?.transferMs ?? 0) + 100);
+    expect(readFileSync(join(dir, "v.mp4"), "utf8")).toBe("HEADTAIL");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("续链失败落了 error 之后，按重试还能再换一次链（不必重启应用）", async () => {
+    const dir = makeTempDir();
+    const bytes = new TextEncoder().encode("AFTER-RETRY");
+    let calls = 0;
+    const { dl } = makeDownloader(
+      dir,
+      async (input) => (String(input) === NEW ? fakeResponse(bytes) : new Response(null, { status: 403 })),
+      3,
+      {
+        retryBaseDelayMs: 10,
+        // 第一次认不出（平台抽风）→ 落在 error；第二次按重试才给它新链
+        renewUrl: async () => {
+          calls += 1;
+          return calls === 1 ? null : NEW;
+        },
+      }
+    );
+    const [taskId] = dl.enqueue([{ url: OLD, filename: "v.mp4", kind: "video" }], "k3", {
+      sourceUrl: "https://v.douyin.com/abc/",
+    });
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "error"), 8000);
+    expect(calls).toBe(1);
+
+    expect(dl.resume(taskId)).toBe(true);
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "done"), 8000);
+    // `renewed` 不在 resume 里重开的话，这里恒为 1：同一行按多少次重试都只会在死链上打转
+    expect(calls).toBe(2);
+    expect(readFileSync(join(dir, "v.mp4"), "utf8")).toBe("AFTER-RETRY");
     rmSync(dir, { recursive: true, force: true });
   });
 });

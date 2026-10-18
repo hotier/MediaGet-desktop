@@ -2,7 +2,7 @@
  * 代理设置 → 网络栈的纯逻辑（无 electron / undici 依赖，便于单测）。
  *
  * 应用内全部出网有两套栈，都要吃同一份设置（胶水在 index.ts 的 applyProxy）：
- * - Node fetch（解析内核 / 下载器 / 线上回落）→ undici 全局 dispatcher
+ * - Node fetch（解析内核 / 下载器）→ undici 全局 dispatcher
  * - Electron net（更新器）→ session 代理
  */
 
@@ -21,6 +21,24 @@ export function normalizeProxyUrl(raw: string): string | null {
   if (u.protocol !== "http:" && u.protocol !== "https:") return null;
   const auth = u.username ? `${u.username}${u.password ? `:${u.password}` : ""}@` : "";
   return `${u.protocol}//${auth}${u.host}`;
+}
+
+/**
+ * 设置 → `session.setProxy` 的入参（纯算术，不碰 electron）。
+ *
+ * 抽出来是为了「多一个 session 也要吃同一份设置」：设置页的登录窗口跑在独立分区里，
+ * 它不继承 defaultSession 的代理；不铺这一下，manual 模式下登录页直接打不开。
+ */
+export function sessionProxyFor(settings: {
+  proxyMode: "system" | "off" | "manual";
+  proxyUrl: string;
+}): { mode: "system" | "direct" | "fixed_servers"; proxyRules?: string } {
+  if (settings.proxyMode === "off") return { mode: "direct" };
+  if (settings.proxyMode === "manual") {
+    const rules = normalizeProxyUrl(settings.proxyUrl);
+    return rules ? { mode: "fixed_servers", proxyRules: rules } : { mode: "direct" };
+  }
+  return { mode: "system" };
 }
 
 /** Electron session.resolveProxy 的规则串 → http 代理 URL；DIRECT/SOCKS/空 → null。

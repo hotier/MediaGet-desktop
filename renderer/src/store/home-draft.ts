@@ -44,6 +44,8 @@ interface HomeDraftStore {
   /** 新批次 = 整表替换（「除非我重新解析了新的链接」就是这一句的代码化） */
   startBatch: (texts: string[]) => BatchItem[];
   patchItem: (id: number, up: Partial<BatchItem>) => void;
+  /** 清空工作台：文本、识别提示、结果卡整表（业主指令 2026-10-19） */
+  clear: () => void;
 }
 
 export const useHomeDraft = create<HomeDraftStore>((set, get) => ({
@@ -63,4 +65,6 @@ export const useHomeDraft = create<HomeDraftStore>((set, get) => ({
   },
   patchItem: (id, up) =>
     set((s) => ({ items: s.items.map((it) => (it.id === id ? { ...it, ...up } : it)) })),
+  // nextId 不回退：卡片 id 保持单调，清空后新批次不会与旧卡的 React key 撞车
+  clear: () => set({ text: "", hint: "", items: [] }),
 }));

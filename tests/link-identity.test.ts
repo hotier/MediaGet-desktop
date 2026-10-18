@@ -6,7 +6,7 @@
  * 而「认得出」必须严格到路径 + 全部非时效参数。
  */
 import { describe, expect, it } from "vitest";
-import { collectMediaUrls, pickRenewedUrl } from "../shared/link-identity";
+import { collectMediaUrls, isSameResource, pickRenewedUrl } from "../shared/link-identity";
 import type { ParseData } from "../types/ipc";
 
 const OLD = "https://v26.douyinvod.com/a/b.mp4?video_id=v1&ratio=720p&sign=S1&expires=100";
@@ -56,6 +56,89 @@ describe("pickRenewedUrl（认对象）", () => {
   it("参数顺序不影响身份（比的是集合，不是串）", () => {
     const shuffled = "https://v26.douyinvod.com/a/b.mp4?ratio=720p&video_id=v1&expires=200&sign=S2";
     expect(pickRenewedUrl(OLD, [shuffled])).toBe(shuffled);
+  });
+});
+
+/**
+ * 2026-10-18 线上事故回归：B 站 403 续链永远「无结果」（真实日志：
+ * `[download] 续链无结果: …mp4, sourceUrl=https://www.bilibili.com/video/BV1…` + 一路 403）。
+ *
+ * 实测（同一作品连续解析两次，走 unifiedParseLocal → normalizeResult）：
+ * - 两条清晰度分别落在 `cn-sh-cc-01-08.bilivideo.com` 与 `cn-sh-cc-01-15.bilivideo.com`
+ *   —— **host 是 CDN 节点，不是资源**；
+ * - 只有 `deadline` / `trid` / `uparams` / `upsig` 变值，而旧名单只认得 `deadline`
+ *   —— 另外三个进了身份参数，于是「同一条资源换了签名」被判成「认不出」。
+ *
+ * 这两条一起钉住：host 不参与身份、B 站签名块不参与身份，而清晰度仍然靠路径分辨。
+ */
+describe("B 站直链：CDN 节点与签名每次换，仍然认出同一份资源", () => {
+  const PATH_1080 = "/upgcxcode/93/13/42702671393/42702671393-1-192.mp4";
+  const PATH_360 = "/upgcxcode/93/13/42702671393/42702671393-1-16.mp4";
+  /** 按实测参数表拼一条 playurl 直链；签名块（e/deadline/trid/uparams/upsig）与节点号可替换 */
+  const bili = (host: string, path: string, sig: string, cdnid = "8"): string =>
+    `https://${host}${path}?e=1760${sig}&uipk=5&nbs=1&deadline=1760${sig}&os=windows&oi=1` +
+    `&trid=${sig}trace&mid=0&platform=pc&upsig=SIG${sig}&uparams=e,uipk,nbs,deadline,trid` +
+    `&bvc=vod&bw=1000&cdnid=${cdnid}&og=cos&build=1&f=x&agrr=1&orderid=0,3&lrs=1`;
+
+  it("换节点 + 换签名 → 认出新的那一条", () => {
+    const old = bili("cn-sh-cc-01-08.bilivideo.com", PATH_1080, "1", "8");
+    const next = bili("cn-sh-cc-01-15.bilivideo.com", PATH_1080, "2", "15");
+    expect(pickRenewedUrl(old, [next])).toBe(next);
+  });
+
+  it("只有节点换了（参数完全一样）也算新链：403 的正是原来那个节点", () => {
+    const old = bili("cn-sh-cc-01-08.bilivideo.com", PATH_1080, "1", "8");
+    const next = bili("cn-sh-cc-01-15.bilivideo.com", PATH_1080, "1", "8");
+    expect(pickRenewedUrl(old, [next])).toBe(next);
+  });
+
+  it("同一作品的另一档清晰度（路径里是另一个 qn）不认", () => {
+    const old = bili("cn-sh-cc-01-08.bilivideo.com", PATH_1080, "1", "8");
+    const lower = bili("cn-sh-cc-01-08.bilivideo.com", PATH_360, "2", "8");
+    expect(pickRenewedUrl(old, [lower])).toBeNull();
+  });
+
+  it("同节点 + 整串参数一模一样（只差顺序）→ null，否则 403 重试变成死循环", () => {
+    const old = bili("cn-sh-cc-01-08.bilivideo.com", PATH_1080, "1", "8");
+    const shuffled = `${bili("cn-sh-cc-01-08.bilivideo.com", PATH_1080, "1", "8")
+      .split("?")[1]
+      .split("&")
+      .reverse()
+      .join("&")}`;
+    const rearranged = `https://cn-sh-cc-01-08.bilivideo.com${PATH_1080}?${shuffled}`;
+    expect(pickRenewedUrl(old, [rearranged])).toBeNull();
+  });
+});
+
+/**
+ * 续传身份（`isSameResource`）：盘上 `.part` 记的是上一次的签名链，这次可能是新签名链。
+ * 判据与续链共用，但不要求「必须有东西变了」——换签名不是换资源。
+ */
+describe("isSameResource（.part 还能不能接着写）", () => {
+  it("换了签名/到期 = 同一份资源（能续）", () => {
+    expect(isSameResource(OLD, NEW)).toBe(true);
+    expect(isSameResource(OLD, OLD)).toBe(true);
+  });
+
+  it("换了清晰度/分 P（路径不同）= 不是同一份（不能续）", () => {
+    expect(isSameResource(OLD, "https://v26.douyinvod.com/a/c.mp4?video_id=v1&ratio=720p&sign=S2")).toBe(false);
+  });
+
+  it("身份参数不同（别的清晰度档）= 不是同一份", () => {
+    const higher = "https://v26.douyinvod.com/a/b.mp4?video_id=v1&ratio=1080p&sign=S2&expires=200";
+    expect(isSameResource(OLD, higher)).toBe(false);
+  });
+
+  it("B 站换了 CDN 节点 + 换了签名 = 同一份资源", () => {
+    const path = "/upgcxcode/93/13/42702671393/42702671393-1-192.mp4";
+    const a = `https://cn-sh-cc-01-08.bilivideo.com${path}?e=17601&trid=1&upsig=A&uparams=e,trid&cdnid=8&bw=1000`;
+    const b = `https://cn-sh-cc-01-15.bilivideo.com${path}?e=17602&trid=2&upsig=B&uparams=e,trid&cdnid=15&bw=1000`;
+    expect(isSameResource(a, b)).toBe(true);
+  });
+
+  it("坏输入不炸：非 URL 一律不是同一份", () => {
+    expect(isSameResource("not-a-url", NEW)).toBe(false);
+    expect(isSameResource(NEW, "")).toBe(false);
   });
 });
 

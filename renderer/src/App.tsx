@@ -108,6 +108,7 @@ export default function App(): React.ReactElement {
 
   // 任务流在 App 层订阅：首页的进行中任务跨页存活（事件幂等 upsert）
   useEffect(() => {
+    // 这一处静默是有意的：它只为侧栏徽标服务，同一次失败由队列页出声（避免两条同文 toast）
     void api.download.list().then(setTasks).catch(() => {});
     const offs = [
       api.download.onProgress((t) => {
@@ -254,7 +255,13 @@ export default function App(): React.ReactElement {
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {/* 顶栏带：系统的三枚按钮浮在它右端，所以这条带只用来拖窗、不放控件；页面内容一律从它下面起 */}
           <div aria-hidden className="drag-region h-(--wco-h) shrink-0" />
-          <main key={page} className="flex-1 overflow-y-auto p-4 animate-in fade-in duration-200 slide-in-from-left-3">
+          {/* scrollbar-gutter：细槽（styles.css 的 scrollbar-width: thin）仍占宽度，
+              结果卡展开资源清单把内容推过一屏时，槽位出现/消失会让整列卡片左右抽动 ——
+              常驻预留，宽度只跟窗口走。 */}
+          <main
+            key={page}
+            className="flex-1 overflow-y-auto p-4 animate-in fade-in duration-200 slide-in-from-left-3 [scrollbar-gutter:stable]"
+          >
             {bootError && (
               <Alert variant="destructive" className="mb-3">
                 <AlertTitle>桥接未就绪：{bootError}</AlertTitle>

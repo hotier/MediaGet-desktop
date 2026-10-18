@@ -13,14 +13,18 @@
 import { z } from "zod";
 import { basename, extname } from "node:path";
 import { shell } from "electron";
-import { PLATFORM_INFO, sanitizeFilename } from "@mediaget/parse-core";
+import { sanitizeFilename } from "@mediaget/parse-core";
 import { resolveKey } from "../../shared/platforms";
+import { refererFor } from "./hotlink";
 import { buildAuthorSnapshot } from "../../shared/author";
 import { parseHistoryEntry } from "../../shared/history";
+import { pickPublishedAt, pickWorkStat } from "../../shared/work-stat";
 import {
   describeIssues,
   CacheClearInputSchema,
   ClearTasksInputSchema,
+  CookieLoginInputSchema,
+  CopyTextInputSchema,
   EnqueueInputSchema,
   FolderPathSchema,
   HistoryFilterSchema,
@@ -54,7 +58,9 @@ import type { StatsRecorder } from "./stats";
 import type { Updater } from "./updater";
 import type { CacheProbe } from "./cache";
 import type { AppLogger } from "./logger";
+import type { CookieLogin } from "./cookie-login";
 import type { IpcMainLike } from "./ipc-env";
+import { resolveSourceUrl as defaultResolveSourceUrl, type SourceUrlResolver } from "./source-url";
 
 type Engine = ReturnType<typeof createEngine>;
 
@@ -72,13 +78,6 @@ function ok<T>(data: T): InvokeResult<T> {
 }
 function fail(code: string, message: string, failType?: string): InvokeResult<never> {
   return { ok: false, error: { code, message, failType } };
-}
-
-/** 平台 → 防盗链 Referer（域名真源 = 内核 PLATFORM_INFO） */
-function refererFor(platform: string | undefined): string | undefined {
-  if (!platform) return undefined;
-  const info = (PLATFORM_INFO as Record<string, { domains: string[] }>)[platform];
-  return info?.domains?.[0] ? `https://${info.domains[0]}/` : undefined;
 }
 
 export interface IpcRegistryDeps {
@@ -125,15 +124,36 @@ export interface IpcRegistryDeps {
    */
   updater: Updater;
   /**
+   * 来源链接归一（v16）：短链跟到真实资源页、或由作品 ID 拼官方页面。
+   * 缺省 = 主进程真实现；本仓测试禁真网络，ipc.test 与 contract.test 注入离线桩。
+   */
+  resolveSourceUrl?: SourceUrlResolver;
+  /**
+   * 系统剪贴板写入（index.ts 注入 = Electron `clipboard.writeText`）。
+   * 存在的理由不是「方便」而是「只有主进程写得进去」：index.ts 装了「所有权限请求一律拒」
+   * 的 `setPermissionRequestHandler`，Chromium 的 `navigator.clipboard.writeText` 要过那条钩子
+   * （Electron 把写也报成 `clipboard-read`），渲染层三处复制因此在真应用里全部 reject。
+   * 与其为一个动作把权限面放开，不如把动作交给本来就有能力的主进程 —— 与 `app:openExternal`
+   * 同一条理由（renderer 不自己开窗，也不自己碰系统能力）。
+   */
+  writeClipboard: (text: string) => void;
+  /**
    * dev 构建 = true（index.ts 传 `!app.isPackaged`）：出参也过 CONTRACT 的 out schema。
    * 存在的理由：契约漂移在 dev 里只会让 UI 少显示一个字段、没人报错，
    * 到打包版本才暴露；把它变成 dev 期的一次 `contract-drift` 错误才是划算的顺序。
    */
   validateOutputs: boolean;
+  /**
+   * 设置页「打开登录页自动获取 Cookie」（index.ts 注入 = createCookieLogin）。
+   * 走注入而不是在 handler 里直接开窗：本层只管校验入参，窗口生命周期与 Cookie 读取
+   * 归那个模块；测试桩不给它就等于「能力不可用」，明确回失败而不是静默成功。
+   */
+  cookieLogin?: CookieLogin;
 }
 
 export function registerIpc(deps: IpcRegistryDeps): void {
   const { ipcMain, engine, downloader, store, updater } = deps;
+  const resolveSource = deps.resolveSourceUrl ?? defaultResolveSourceUrl;
 
   /**
    * 统一注册：入参按 schema 校验（renderer 是不可信输入源），出参在 dev 下按
@@ -181,7 +201,7 @@ export function registerIpc(deps: IpcRegistryDeps): void {
   wrap(IPC.parseIdentify, IdentifyInputSchema, ({ text }) => engine.identify(text));
 
   // —— parse:run（统一入口）——
-  // 计数在这一层记，不在 engine 里记：engine 的返回点有九处（本地/线上/mock），
+  // 计数在这一层记，不在 engine 里记：engine 的返回点有多处（本地/mock），
   // 挂在出口一处收口才不会随着内部分支增加而漏计。
   /** 一次性历史 id：只在链接抽不出来时用（ID 直解模式），同毫秒内也要互不覆盖 */
   let parseSeq = 0;
@@ -189,7 +209,7 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     const at = Date.now();
     const outcome = await engine.parse(parsed.text, parsed.source, parsed.id, {
       platformHint: parsed.platformHint,
-      forceOnline: parsed.forceOnline,
+      skipCache: parsed.skipCache,
     });
     deps.stats.parse({
       at,
@@ -199,24 +219,37 @@ export function registerIpc(deps: IpcRegistryDeps): void {
       ok: outcome.result.code === 200,
       durationMs: outcome.durationMs,
     });
+    // 来源链接统一换成真实资源页（v16）：短链跟到最终长链、或由作品 ID 拼官方页面。
+    // 只对成功结果做 —— 失败时 UI 用的是输入框原文，历史也不落行；探测失败回落原文。
+    let sourceUrl: string | undefined;
+    if (outcome.result.code === 200) {
+      // 用户输入里抽出的原始链接（identify 纯本地，不发请求）
+      sourceUrl = await resolveSource({
+        raw: engine.identify(parsed.text).url,
+        platform: outcome.result.platform,
+        data: outcome.result.data,
+      });
+    }
     // 解析成功即落一条历史（业主指令 2026-10-17：历史页是**解析历史**，不下载也要有记录）。
     // 写在主进程而不是首页：首页关掉、切页、dev 之外的任何入口都该有同一条记录。
     // mock 兜底不写：那是「没有引擎在场」时的演示结果，标题就写着 mock，落进用户历史只是脏数据。
     if (outcome.result.code === 200 && outcome.via !== "mock") {
-      // 分享链接本地再抽一次（与首页取 sourceUrl 同一个函数），历史里只留这条，不留直链
-      const sourceUrl = engine.identify(parsed.text).url ?? undefined;
       store.upsertHistory(
         parseHistoryEntry({
           sourceUrl,
           platform: outcome.result.platform,
           title: outcome.result.data?.title ?? outcome.result.data?.desc,
           author: buildAuthorSnapshot(outcome.result.data),
+          // 发布时间与互动数在这一刻定格（业主指令 2026-10-17：导出要带完整作品信息）。
+          // 只在这一刻拿得到：历史之后没有任何通道再去访问平台。
+          publishedAt: pickPublishedAt(outcome.result.data, at),
+          stat: pickWorkStat(outcome.result.data),
           fallbackId: `p-${at.toString(36)}-${(++parseSeq).toString(36)}`,
           at,
         })
       );
     }
-    return outcome;
+    return { ...outcome, sourceUrl };
   });
 
   /**
@@ -293,8 +326,6 @@ function sanitizeWithExt(name: string, maxLen: number): string {
     };
     if (patch.downloadDir !== undefined) next.settings.downloadDir = patch.downloadDir;
     if (patch.maxConcurrent !== undefined) next.settings.maxConcurrent = patch.maxConcurrent;
-    if (patch.fallbackOnline !== undefined) next.settings.fallbackOnline = patch.fallbackOnline;
-    if (patch.onlineApiBase !== undefined) next.settings.onlineApiBase = patch.onlineApiBase;
     if (patch.throttleMs !== undefined) next.settings.throttleMs = patch.throttleMs;
     if (patch.minimizeToTray !== undefined) next.settings.minimizeToTray = patch.minimizeToTray;
     if (patch.launchAtLogin !== undefined) next.settings.launchAtLogin = patch.launchAtLogin;
@@ -344,18 +375,21 @@ function sanitizeWithExt(name: string, maxLen: number): string {
     };
   });
 
+  // —— settings:cookieLogin —— 登录窗口抓取：值在 cookie-login 里直接落档，这里只回结果
+  wrap(IPC.settingsCookieLogin, CookieLoginInputSchema, async ({ cookieKey }) => {
+    if (!deps.cookieLogin) return { captured: false, reason: "error" as const };
+    return deps.cookieLogin.run(cookieKey);
+  });
+
   // —— history ——
   wrap(IPC.historyList, HistoryFilterSchema.optional(), (filter): HistoryEntry[] => {
     let list = store.loadHistory();
     if (filter?.platform) list = list.filter((h) => h.platform === filter.platform);
     return list.slice(0, filter?.limit ?? 200);
   });
-  wrap<unknown, { ok: boolean }>(IPC.historyClear, null, () => {
-    store.clearHistory();
-    return { ok: true };
-  });
   // —— history:remove（多选删除：行键 = 条目 id 或 groupId，store 侧双命中删整组）——
   // 返回删除后的剩余列表而非 ok 旗：UI 直接拿去刷新，省一次 history.list 回读。
+  // 「清空历史」按钮已撤（业主指令 2026-10-17），整表清空同样走这条通道（keys 上限 = HISTORY_MAX）。
   wrap(IPC.historyRemove, HistoryRemoveInputSchema, ({ keys }): HistoryEntry[] =>
     store.removeHistory(keys)
   );
@@ -423,6 +457,11 @@ function sanitizeWithExt(name: string, maxLen: number): string {
   wrap(IPC.appOpenExternal, UrlInputSchema, async (input) => {
     // openExternal 用 activate:false：不抢焦点，用户还在本软件里操作
     await shell.openExternal(input.url, { activate: false });
+    return { ok: true };
+  });
+  // —— app:copyText（复制动作由主进程代发；长度与空串已在 CopyTextInputSchema 收口）——
+  wrap(IPC.appCopyText, CopyTextInputSchema, ({ text }) => {
+    deps.writeClipboard(text);
     return { ok: true };
   });
   // —— stats:get（统计页数据源：recorder 的内存态直出，不让 UI 每次读盘再对不上）——

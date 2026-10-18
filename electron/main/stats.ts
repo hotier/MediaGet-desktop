@@ -38,8 +38,9 @@ function hourSlot(at: number): number {
 }
 
 /**
- * 读侧迁移：`byPlatform` 里的老键（上游 web 的路由目录名 `xhs`/`ppxia`）并到契约键上、计数相加。
+ * 读侧迁移：`byPlatform` 里的老键（上游 web 的路由目录名 `xhs`）并到契约键上、计数相加。
  * 写入口归一只管得住今后，盘上存量必须在这里归一 —— 否则平台榜会把同一个平台摆成两行。
+ * （`ppxia` 这类已下线平台的键随内核 1.0.0 变成「未登记键」，按注册表纪律原样留着。）
  */
 function migratePlatformKeys(rows: StatsSnapshot["byPlatform"]): StatsSnapshot["byPlatform"] {
   const zero = { downloads: 0, failures: 0, bytes: 0, parses: 0, parseFailures: 0 };
@@ -85,7 +86,7 @@ export interface StatsDoneInput {
   platform?: string;
   kind?: string;
   bytes: number;
-  /** 单任务耗时（finishedAt - createdAt）；缺样本时只计字节不计耗时 */
+  /** 单任务**实际传输时长**（v18：`transferMs`，暂停/排队不计）；缺样本时只计字节不计耗时 */
   elapsedMs?: number;
 }
 
@@ -97,7 +98,7 @@ export interface StatsFailureInput {
 export interface StatsParseInput {
   at: number;
   platform?: string;
-  via: "local" | "online" | "mock";
+  via: "local" | "mock";
   ok: boolean;
   durationMs: number;
 }

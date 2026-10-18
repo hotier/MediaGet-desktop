@@ -185,9 +185,10 @@ export interface ParseStats {
   total: number;
   failures: number;
   successRate: number | null;
-  byVia: { local: number; online: number; mock: number };
+  /** 只列现存的通道；旧 stats.json 里的 `parse.online` 仍是 total 的一部分，但不作为通道展示 */
+  byVia: { local: number; mock: number };
   /** 各通道占比（0..1），分母是解析总次数 */
-  viaShare: { local: number; online: number; mock: number };
+  viaShare: { local: number; mock: number };
   avgDurationMs: number | null;
 }
 
@@ -197,10 +198,9 @@ export function parseStats(s: StatsSnapshot): ParseStats {
     total: p.total,
     failures: p.failures,
     successRate: rate(p.total - p.failures, p.total),
-    byVia: { local: p.local, online: p.online, mock: p.mock },
+    byVia: { local: p.local, mock: p.mock },
     viaShare: {
       local: share(p.local, p.total),
-      online: share(p.online, p.total),
       mock: share(p.mock, p.total),
     },
     avgDurationMs: p.total > 0 ? p.durationMs / p.total : null,

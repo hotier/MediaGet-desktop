@@ -4,14 +4,17 @@
  * 职责：装配 core-adapter（cache/config/analytics/ratelimit）+ 引擎 runner 层（engines.ts），
  * 暴露 identify(text) / parse(textOrUrl) / health() 三个方法。不做 HTTP、不碰窗口。
  *
+ * 出口另有一层类型收拢（`emit`）：内核只映射字段名、不统一字段类型，脏值会被抄进历史档并让
+ * 整次列表过不了出参校验。契约就是那张表，本文件按声明收，不在这里维护平台清单。
+ *
  * 两条判定分开放（2026-10-16 业主定调「引擎与供给解耦」）：
  * - **供不供**：`shared/platforms.ts` 注册表 + 用户开关（`settings.platformSwitches`）。
  *   关掉的平台在任何引擎被调用之前就回绝，不落网络请求。
  * - **能不能解**：引擎 runner 的 `covers()`（注册表能力位 ∧ 引擎自报覆盖）。
- *   顺序是本地内核 → 线上 API，前者失败才换后者；yt-dlp 今天仍埋在 parse-core 内部
- *   （只服务 tiktok），所以注册表记它 `declared` 而不是 ready，本文件不为它编一个假 runner。
+ *   线上回落引擎已于 2026-10-18 移除，列表里只剩本地内核；yt-dlp 今天仍埋在 parse-core
+ *   内部（只服务 tiktok），所以注册表记它 `declared` 而不是 ready，本文件不为它编假 runner。
  *
- * `via` 契约枚举保持 local/online/mock：它答的是「结果从本机还是线上来」，不是「哪个引擎解的」。
+ * `via` 契约枚举只剩 local/mock：它答的是「结果从本机还是演示数据来」，不是「哪个引擎解的」。
  *
  * 铁律 2（依赖边界）：本文件只 import `@mediaget/parse-core` 公开入口，永不跨界 web 侧 route。
  */
@@ -25,6 +28,8 @@ import {
   localParserKeys,
 } from "@mediaget/parse-core";
 import type { EngineHealth, ParseResult } from "../../types/ipc";
+import { ParseResultSchema } from "../../types/ipc-contract";
+import { fitToContract } from "../../shared/coerce";
 import {
   type PlatformSwitch,
   displayName,
@@ -40,14 +45,13 @@ import {
   type CoreEntry,
   type ParseEngine,
   buildHealth,
-  createOnlineApiEngine,
   createParseCoreEngine,
   viaOf,
 } from "./engines";
 
 export type { CoreEntry } from "./engines";
 
-export type KernelMode = "local" | "online" | "mock";
+export type KernelMode = "local" | "mock";
 
 export interface IdentifyOutcomeLite {
   platform: string;
@@ -59,7 +63,6 @@ export interface IdentifyOutcomeLite {
 export interface ParseOutcomeLite {
   result: ParseResult;
   via: KernelMode;
-  fallbackReason?: string;
   durationMs: number;
 }
 
@@ -68,13 +71,6 @@ export interface EngineDeps {
   readKernelConfig: (key: string) => string | undefined;
   /** 节流毫秒（设置页实时值） */
   getThrottleMs: () => number;
-  /** 线上 API 执行器（fallback.ts 注入；缺省视为该引擎不在场） */
-  onlineFallback?: (
-    url: string,
-    opts: { cookie?: string; source?: string; id?: string }
-  ) => Promise<ParseResult | null>;
-  /** 是否允许线上 API 参与解析（设置页开关） */
-  isFallbackEnabled: () => boolean;
   /**
    * 平台供给开关（读持久值，不读渲染层内存）：每次解析与体检各读一次，
    * 所以设置页改完不必重启也不用等 IPC 回灌。缺省（测试）= 全表空 = 跟随注册表默认。
@@ -106,7 +102,7 @@ export function createEngine(deps: EngineDeps) {
     douyinCookie: config.get("douyinCookie"),
     igCookie: config.get("igCookie"),
     igTimeoutMs: Number(config.get("igTimeoutMs") || ""),
-    qqmusicCookie: config.get("qqmusicCookie"),
+    kuaishouCookie: config.get("kuaishouCookie"),
     twitterFixerServices: config.get("twitterFixerServices"),
     xhsCookie: config.get("xhsCookie"),
     youtubeSourceTimeoutMs: Number(config.get("youtubeSourceTimeoutMs") || ""),
@@ -117,19 +113,11 @@ export function createEngine(deps: EngineDeps) {
   });
 
   const parseCoreEngine = createParseCoreEngine(deps.coreLoader ?? loadRealCore);
-  const onlineEngine = createOnlineApiEngine({
-    call: (url, o) => deps.onlineFallback!(url, o),
-  });
 
-  /** 当下在场的引擎，按优先顺序（设置只影响「在不在场」，不影响能力判定） */
-  function availableEngines(opts: { forceOnline?: boolean }): ParseEngine[] {
+  /** 当下在场的引擎：只剩本地内核（mock 档下清空，走演示结果） */
+  function availableEngines(): ParseEngine[] {
     if (deps.forceMode === "mock") return [];
-    const list: ParseEngine[] = [];
-    if (deps.forceMode !== "online" && !opts.forceOnline) list.push(parseCoreEngine);
-    if (deps.forceMode !== "local" && deps.isFallbackEnabled() && deps.onlineFallback) {
-      list.push(onlineEngine);
-    }
-    return list;
+    return [parseCoreEngine];
   }
 
   const switches = (): Record<string, PlatformSwitch> => deps.getPlatformSwitches?.() ?? {};
@@ -161,6 +149,16 @@ export function createEngine(deps: EngineDeps) {
     };
   }
 
+  /**
+   * 引擎出口的唯一收拢点：内核只做**字段名**映射、不做**类型**归一（逐条源码依据见
+   * `shared/coerce.ts` 头部），所以脏值在离开本文件之前收进契约声明的形状。
+   *
+   * 排在结果缓存之前 —— 缓存里存的必须是干净那份；`ParseDataSchema` 末尾是 `.passthrough()`，
+   * 脏值能在 `parse:run` 出参校验里全身而退，却会在下一跳被抄进历史档、让整次 `history:list`
+   * 判成 contract-drift（2026-10-18 历史页那次空态就是这么来的）。
+   */
+  const emit = (result: ParseResult): ParseResult => fitToContract(ParseResultSchema, result);
+
   /** mock 内核结果：结构上完全符合 normalize-result 契约，供 UI 联调与离线测试 */
   function mockResult(sourceUrl: string, platform: string): ParseResult {
     return {
@@ -183,12 +181,12 @@ export function createEngine(deps: EngineDeps) {
     rawInput: string,
     source?: string,
     id?: string,
-    opts: { platformHint?: string; forceOnline?: boolean } = {}
+    opts: { platformHint?: string; skipCache?: boolean } = {}
   ): Promise<ParseOutcomeLite> {
     const t0 = Date.now();
     const input = (rawInput ?? "").trim();
     const fail = (result: ParseResult, via: KernelMode = "local"): ParseOutcomeLite => ({
-      result,
+      result: emit(result),
       via,
       durationMs: Date.now() - t0,
     });
@@ -235,45 +233,42 @@ export function createEngine(deps: EngineDeps) {
     }
 
     // —— 本地缓存（LRU 24h；key 用归一后的 url 或 source+id）——
+    // skipCache 只跳过这份缓存，引擎顺序不动：缓存里存的就是带直链的那份结果，
+    // 而直链会到期，下载 403 之后必须绕开它才能拿回新签名的链（见 link-renew.ts）。
     const cacheKey = url || `${source}:${id}`;
-    const cached = opts.forceOnline ? undefined : cache.get(cacheKey);
+    const cached = opts.skipCache ? undefined : cache.get(cacheKey);
     if (cached && deps.forceMode !== "mock") {
+      // 进缓存的那一步已经过 `emit`，所以这里直接原样交出，不再重复收拢一次
       return { result: cached as ParseResult, via: "local", durationMs: Date.now() - t0 };
     }
 
     await throttle.acquire();
 
-    // —— 引擎轮询：在场 ∧ 覆盖才调用，失败就带着理由换下一个 ——
-    const notes: string[] = [];
+    // —— 引擎轮询：在场 ∧ 覆盖才调用 ——
     let lastFailed: ParseEngine | undefined;
     let lastResult: ParseResult | undefined;
-    for (const engine of availableEngines(opts)) {
-      if (!(await engine.covers(platform))) {
-        notes.push(`${engine.label}未覆盖该平台`);
-        continue;
-      }
+    for (const engine of availableEngines()) {
+      if (!(await engine.covers(platform))) continue;
       const out = await engine.run({ platform, url, source, id });
       if (out.ok) {
-        const result = out.result;
+        const result = emit(out.result);
         if (result.code === 200) {
           result.platform = result.platform || platform;
           cache.set(cacheKey, result);
         }
         const via = viaOf(engine.id);
         analytics.track("parse", { platform, via, ok: result.code === 200 });
-        const reason = notes.join("；") || undefined;
-        return { result, via, fallbackReason: reason, durationMs: Date.now() - t0 };
+        return { result, via, durationMs: Date.now() - t0 };
       }
-      notes.push(out.reason);
       lastFailed = engine;
       lastResult = out.result;
     }
 
     if (lastFailed && lastResult) {
-      // 没有下一个引擎了：把最后一个引擎的失败答复如实交给 renderer，不拿 mock 冒充成功
+      // 没有下一个引擎了：把本地内核的失败答复如实交给 renderer，不拿 mock 冒充成功
       const via = viaOf(lastFailed.id);
       analytics.track("parse", { platform, via, ok: false });
-      return { result: lastResult, via, fallbackReason: notes.join("；"), durationMs: Date.now() - t0 };
+      return { result: emit(lastResult), via, durationMs: Date.now() - t0 };
     }
 
     // —— 没有引擎在场/覆盖：强制 mock 或 mock 兜底（离线演示，来源如实标注）——
@@ -282,7 +277,7 @@ export function createEngine(deps: EngineDeps) {
 
   /** 平台能力体检：注册表 × 在场引擎 × 用户开关（probe:engines 与设置页矩阵共用） */
   async function health(): Promise<EngineHealth[]> {
-    return buildHealth(availableEngines({}), switches());
+    return buildHealth(availableEngines(), switches());
   }
 
   /** 本地内核自报的覆盖清单（保留给测试与将来的引擎对比用） */

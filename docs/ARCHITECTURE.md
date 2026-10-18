@@ -14,7 +14,7 @@
   → 用户点「下载」 → IPC "download:enqueue" → downloader.ts 流式落盘（Referer/Range/重试；403 先换一条同资源的新链再跑一次）
 ```
 
-渲染层**永不**接触直链以外的网络请求；除「回落线上 API」外，所有出网动作都在主进程。
+渲染层**永不**接触直链以外的网络请求；所有出网动作都在主进程。
 
 ## 1. 进程边界与依赖方向
 
@@ -43,7 +43,6 @@
 | `electron/main/downloader.ts` | 下载队列：并发上限、优先级、断点续传、Referer/UA 组装、进度事件、失败重试；上游回 **403** 时先向 `link-renew.ts` 要一条同资源的新链并**只重跑一次**（换链同时同步 `.part.meta`，断点不许因此归零）；**v13 起队列是跨重启的全量台账**：`snapshot()` 不再滤 `done`、`restore()` 不再跳过 `done`/`canceled`（业主指令 2026-10-17「保留所有进过队列的数据」，推翻 v4 那两条重启语义），终态三件套 `filePath`/`error`/`finishedAt` 跟着落盘，`downloading` 回来仍降为 `queued`，`pump()` 只挑 `queued` 所以终态行只是台账不会自己开跑 | 解析逻辑、怎么判断链过期（只认状态码）；「超过 N 分钟判定过期」这类猜不出的时效判据 |
 | `electron/main/link-renew.ts` | 直链续取器（v12）：按**作品分享链接**合并再解析——并发任务共用同一个在飞请求、结果在 60s 内复用，再解析失败也进表（下架的作品不该被反复捶）。再解析走 `engine.parse(..., { skipCache: true })`：24h 结果缓存存的正是带过期直链的那份，不绕开就永远拿回同一条死链 | 认哪一条才是同一份资源（在 `shared/link-identity.ts`）、日志（**一行不打**：直链按 §6 红线不落盘）、按钮语义（渲染层不再按时间改下载按钮） |
 | `electron/main/resources.ts` | yt-dlp/ffmpeg 定位：dev 用本地路径，prod 首启从 `resources/` 释放到 `userData/bin/` 并校验哈希 | — |
-| `electron/main/fallback.ts` | 线上 API 回落：按开关把请求转发 `https://get.hotier.cc.cd/api/parse`，超时与错误归类 | 自造解析 |
 | `electron/main/updater.ts` | 自动更新状态机：把 electron-updater 事件收敛成单个 `UpdateState` 快照（阶段 + 进度 + 错误），守卫「无源不检查、未下载完不安装」 | 窗口操作、下载队列 |
 | `electron/main/notify.ts` | 下载通知聚合器：文件粒度的 done/error 按组收敛成一次系统通知（组内无排队/下载中任务时才播报，图集不逐张弹） | `Notification` 本体（由 index.ts 装配注入） |
 | `electron/main/clipboard.ts` | 剪贴板监听：开关开启时轮询剪贴板 → 内核 `identify` 纯本地识别 → 命中分享链接投 `app:clipboardLink`（文本不落盘、不出本机） | — |
@@ -62,7 +61,8 @@
 | `types/ipc-contract.ts` | 载荷形状的唯一声明处（zod）：每通道 in/out schema + `CONTRACT`/`EVENTS` 注册表 | 运行时以外的东西；被 renderer 以值 import |
 | `types/ipc.ts` | 通道常量 `IPC`、`MgBridge` 面、`DEFAULT_SETTINGS`，以及从 contract 派生的类型 | 任何运行时值（须保持只 `import type`）|
 | `shared/platforms.ts` | 平台注册表：本项目「有哪些平台、叫什么、哪枚图标、哪个引擎能解、供不供」的唯一真源（零依赖，主进程与渲染进程 import 同一份，见 §9） | 解析算法、IPC、图标文件本体（SVG 在 `renderer/public/logos/`） |
-| `shared/history.ts` | 历史记录的身份规则（零依赖，与注册表同一处置）：`workKeyOf(分享链接)` 算出可复算的作品键，解析侧与下载侧各写自己的行却算出同一个键 → 历史页聚成一行；`parseHistoryEntry()` 造「未下载」那一行，入参表不收任何直链 | 落盘（在 `store.ts`）、聚合展示（在 `lib/history-works.ts`）、平台定义（在注册表） |
+| `shared/history.ts` | 历史记录的身份规则（零依赖，与注册表同一处置）：`workKeyOf(分享链接)` 先经 `canonicalSourceUrl` 归一（去协议 / `www`/移动前缀 / 尾部斜杠 / 片段 / 分享追踪参数，查询串排序）再算可复算的作品键，解析侧与下载侧各写自己的行却算出同一个键 → 历史页聚成一行；`normalizeHistoryKeys()` 在读侧给旧键行补算（幂等、不改档）；`parseHistoryEntry()` 造「未下载」那一行，入参表不收任何直链 | 落盘（在 `store.ts`）、聚合展示（在 `lib/history-works.ts`）、平台定义（在注册表） |
+| `shared/source-url.ts` | 来源页的身份（零依赖，v16）：`pageUrlFromData(platform, ParseData)` 用内核已归一的作品 id 直接拼官方作品页（抖音 `awemeId` → `/video/` 或 `/note/`、小红书 `noteId` → `/explore/`、YouTube `videoId` → `watch?v=`），`isShortLink(raw)` 按注册表的 `shortDomains` 判分享短链。解析成功时主进程先取前者；认不出的短链再由 `electron/main/source-url.ts` 跟随一次重定向拿真实页，失败就原样保留——宁可留一条短链，也不编一个打不开的地址。结果写进 `ParseRunOutcome.sourceUrl`，结果卡、下载行与历史键从此锚在同一页 | 平台域名/短链清单（第二份会漂移，真源在注册表）、直链与任何媒体字段（§6 红线）、离线层对短链与长链的互认（需要真网络，归主进程） |
 | `shared/author.ts` | `buildAuthorSnapshot(ParseData)`：「哪些字段算一个作者」的一份口径，下载行由渲染层随 enqueue 带上、解析行由主进程在 parse 成功时造 | 第二份字段映射（2026-10-17 从 `renderer/src/lib/work-info.ts` 提上来，抄两份迟早漏字段） |
 | `shared/link-identity.ts` | 直链的身份规则（零依赖，v12）：`pickRenewedUrl(失败链, 候选链)` 按「host+pathname ∧ 非时效参数集合全等」认对象，签名/到期那类键（`sign`/`expires`/`x-expires`/`lk3s`/`s`…）不参与身份；判据全等还要求新链与旧链**不是同一条**，否则 403 重试会变成死循环。`collectMediaUrls(ParseData)` 按主媒体→音频→图集→清晰度→多 P 的顺序收集候选 | 再解析与合并（在 `electron/main/link-renew.ts`）、任何持久化（这些是直链，§6 红线：不落日志、不进历史与队列） |
 | `shared/work-stat.ts` | 作品计数与发布时间的归一（零依赖，主进程 / 渲染层 / dev mock 同一份，v10）：`WORK_STAT_SLOTS` 决定「哪一档叫什么、按什么顺序出现、从内核哪些字段兜底取」，结果卡徽标、txt 正文与表格三档都读它；`pickPublishedAt` 按量级判秒 / 毫秒 / ISO 三套单位并把未来时刻判为不可信；`toCount` 只收纯数字，`"1.2万"` 这种已缩水的字符串计数宁可留空 | 直链与任何媒体字段（隐私红线：这里只挑公开数字与时间）、格式化（`fmtCount` 在渲染层）、行身份（在 `shared/history.ts`） |
@@ -110,7 +110,7 @@
 - **续传**：`.part` 存在时带 `Range: bytes=<size>-`；上游返回 200（不支持 Range）则整体重下。
 - **防盗链**：Referer/UA 按平台补，逻辑与 `mediaGet` 的 `video-proxy`/`image` 代理对齐（来源同为 `lib/platforms.ts` 域名映射，勿在客户端复制一份域名表）。
 - **图集**：图文平台（小红书/微博/B站图文）返回多 URL → 打包为一次 group 入队，并发上限受设置控制。
-- **失败隔离**：单个任务失败不影响队列其余；错误分类后可选回落线上代理重试一次。
+- **失败隔离**：单个任务失败不影响队列其余；错误分类后按 `retryTimes` 重试，仍失败就如实报错。
 - **直链到期只认状态码**（v12）：上游回 **403** 才是「这条链过期」的硬证据，于是下载器把失败链交给 `link-renew.ts` 换一条**同一资源**的新签名再跑一次（`shared/link-identity.ts` 负责「是不是同一份」，认不出就返回 null、照原样进重试与报错）。为什么不做「超过 N 分钟就判定过期」：实测各家 CDN 根本没有统一时效（抖音播放链串上没有时刻，封面签名约 14 天），拿一个验证不了的数去改按钮语义只会让用户以为必须先重新解析。续链**一颗任务至多一次**、同一作品 60s 内只再解析一次（图集连环 403 共用一份新链），换链时同步 `.part.meta` 所以断点不归零；`note`「直链已过期，已自动重新取链」只随事件到界面，**不进队列快照**（重启即消失），里面也没有 url（§6 红线）。
 
 ## 5. 配置模型（core-adapter/config）
@@ -138,6 +138,8 @@
 9. `userData/history.json` 从 v8 起每条**成功解析**都落一行（不下下载也有），但字段口径没有放宽：只有平台、标题、作者快照、落地路径与用户自己粘的那条分享链接，v10 再加**发布时间与公开互动计数**（导出要完整作品信息）。内核给的 `data.url` / `images[]` / `qualities[].url` 一律不入档 —— 记录变多不等于直链变多，写入口 `shared/history.ts` 的入参表根本不收它们；v10 那两档也不是「把整份 `ParseData` 搬进档」，`shared/work-stat.ts` 逐字段挑，挑出来的只有数字与时间。`via=mock` 的演示结果不落盘。
 10. **renderer 不碰系统能力**：`setPermissionRequestHandler` 那条 deny-all 不放宽（第 4 条的延伸）。Chromium 写剪贴板也要过这条钩子，且 Electron 把写也报成 `clipboard-read`——**做不到只放行写**，所以复制动作走 `app:copyText` 由主进程代发，与 `app:openExternal`（renderer 不自己开窗）同一条理由。代价换来自检：`tests/boundaries.test.ts` 禁止 renderer 源码出现 `navigator.clipboard`，因为旧写法在真应用里全部静默 reject，而 dev 预览（mock 桥跑在普通浏览器）照样写成功——这个差异只有源码扫描抓得到。剪贴板内容不落盘、不进日志（第 7 条同源）。
 11. **`userData/queue.json` 只给「还能续或还能重试」的行留直链**（v13 新增的边界，不是旧行为）：队列档一直存 `url`（媒体直链）——断点续传与重试必须拿它再打一次，这条没得选。旧实现靠「完成行根本不落盘」顺带满足了红线；v13 起完成行也留档，同一句「队列不保留直链 URL」就必须换个执行法：**`snapshot()` 把 `done` 行的 `url` 剥成空串**，`queued`/`downloading`/`paused`/`error`/`canceled` 照旧留（剥了等于把续传与重试两个动作废掉）。到期直链对一条已完成记录本来也没有用途，界面对应撤掉入口——队列页右键「复制下载链接」没有 url 就不渲染那一项（与 §2.3 历史页「不出现需要直链的动作」同一口径）。`error` 文本落盘截到 300 字符：写流错误会带本机路径，而契约 `PersistedQueueTask.error` 就限到那里。`note`（v12 那句「已自动重新取链」）不进快照——它是一次性说明，隔天还挂着就成了说明书。
+
+12. **预览取流代理不开新的隐私面**（2026-10-18 业主定调「放开 CSP + 主进程代理取流」，界面口径见 UIUX-DESIGN §11）：结果卡里每条资源的「预览」只把直链换成 `mgpreview://media/?u=<编码直链>` 写进媒体元素的 `src`——这条链活在渲染层内存里，**不落 history/queue、不进日志**（第 7、9 条同源），弹窗关闭即释放。`electron/main/preview-protocol.ts` 解链时**再过一次** `shared/preview-link.ts` 的闸，所以代理不构成「替渲染层访问任意地址」的通道，而这座闸正是第 3 条那条 SSRF 红线在此处的落地：只收 http/https、拒 userinfo、拒回环/私网/链路本地/元数据/组播/保留段（IPv4 与 IPv6 都按展开后的分组判，`[::ffff:127.0.0.1]` 这类 v4-mapped 与 `2130706433`、`0x7f.1` 这类奇形写法由 WHATWG 归一后再判），单标签名与 `.local/.internal/.test/.invalid/.example/.localhost` 一律拒。防盗链那对 `Referer` + 桌面 UA 只在主进程拼（`electron/main/hotlink.ts` 一份真源，下载侧 import 同一条），上游响应头**只白名单透传**播放器要的那几个，`set-cookie` 之类不许跟着进来。**取流用 Node `fetch` 而不是 `net.fetch`**：实测（electron 44.7.2 最小探针）在 `protocol.handle` 内部调 `net.fetch` 会撞 `net::ERR_BLOCKED_BY_CLIENT`，同一条 URL 在主进程直接调却是 200——嵌套请求的发起方是自定义 scheme，Chromium 的本机网络访问检查无从判定其网络身份；Node 侧不吃这套策略，又与解析内核、下载器同属 undici 一条栈，代理设置由 `applyProxy` 的全局 dispatcher 一并覆盖。scheme 特权 `{standard, secure, stream}` 必须在 `app.whenReady()` **之前**声明，缺 `stream` 就是把整段媒体先攒进内存、播放器拖动随之失效。
 
 ## 7. 构建与发布
 
@@ -167,7 +169,7 @@ mediaGet（已有，web 仓）                     mediaGet-desktop（本仓）
 ├─ packages/parse-core/   ← 唯一源码真源    ├─ node_modules/@mediaget/parse-core  ← 只读工件
 │   └─ src/<platform>Core.js                ├─ core-adapter/        ← 注入 cache/ratelimit/config
 ├─ src/lib/**            ── import ──┐      ├─ electron/main/engine.ts  ← 调 parse-core
-├─ src/app/api/**        （route 薄壳）      └─ fallback ──→ 线上 mediaGet API
+├─ src/app/api/**        （route 薄壳）      └─ 桌面端只随包内核工件，不回落线上 API
 ```
 
 `parse-core` 放在 mediaGet 仓**内部**的 `packages/` 下，而不是独立成第三个仓：改解析时内核与调用方在同一次原子提交里，不会出现「内核发了新版、web 还没跟上」的中间态。
@@ -217,6 +219,7 @@ mediaGet（已有，web 仓）                     mediaGet-desktop（本仓）
 - **同源只可能发生在同一次 pack**：实测本地 `npm pack` 出的 0.1.1 与 Release 上的 0.1.1 字节不同（sha256 `454f5d24…` vs `6919324d…`），差的 33 字节恰好等于 `package.json` 的行数——Windows `core.autocrlf` 把工作区检出成 CRLF，CI 检出 LF，dist 三个文件大小逐项相同，说明构建本身可复现，漂移只来自 pack 时的行尾规范化。结论：**不允许跨机器补发同版本号**，`0.1.1` 保持 Release-only，npm 首发从 `0.1.2` 起由 CI 一次 pack 两处用。实测两个 registry 的 `versions` 只列出 `0.0.0-stage` 与 `0.1.2`，印证 0.1.1 从未上过注册表。
 - 本机 npm 全局 `registry` 已指回 `https://registry.npmjs.org`；`pnpm` 侧仍是 `registry.npmmirror.com`。实测 2026-10-16 两侧均能查到 `latest → 0.1.2`（镜像已同步），但新发版本存在镜像同步时延，装不到时先直接对 `registry.npmjs.org` 查版本号再判断是发布问题还是同步问题。
 - 未加 `--provenance`：发布的是已 pack 好的 tarball 本体，npm 对 tarball 发布的 attestation 支持未经实测验证；同源保证已由 sha256 对拍承担。要补 provenance 时先在 workflow_dispatch 上跑通再固化。
+- **1.0.0 已升入本仓（2026-10-18）**：上游 `a23db0c feat(parse-core)!` 于 18:39 发 **1.0.0**（0.1.2 → major）：下线 7 平台与 QQ 音乐、`KernelConfig` 删 `qqmusicCookie` 增 `kuaishouCookie`、导出面新增 `setRuntime`/`getRuntime`/`createTtlCache` 等反爬运行时注入、`normalize-result` 开始做字段类型收拢。本仓适配 = 注册表删 8 条 + 删图标、契约镜像补 17 字段并升 `CONTRACT_VERSION 14`（详见 [docs/UIUX-HANDOFF.md](UIUX-HANDOFF.md) §6 同日条目）。`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 随版本改钉 `@mediaget/parse-core@1.0.0`——新版本发布当天必然落在年龄窗口内，这一行是本流水线的常规后果。
 
 ### parse-core 依赖闭包（P0 的真实工作量，别低估）
 
@@ -226,9 +229,9 @@ mediaGet（已有，web 仓）                     mediaGet-desktop（本仓）
 - 迁完跑 `npm test` + `test:live` 基线 = P0 项 1 的验收，与「原子提交」原则一致（同一次 PR 完成迁移+re-export+回归）。
 - 反例（禁止）：parse-core 里复制一份 http/api-utils——立刻分叉。
 
-### 兜底：内核滞后不阻塞桌面端
+### 兜底：内核滞后不阻塞桌面端（2026-10-18 作废）
 
-`electron/main/engine.ts` 中 parse-core 解析失败（版本旧 / 平台未覆盖 / 上游改版）→ 回落打线上 mediaGet API（见 §2 `fallback.ts`）。**因此 P0 抽取失败可退**：抽不动即退为纯回落模式，架构不塌。
+早期设计允许 parse-core 解析失败时回落线上 mediaGet API；线上回落在 2026-10-18 按业主指令移除（见 §9「引擎选路」），桌面端只随包内核工件。因此「P0 抽取失败可退为纯回落模式」这条退路不再成立——解析失败就如实报错，不再有第三方解析通道。
 
 ### 业界参照
 
@@ -252,5 +255,5 @@ mediaGet（已有，web 仓）                     mediaGet-desktop（本仓）
 | 抽取进度跟踪 | mediaGet 仓 `docs/DESKTOP-PLAN.md`（若存在）；P0 未完成前本仓只实现骨架 + mock 内核，避免等阻塞 |
 | 分叉防线 | 本仓不写平台解析；若某天必须临时补，标 `// DIVERGENCE:` 并在 issue 跟踪回流上游 |
 | 域名/平台清单 | **以 `shared/platforms.ts` 注册表为真源**（2026-10-16 业主改口，此前写「一律来自内核 `PLATFORM_INFO`」）。理由：parse-core 只是引擎之一（还有 yt-dlp、后续更多），引擎决定「能不能解」，注册表决定「供不供」；若以内核为真源，换引擎或关平台都得等上游发版，产品边界就不归我们管。内核那份降级为**引擎侧事实**，由 `tests/platform-registry.test.ts` 逐键对账（名称/域名/短链/ID 模式 + 有本地 parser 才可声明 `parseCore: ready`），漂移即红叉。 |
-| 引擎选路 | 选路不在 `engine.ts` 写 if-else，改为 `engines.ts` 的 `ParseEngine` 列表轮询（本地内核 → 线上 API）。上游工件因此只是列表上的一项，不再是解析面的全部：接 yt-dlp 直连或新增兜底引擎 = 加一项 + 在注册表把该平台的能力位改成 `ready`，`tests/engine.test.ts` 的「供给闸门 / health 矩阵」两组用例保证开关与体检说的、解析做的三件事一致。 |
+| 引擎选路 | 选路不在 `engine.ts` 写 if-else，改为 `engines.ts` 的 `ParseEngine` 列表轮询（线上回落引擎已于 2026-10-18 移除，当下只有本地内核）。上游工件因此只是列表上的一项，不再是解析面的全部：接 yt-dlp 直连或新增引擎 = 加一项 + 在注册表把该平台的能力位改成 `ready`，`tests/engine.test.ts` 的「供给闸门 / health 矩阵」两组用例保证开关与体检说的、解析做的三件事一致。 |
 | 契约类型 | `normalize-result` 的输出结构是唯一真源，在 `types/ipc-contract.ts` 以 zod 镜像并注明来源；`types/ipc.ts` 只做 `z.infer` 派生 |

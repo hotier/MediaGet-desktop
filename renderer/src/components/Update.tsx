@@ -81,7 +81,7 @@ function phrase(s: UpdateState): string {
     case "error":
       return `更新失败：${s.error ?? "未知错误"}`;
     case "unsupported":
-      return "当前运行环境没有更新源（开发模式或未配置发布通道）";
+      return "当前运行环境没有更新源";
     default:
       return "";
   }

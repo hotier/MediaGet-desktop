@@ -94,7 +94,8 @@ export const KERNEL_CONFIG_KEYS = [
   "XHS_COOKIE",
   "IG_COOKIE",
   "IG_TIMEOUT_MS",
-  "QQMUSIC_COOKIE",
+  // 内核 1.0.0 新增：只服务快手作者主页资料（简介 / 获赞 / 粉丝数），视频解析本身不需要
+  "KUAISHOU_COOKIE",
   "YOUTUBE_PIPED_HOSTS",
   "YOUTUBE_INVIDIOUS_HOSTS",
   "YOUTUBE_API_KEY",
@@ -111,6 +112,9 @@ export const SECRET_CONFIG_KEYS = [
   "BILIBILI_COOKIE",
   "XHS_COOKIE",
   "IG_COOKIE",
+  "KUAISHOU_COOKIE",
+  // 内核 1.0.0 删了 QQ 音乐，但旧版本用户盘上可能还留着这颗值：
+  // 继续按机密剔除，导出配置不会把它吐出去（保留比移除安全）
   "QQMUSIC_COOKIE",
   "YOUTUBE_API_KEY",
 ] as const;

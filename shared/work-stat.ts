@@ -14,40 +14,41 @@
  *    所以这里按量级判单位，而不是照某个平台写死。
  *
  * 零依赖：只 import 类型（`types/ipc` 本身零运行时），主进程、渲染进程与 dev mock 共用同一份。
+ * 计数口径 `toCount` 借同层的 `coerce.ts`（那份只带一个 zod 类型 import，运行时仍是零依赖）。
  */
 import type { ParseData, WorkStat } from "../types/ipc";
+import { toCount } from "./coerce";
 
 /** 计数档位的顺序即导出列序与 txt 行序 —— 顺序在这里定一次，别处别再排 */
 export const WORK_STAT_SLOTS: Array<{
   key: keyof WorkStat;
   label: string;
-  /** 各平台的等价来源，按优先级排（stat 里的规范位优先，平铺字段兜底） */
+  /**
+   * 各平台的等价来源，按优先级排（stat 里的规范位优先，平铺字段兜底）。
+   *
+   * 平铺那一列不是「历史遗留」：内核只做字段名映射，`kuaishou` 分支把
+   * `likeCount / commentCount / shareCount / viewCount / forwardCount` 原样平铺在 data 上
+   * （`extractVideoFromPhoto`，2026-10-19 核对），一枚都不进 `stat`。少读这几档，
+   * 结果卡与导出就是整排空白——而解析本身成功，症状看着像「这条没有互动数据」。
+   */
   pick: (d: ParseData) => unknown;
 }> = [
-  { key: "view", label: "播放", pick: (d) => d.stat?.view ?? d.views ?? d.channelViews },
+  { key: "like", label: "点赞", pick: (d) => d.stat?.like ?? d.like ?? d.likeCount },
+  { key: "retweet", label: "转发", pick: (d) => d.retweets ?? d.forwardCount },
+  { key: "reply", label: "评论", pick: (d) => d.stat?.reply ?? d.replies ?? d.reply ?? d.commentCount },
+  { key: "favorite", label: "收藏", pick: (d) => d.stat?.favorite ?? d.favorite ?? d.collectionCount },
+  // 播放/弹幕排在收藏之后（业主 2026-10-18 指定：互动计数在前，规模数字在后）
+  {
+    key: "view",
+    label: "播放",
+    pick: (d) => d.stat?.view ?? d.views ?? d.channelViews ?? d.viewCount ?? d.playCount,
+  },
   { key: "danmaku", label: "弹幕", pick: (d) => d.stat?.danmaku },
-  { key: "like", label: "点赞", pick: (d) => d.stat?.like ?? d.like },
-  { key: "retweet", label: "转发", pick: (d) => d.retweets },
-  { key: "reply", label: "评论", pick: (d) => d.stat?.reply ?? d.replies },
-  { key: "favorite", label: "收藏", pick: (d) => d.stat?.favorite ?? d.favorite },
   { key: "coin", label: "投币", pick: (d) => d.stat?.coin },
-  { key: "share", label: "分享", pick: (d) => d.stat?.share ?? d.share },
+  { key: "share", label: "分享", pick: (d) => d.stat?.share ?? d.share ?? d.shareCount },
 ];
 
-/** 原始计数 → 数字（作者快照那边同一条口径，故导出给 `shared/author.ts` 用）。
- *
- * 小红书等平台的 interactInfo 计数**是字符串**（内核注释写明「可能是字符串，保留原始值交给前端
- * 格式化」），其中 `"1.2万"` 这类已缩水的写法拿不回精确值 —— 宁可不写这一档，也不要把近似值
- * 当真实数字导出去（导出是要进 Excel 求和的）。所以只收「纯数字串与有限数字」。
- */
-export function toCount(raw: unknown): number | undefined {
-  if (typeof raw === "number") return Number.isFinite(raw) && raw > 0 ? raw : undefined;
-  if (typeof raw === "string" && raw.trim() !== "" && /^[+-]?\d+(\.\d+)?$/.test(raw.trim())) {
-    const n = Number(raw.trim());
-    return Number.isFinite(n) && n > 0 ? n : undefined;
-  }
-  return undefined;
-}
+/** 原始计数 → 数字：口径与作者快照同一条，真源在 `shared/coerce.ts`（引擎出口的收拢层也吃它） */
 
 /** 解析结果 → 计数快照。一档都没有时返回 undefined，而不是写一个空对象进历史 */
 export function pickWorkStat(data?: ParseData | null): WorkStat | undefined {

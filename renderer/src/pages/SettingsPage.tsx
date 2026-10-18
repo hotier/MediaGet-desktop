@@ -6,7 +6,8 @@
  */
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, FolderOpen, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, FolderOpen, KeyRound, RefreshCw, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "~/lib/utils";
 import { api, BridgeError } from "../lib/bridge";
 import { fmtBytes } from "../lib/format";
@@ -27,6 +28,7 @@ import type {
 } from "../../../types/ipc";
 import { CONTRACT_VERSION } from "../../../types/ipc";
 import { PLATFORMS, displayName, isEnabled } from "../../../shared/platforms";
+import { isCookieLoginKey } from "../../../shared/cookie-login";
 import { usePlatformStore } from "../store/platforms";
 import { AnimIcon } from "../components/AnimIcon";
 import { PlatformIcon } from "../components/PlatformIcon";
@@ -76,7 +78,7 @@ const COOKIE_ROWS: Array<{ key: string; platform: string; note: string }> = [
   { key: "DOUYIN_COOKIE", platform: "douyin", note: "可选：仅增强" },
   { key: "XHS_COOKIE", platform: "redbook", note: "可选" },
   { key: "IG_COOKIE", platform: "instagram", note: "强烈建议：游客几乎必被风控" },
-  { key: "QQMUSIC_COOKIE", platform: "qqmusic", note: "可选：source+id 试听 vkey" },
+  { key: "KUAISHOU_COOKIE", platform: "kuaishou", note: "可选：仅作者主页资料（简介/获赞/粉丝数）需要，视频解析不用" },
 ];
 
 /** 体检表列宽：table-fixed 下不设宽的「平台」列吃剩余；其余按 `1.5rem + Nem` 定宽（与队列/历史页同口径，跟字号档缩放） */
@@ -126,8 +128,6 @@ const SCALAR_SECTION: Partial<Record<keyof AppSettings, string>> = {
   themeStyle: "theme",
   fontSizePx: "font",
   fontFamily: "font",
-  fallbackOnline: "fallback",
-  onlineApiBase: "fallback",
   updateOnStartup: "about",
   updateAutoDownload: "about",
 };
@@ -144,7 +144,7 @@ const CATEGORIES: Array<{
   { id: "general", label: "通用", icon: SETTINGS_GLYPHS.categories.general, sections: ["startup", "window", "notify", "clipboard", "cache", "log"] },
   { id: "download", label: "下载", icon: SETTINGS_GLYPHS.categories.download, sections: ["dir", "name", "load", "proxy", "post"] },
   { id: "appearance", label: "外观", icon: SETTINGS_GLYPHS.categories.appearance, sections: ["theme", "font"] },
-  { id: "engine", label: "引擎", icon: SETTINGS_GLYPHS.categories.engine, sections: ["fallback", "engines", ...COOKIE_ROWS.map((r) => r.key)] },
+  { id: "engine", label: "引擎", icon: SETTINGS_GLYPHS.categories.engine, sections: ["engines", ...COOKIE_ROWS.map((r) => r.key)] },
   { id: "about", label: "关于", icon: SETTINGS_GLYPHS.categories.about, sections: ["about"] },
 ];
 
@@ -198,17 +198,6 @@ const THEME_STYLES: Array<{ id: AppSettings["themeStyle"]; label: string; dot: s
 /** 字体族候选数据源：主进程 font-list 枚举（进程内缓存）；模块级 stable 引用，避免 FontPicker 反复重载 */
 const fetchInstalledFonts = (): Promise<string[]> => api.app.listFonts();
 
-function validateApiBase(v: string): string | null {
-  if (!v.trim()) return "不能为空";
-  try {
-    const u = new URL(v.trim());
-    if (u.protocol !== "http:" && u.protocol !== "https:") return "需为 http(s) 地址";
-    return null;
-  } catch {
-    return "不是有效 URL（需含协议，如 https://example.com）";
-  }
-}
-
 export default function SettingsPage({
   meta,
   update,
@@ -233,12 +222,13 @@ export default function SettingsPage({
   const [bins, setBins] = useState<BinaryStatusReport | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
   const [saveError, setSaveError] = useState("");
-  const [baseUrlError, setBaseUrlError] = useState<string | null>(null);
-  const [baseTest, setBaseTest] = useState<{ state: "idle" | "testing" | "ok" | "fail"; msg?: string }>({ state: "idle" });
   const [pending, setPending] = useState<{ type: "switch"; to: string } | { type: "exit" } | null>(null);
   /** Cookie 弹窗：打开的 COOKIE_ROWS key + 草稿文本（打开时从已暂存的编辑值预填） */
   const [cookieKey, setCookieKey] = useState<string | null>(null);
   const [cookieDraft, setCookieDraft] = useState("");
+  /** 自动获取：等登录窗口期间禁用按钮；失败原因单独放，不混进 saveError（它不属于「保存」） */
+  const [cookieFetching, setCookieFetching] = useState(false);
+  const [cookieFetchMsg, setCookieFetchMsg] = useState("");
   /**
    * 本地缓存：扫描是「读磁盘」而非设置草稿，所以不进脏计数——
    * 进「通用」分类时统计一次，之后只由「重新统计 / 清理」刷新；清理结果即时生效，不等「保存」。
@@ -366,10 +356,6 @@ export default function SettingsPage({
         return c;
       });
     }
-    if (sections.includes("fallback")) {
-      setBaseUrlError(null);
-      setBaseTest({ state: "idle" });
-    }
     setDraft(next);
   }
 
@@ -380,6 +366,7 @@ export default function SettingsPage({
   function openCookie(key: string): void {
     setCookieKey(key);
     setCookieDraft(cookieEdits[key] ?? "");
+    setCookieFetchMsg("");
   }
 
   /** 确认：非空 = 暂存替换（同时撤清除标记）；空 = 撤销本次编辑（不动已存值，「清除」须点清除按钮） */
@@ -410,6 +397,56 @@ export default function SettingsPage({
     if (!cookieKey) return;
     setCookieClears({ ...cookieClears, [cookieKey]: false });
     setCookieKey(null);
+  }
+
+  /**
+   * 自动获取：主进程开登录窗口，登录后**直接写档**（值不回渲染层）。
+   * 所以它和「保存」不是同一条路：抓到只回读一次并把这一行从待保存/待清除里摘掉，
+   * 与平台开关、本地缓存清理同一条「立即生效、不受放弃影响」的语义。
+   */
+  async function autoFetchCookie(): Promise<void> {
+    if (!cookieRow || !isCookieLoginKey(cookieRow.key)) return;
+    const key = cookieRow.key;
+    setCookieFetching(true);
+    setCookieFetchMsg("");
+    try {
+      const r = await api.settings.cookieLogin({ cookieKey: key });
+      if (!r.captured) {
+        setCookieFetchMsg(
+          r.reason === "busy"
+            ? "已经有一个登录窗口开着，先在那个窗口里登录或关掉它。"
+            : r.reason === "timeout"
+              ? "3 分钟内没检测到登录态：重试一次，或改用手动粘贴。"
+              : r.reason === "error"
+                ? "登录窗口没能打开（可能是代理或网络问题），请手动粘贴。"
+                : "没检测到登录态：可能还没登录，或该平台的判据键变了，请手动粘贴。"
+        );
+        return;
+      }
+      const next = await api.settings.get();
+      setSaved(next);
+      // 只合并 cookies：别的字段可能还有未保存的草稿，整表覆盖会把它们抹掉
+      setDraft((d) => (d ? { ...d, cookies: { ...next.cookies } } : d));
+      setCookieEdits((p) => {
+        const c = { ...p };
+        delete c[key];
+        return c;
+      });
+      setCookieClears((p) => {
+        const c = { ...p };
+        delete c[key];
+        return c;
+      });
+      setCookieDraft("");
+      setCookieKey(null);
+      // 全仓口径：浮空 toast 只播「动作结果」，一句、带档位图标（tests/toast-sonner.test.ts）。
+      // 「仅本机」是卡片里常驻的说明，不在这里重复
+      toast.success(`${displayName(cookieRow.platform)} Cookie 已获取`);
+    } catch (e) {
+      setCookieFetchMsg(e instanceof BridgeError ? e.message : String(e));
+    } finally {
+      setCookieFetching(false);
+    }
   }
 
   /**
@@ -486,17 +523,11 @@ export default function SettingsPage({
       else if (cookieClears[row.key]) cookies[row.key] = "";
     }
     try {
-      const next = await api.settings.set({
-        ...draft,
-        onlineApiBase: draft.onlineApiBase.trim(),
-        cookies,
-      });
+      const next = await api.settings.set({ ...draft, cookies });
       setSaved(next);
       setDraft(structuredClone(next));
       setCookieEdits({});
       setCookieClears({});
-      setBaseUrlError(null);
-      setBaseTest({ state: "idle" });
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 2500);
     } catch (e) {
@@ -1058,43 +1089,6 @@ export default function SettingsPage({
           </ItemCard>
         );
 
-      case "fallback":
-        return (
-          <ItemCard title="线上回落">
-            <Row label="本地失败回落线上 API" hint="上游改版坏消息先到不白屏；纯本地党可关。" end>
-              <Switch
-                checked={draft.fallbackOnline}
-                onCheckedChange={(v) => setDraft({ ...draft, fallbackOnline: v })}
-                aria-label="本地失败回落线上 API"
-              />
-            </Row>
-            <Row label="线上 API 基址">
-              <div className="flex gap-2">
-                <Input
-                  value={draft.onlineApiBase}
-                  aria-invalid={baseUrlError !== null}
-                  onChange={(e) => {
-                    setDraft({ ...draft, onlineApiBase: e.target.value });
-                    setBaseTest({ state: "idle" });
-                  }}
-                  onBlur={(e) => setBaseUrlError(validateApiBase(e.target.value))}
-                />
-                <Button
-                  variant="outline"
-                  className="shrink-0"
-                  disabled={baseTest.state === "testing"}
-                  onClick={() => void testApiBase()}
-                >
-                  {baseTest.state === "testing" ? "测试中…" : "测试连接"}
-                </Button>
-              </div>
-              {baseUrlError && <p className="text-xs text-err">{baseUrlError}</p>}
-              {baseTest.state === "ok" && <Badge variant="ok" className="mt-1">可达 {baseTest.msg}</Badge>}
-              {baseTest.state === "fail" && <Badge variant="err" className="mt-1">失败：{baseTest.msg}</Badge>}
-            </Row>
-          </ItemCard>
-        );
-
       case "engines":
         return (
           <ItemCard title="解析引擎" desc="「提供」列是注册表开关：关掉后主进程在调用任何引擎之前就回绝该平台的解析请求，落盘即生效、不等「保存」。其余列只如实汇报本机体检真相，不发抓取、不打平台风控；Cookie 点徽标弹窗粘贴（仅存本机，风险自负）。">
@@ -1213,7 +1207,7 @@ export default function SettingsPage({
               </Row>
             </ItemCard>
 
-            <ItemCard title="随包二进制" desc="完整性档位如实展示：已校验=有 SHA-256 基线且匹配；降级=无基线（仅定位不校验）；已拒绝=哈希不符（不使用，该平台走线上回落）。">
+            <ItemCard title="随包二进制" desc="完整性档位如实展示：已校验=有 SHA-256 基线且匹配；降级=无基线（仅定位不校验）；已拒绝=哈希不符（不使用，依赖它的解析会失败）。">
               {!bins || bins.binaries.length === 0 ? (
                 <p className="text-xs text-muted-foreground">未获取到二进制状态。</p>
               ) : (
@@ -1277,23 +1271,6 @@ export default function SettingsPage({
     }
   }
 
-  async function testApiBase(): Promise<void> {
-    const err = validateApiBase(draft?.onlineApiBase ?? "");
-    setBaseUrlError(err);
-    if (err || !draft) return;
-    setBaseTest({ state: "testing" });
-    try {
-      const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), 5000);
-      const url = draft.onlineApiBase.trim().replace(/\/+$/, "") + "/api/engines";
-      const res = await fetch(url, { signal: ctl.signal });
-      clearTimeout(timer);
-      setBaseTest({ state: res.ok ? "ok" : "fail", msg: `HTTP ${res.status}` });
-    } catch (e) {
-      setBaseTest({ state: "fail", msg: e instanceof Error ? e.message : String(e) });
-    }
-  }
-
   const dirty = totalDirty();
   const curCatDirty = catDirty(sel);
 
@@ -1305,7 +1282,11 @@ export default function SettingsPage({
       <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
         {/* 顶栏带：与主页面同款，系统按钮浮在它右端，分类内容从它下面起 */}
         <div aria-hidden className="drag-region h-(--wco-h) shrink-0" />
-        <main key={sel} className="flex-1 overflow-y-auto p-4 animate-in fade-in duration-200 slide-in-from-left-3">
+        {/* 与 App 主区同一条：常驻滚动条槽，避免内容跨过一屏时整页左右抽动 */}
+        <main
+          key={sel}
+          className="flex-1 overflow-y-auto p-4 animate-in fade-in duration-200 slide-in-from-left-3 [scrollbar-gutter:stable]"
+        >
           {/* ≤860px：侧栏隐藏，降级为顶部横向 chip */}
           <div className="mb-4 hidden flex-col gap-2 max-[860px]:flex">
             <div className="flex items-center gap-1.5 overflow-x-auto">
@@ -1345,22 +1326,30 @@ export default function SettingsPage({
               )}
             </div>
 
-            {/* 保存条保持通底毛玻璃：内衬 = p-4 + 3%，按钮与卡片右缘对齐 */}
-            <div className="sticky bottom-0 -mx-4 flex min-h-0 items-center justify-end gap-3 border-t border-transparent px-[calc(1rem_+_3%)] py-0 bg-background/85 backdrop-blur-sm transition-colors">
+            {/* 保存条：浮在内容之上的圆角卡（业主指令 2026-10-19）。
+                粘底与毛玻璃不变，但视觉上收成一张卡：宽度与卡片列对齐（mx-[3%]），
+                只在真有内容时描边——空态不画边，否则底部会留一条没有内容的横线。 */}
+            <div
+              className={cn(
+                "sticky bottom-0 mx-[3%] flex min-h-0 items-center justify-end gap-3 transition-colors",
+                !loading && (savedFlash || dirty > 0 || Boolean(saveError)) &&
+                  "rounded-lg border border-border bg-background/85 shadow-sm backdrop-blur-sm"
+              )}
+            >
               {savedFlash && !loading && (
-                <div className="flex w-full items-center justify-end gap-3 border-t border-border py-3">
+                <div className="flex w-full items-center justify-end px-3 py-2.5">
                   <Badge variant="ok">已保存 ✓</Badge>
                 </div>
               )}
               {(dirty > 0 || saveError) && !loading && (
-                <div className="flex w-full items-center gap-3 border-t border-border bg-warn/5 py-3">
+                <div className="flex w-full items-center gap-3 rounded-lg bg-warn/5 px-3 py-2.5">
                   {saveError && <span className="ms-auto max-w-[48rem] truncate text-xs text-err" title={saveError}>{saveError}</span>}
                   {dirty > 0 && (
                     <>
                       <span className="ms-auto text-xs text-warn tabular-nums">{dirty} 项未保存</span>
                       {curCatDirty > 0 && (
                         <Button variant="outline" size="sm" onClick={() => discardSections(catNow.sections)}>
-                          放弃本类更改
+                          放弃更改
                         </Button>
                       )}
                       <Button size="sm" onClick={() => void save()}>
@@ -1415,13 +1404,43 @@ export default function SettingsPage({
             <DialogHeader>
               <DialogTitle>{displayName(cookieRow.platform)} Cookie</DialogTitle>
               <DialogDescription>
-                {cookieRow.note}。浏览器登录该平台后 F12 → Application/存储 → Cookies 复制整串；仅存本机，风险自负。
+                {cookieRow.note}。可在下面的登录窗口里登录后自动抓取；也可在浏览器登录后
+                F12 → Application/存储 → Cookies 复制整串粘贴。仅存本机，风险自负。
               </DialogDescription>
             </DialogHeader>
             {cookieClearing ? (
               <p className="text-sm text-err">已标记清除，保存后生效。</p>
             ) : (
               <>
+                {isCookieLoginKey(cookieRow.key) ? (
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void autoFetchCookie()}
+                        disabled={cookieFetching}
+                      >
+                        {cookieFetching ? (
+                          <RefreshCw className="animate-spin" />
+                        ) : (
+                          <KeyRound />
+                        )}
+                        {cookieFetching ? "等待登录…" : "打开登录页自动获取"}
+                      </Button>
+                      {cookieFetching && (
+                        <span className="text-xs text-muted-foreground">
+                          在弹出的窗口里登录，完成即自动抓取（值不会显示在这里）
+                        </span>
+                      )}
+                    </div>
+                    {cookieFetchMsg && <p className="text-xs text-err">{cookieFetchMsg}</p>}
+                  </div>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    该平台不支持自动获取（登录风控过严），请在浏览器登录后手动粘贴。
+                  </p>
+                )}
                 <Textarea
                   value={cookieDraft}
                   onChange={(e) => setCookieDraft(e.target.value)}
@@ -1430,7 +1449,9 @@ export default function SettingsPage({
                   className="min-h-24 font-mono text-xs"
                 />
                 {cookieConfigured && (
-                  <p className="text-xs text-muted-foreground">当前已配置；填入新值确认后覆盖，保存后生效。</p>
+                  <p className="text-xs text-muted-foreground">
+                    当前已配置；自动获取会当场覆盖并保存，手动填入则确认后再保存。
+                  </p>
                 )}
               </>
             )}
@@ -1681,9 +1702,8 @@ function IntegrityBadge({
   return <Badge variant={variant}>{label}</Badge>;
 }
 
-/** 三态通道真相：绿=本地内核直连，蓝=经线上回落，灰=不可用（旧版两色 chip 墙表达不完三种真相） */
+/** 通道真相：绿=本地内核可解，灰=不可用（线上回落在 2026-10-18 移除，只剩这一条通道） */
 function EngineToneBadge({ e }: { e: EngineHealth }): React.ReactElement {
   if (!e.ok) return <Badge variant="outline">不可用</Badge>;
-  if (e.detail?.includes("本地")) return <Badge variant="ok">本地内核</Badge>;
-  return <Badge variant="info">线上回落</Badge>;
+  return <Badge variant="ok">本地内核</Badge>;
 }

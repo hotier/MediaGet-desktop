@@ -25,6 +25,8 @@ import type {
   CacheStatusSchema,
   ClearTasksInputSchema,
   ClearTasksResultSchema,
+  CookieLoginInputSchema,
+  CookieLoginResultSchema,
   DownloadItemSchema,
   DownloadTaskViewSchema,
   EngineHealthSchema,
@@ -60,7 +62,7 @@ export type ParsedVideoItem = z.infer<typeof ParsedVideoItemSchema>;
 /** 统一解析数据结构（normalize-result 归一化后的 data 契约） */
 export type ParseData = z.infer<typeof ParseDataSchema>;
 
-/** 统一解析响应（IPC `parse:run` 的 data 载荷，与线上 API 契约同构） */
+/** 统一解析响应（IPC `parse:run` 的 data 载荷，与解析内核输出同构） */
 export type ParseResult = z.infer<typeof ParseResultSchema>;
 
 // ————————————————————————————————————————————————
@@ -131,9 +133,40 @@ export type InvokeResult<T> = InvokeOk<T> | InvokeErr;
 //     都按 `status === "done" && filePath` 渲染，缺 filePath 就整项消失；缺 error 则是一条不知道为什么
 //     失败的「失败」。通道集合没变，但档内形状变了，按 v6/v7/v10/v12 同一条口径升号。
 //     旧档不需要迁移（三个键都可选，缺就是空）；done 行的 `url` 落盘时剥成空串，见契约注释。
+// v14：`ParseData` 镜像随内核 1.0.0 补齐 14 个字段（`source` / `favorite` / `reply` / `share` /
+//     `playCount` / `likeCount` / `commentCount` / `shareCount` / `collectionCount` / `durationFormat` /
+//     `noteId` / `ipRegion` / `verifiedReason` / `statusesCount`），`ParsedVideoItem` 补 3 个
+//     （`qualityLabel` / `video_url` / `pic`）。通道集合没变、线形也没变（ParseData 是 passthrough，
+//     这些键本来就在内核载荷里），但**声明面**变了：引擎出口的类型收拢从此把它们当契约字段处理。
+//     按 v6/v7/v10/v12 那条口径升号，别让「收没收到类型」变成不可见的运气。
+// v15：移除线上回落（业主指令 2026-10-18）。设置里删 `fallbackOnline` / `onlineApiBase`，
+//     `ParseRunOutcome` 删 `fallbackReason`、`via` 收窄成 local|mock，`ParseInput.forceOnline`
+//     改成语义更准的 `skipCache`（它此前一半职责是「别选本地引擎」，线上引擎没了只剩跳缓存）。
+//     通道集合没变、载荷形状变了，按 v6/v7/v10/v12/v13 同一条口径升号。旧 config.json 里那两个
+//     键会被 zod 丢键忽略，不需要迁移；旧 stats.json 的 `parse.online` 保留原值、不再增长。
+// v16：`ParseRunOutcome` 新增可选键 `sourceUrl`（业主指令 2026-10-18：来源应当是真实资源链接，
+//     不是分享短链）。主进程在解析成功后把短链跟到最终页面（或由作品 ID 拼官方页），首页拿它
+//     写下载 meta、主进程拿它写历史，三处从同一条真实链接算作品键。通道集合没变，载荷形状变了，
+//     按 v6/v7/v10/v12/v13 同一条口径升号；旧历史行里的短链不回溯改写（跟跳要联网，读档时不做）。
+// v17：队列快照 `PersistedQueueTask` 新增可选键 `speed`（业主指令 2026-10-18：暂停时保留当时的速度
+//     与剩余时间）。`DownloadTaskView.speed` 的语义就地扩一档：paused 行里它是**暂停那一刻的快照**，
+//     主进程 `pause()` 不再清、`resume()` 才清；只有 paused 行把它写进 queue.json，重启后照样说得清
+//     「当时多快」。完成行的平均速度没有占这个键（界面按 `received ÷ (finishedAt − createdAt)` 算，
+//     与统计页 `elapsedMs` 同一把尺），所以 done 行仍是 0。通道集合没变，档内形状变了，
+//     按 v6/v7/v10/v12/v13 同一条口径升号；旧档缺这个键 → 暂停行显示「—」，不需要迁移。
+// v18：完成行的平均速度改口径（业主追问 2026-10-18「暂停一段时间再下载，计算速度的逻辑就有问题」）。
+//     `DownloadTaskView` / `PersistedQueueTask` 新增 `transferMs`（实际传输时长）与 `transferBytes`
+//     （这段时长里收到的字节），平均速度 = transferBytes ÷ transferMs；暂停、排队、重试退避、
+//     首字节等待都不进分母。**v17 那条「按 received ÷ (finishedAt − createdAt) 算」作废** ——
+//     分母是墙钟时间，暂停一小时就把速度稀释成另一个数。旧档缺这两个键 → 完成行显示「—」。
+//     同一口径同步给统计：`stats.done` 的 elapsedMs 改传 transferMs（只有整段都被测到的下载才进样本）。
+//     通道集合没变，载荷形状变了，按 v6/v7/v10/v12/v13/v17 同一条口径升号。
+// v19：新增 `settings:cookieLogin`（设置页打开登录页、登录后自动抓 Cookie，业主指令 2026-10-19）。
+//     入参只收四个受支持的键，出参只有 `{ captured, reason }`——**值不回渲染层**，
+//     与 settings:get 的 "***" 掩码同一条隐私契约。通道集合变了，按 v6 起同一条口径升号。
 // ————————————————————————————————————————————————
 
-export const CONTRACT_VERSION = 13;
+export const CONTRACT_VERSION = 19;
 
 // ————————————————————————————————————————————————
 // channel 常量（preload/main/renderer 三方共用字面量，禁止散落拼写）
@@ -151,6 +184,7 @@ export const IPC = {
   downloadClear: "download:clear",
   settingsGet: "settings:get",
   settingsSet: "settings:set",
+  settingsCookieLogin: "settings:cookieLogin",
   historyList: "history:list",
   historyRemove: "history:remove",
   probeEngines: "probe:engines",
@@ -195,7 +229,7 @@ export type IdentifyOutcome = z.infer<typeof IdentifyOutcomeSchema>;
 
 /** parse:run */
 export type ParseInput = z.infer<typeof ParseInputSchema>;
-/** parse:run 返回：归一化结果 + 来源标记（本地内核 / 线上回落 / mock） */
+/** parse:run 返回：归一化结果 + 来源标记（本地内核 / mock） */
 export type ParseRunOutcome = z.infer<typeof ParseRunOutcomeSchema>;
 
 /** download:enqueue */
@@ -224,6 +258,10 @@ export type ClearTasksResult = z.infer<typeof ClearTasksResultSchema>;
 /** settings:get / settings:set —— 部分字段 set，返回全量生效配置 */
 export type AppSettings = z.infer<typeof AppSettingsSchema>;
 
+/** settings:cookieLogin —— 入参只有键名，出参只有「抓到没有」；值留在主进程 */
+export type CookieLoginInput = z.infer<typeof CookieLoginInputSchema>;
+export type CookieLoginResult = z.infer<typeof CookieLoginResultSchema>;
+
 /** 文件日志级别（写 userData/logs/app.log 的门槛）；off = 一行都不落 */
 export type LogLevel = AppSettings["logLevel"];
 
@@ -233,8 +271,6 @@ export type LogSeverity = Exclude<LogLevel, "off">;
 export const DEFAULT_SETTINGS: AppSettings = {
   downloadDir: "",
   maxConcurrent: 3,
-  fallbackOnline: true,
-  onlineApiBase: "https://get.hotier.cc.cd",
   cookies: {},
   throttleMs: 0,
   minimizeToTray: true,
@@ -339,6 +375,8 @@ export interface MgBridge {
   settings: {
     get(): Promise<InvokeResult<AppSettings>>;
     set(patch: Partial<AppSettings>): Promise<InvokeResult<AppSettings>>;
+    /** 打开登录窗口，登录后自动抓取并**在主进程落档**；值不回渲染层，只说抓到没有 */
+    cookieLogin(input: CookieLoginInput): Promise<InvokeResult<CookieLoginResult>>;
   };
   history: {
     list(filter?: HistoryFilter): Promise<InvokeResult<HistoryEntry[]>>;

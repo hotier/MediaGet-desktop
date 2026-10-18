@@ -189,15 +189,16 @@ describe("健康度 / 速度 / 解析", () => {
 
   it("解析：通道占比按总次数分，成功率和平均耗时各管各的分母", () => {
     const s = snap({
+      // 旧档的 online 桶仍在 total 里，但已不是可展示的通道
       parse: { total: 10, failures: 2, local: 7, online: 3, mock: 0, durationMs: 2_500 },
     });
     const p = parseStats(s);
     expect(p.successRate).toBe(0.8);
-    expect(p.viaShare).toEqual({ local: 0.7, online: 0.3, mock: 0 });
+    expect(p.viaShare).toEqual({ local: 0.7, mock: 0 });
     expect(p.avgDurationMs).toBe(250);
     const empty = parseStats(snap());
     expect(empty).toMatchObject({ total: 0, successRate: null, avgDurationMs: null });
-    expect(empty.viaShare).toEqual({ local: 0, online: 0, mock: 0 }); // 占比是 0，不是「不知道」
+    expect(empty.viaShare).toEqual({ local: 0, mock: 0 }); // 占比是 0，不是「不知道」
   });
 });
 

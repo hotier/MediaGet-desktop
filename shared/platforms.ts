@@ -15,7 +15,7 @@
  * 零依赖：不 import zod / electron / react，两个进程都能直接吃。
  */
 
-export type EngineId = "parseCore" | "ytdlp" | "onlineApi" | "mock";
+export type EngineId = "parseCore" | "ytdlp" | "mock";
 
 /**
  * 引擎对某平台的覆盖状态：
@@ -79,10 +79,6 @@ function platform(seed: Seed): PlatformDef {
   };
 }
 
-/** 线上 API（get.hotier.cc.cd）覆盖 = 内核路由表白名单 = PLATFORM_INFO 的键集；汽水音乐不在其中 */
-const ONLINE = { onlineApi: "ready" } as const;
-const ONLINE_UNKNOWN = { onlineApi: "unknown" } as const;
-
 export const PLATFORMS: readonly PlatformDef[] = [
   platform({
     key: "douyin",
@@ -93,7 +89,6 @@ export const PLATFORMS: readonly PlatformDef[] = [
     domains: ["douyin.com", "iesdouyin.com", "snssdk.com", "wtturl.cn"],
     shortDomains: ["v.douyin.com"],
     supportsIdParse: true,
-    engines: ONLINE,
   }),
   platform({
     key: "kuaishou",
@@ -102,7 +97,6 @@ export const PLATFORMS: readonly PlatformDef[] = [
     iconFile: "kuaishou.svg",
     domains: ["kuaishou.com", "kuaishoup.com"],
     shortDomains: ["v.kuaishou.com"],
-    engines: ONLINE,
   }),
   platform({
     key: "redbook",
@@ -113,17 +107,6 @@ export const PLATFORMS: readonly PlatformDef[] = [
     shortDomains: ["xhslink.com", "xhslink.cn"],
     // 上游 web 的路由目录名；旧数据与本仓图标表都可能是它，不能当陌生键丢掉
     legacyKeys: ["xhs"],
-    engines: ONLINE,
-  }),
-  platform({
-    key: "pipixia",
-    name: "皮皮虾",
-    nameEn: "Pipixia",
-    iconFile: "pipixia.svg",
-    domains: ["pipix.com"],
-    supportsIdParse: true,
-    legacyKeys: ["ppxia"],
-    engines: ONLINE,
   }),
   platform({
     key: "xigua",
@@ -133,7 +116,6 @@ export const PLATFORMS: readonly PlatformDef[] = [
     domains: ["ixigua.com"],
     shortDomains: ["v.ixigua.com"],
     supportsIdParse: true,
-    engines: ONLINE,
   }),
   platform({
     key: "zuiyou",
@@ -142,27 +124,6 @@ export const PLATFORMS: readonly PlatformDef[] = [
     iconFile: "zuiyou.svg",
     domains: ["izuiyou.com", "xiaochuankeji.com", "xiaochuankeji.cn"],
     shortDomains: ["share.xiaochuankeji.cn"],
-    engines: ONLINE,
-  }),
-  platform({
-    key: "pipigx",
-    name: "皮皮搞笑",
-    nameEn: "Pipigaoxiao",
-    iconFile: "pipigx.svg",
-    domains: ["pipigx.com"],
-    shortDomains: ["h5.pipigx.com"],
-    supportsIdParse: true,
-    engines: ONLINE,
-  }),
-  platform({
-    key: "huya",
-    name: "虎牙直播",
-    nameEn: "Huya",
-    iconFile: "huya.svg",
-    domains: ["huya.com"],
-    shortDomains: ["v.huya.com"],
-    supportsIdParse: true,
-    engines: ONLINE,
   }),
   platform({
     key: "bilibili",
@@ -171,7 +132,6 @@ export const PLATFORMS: readonly PlatformDef[] = [
     iconFile: "bilibili.svg",
     domains: ["bilibili.com", "b23.tv"],
     shortDomains: ["b23.tv"],
-    engines: ONLINE,
   }),
   platform({
     key: "weibo",
@@ -180,42 +140,6 @@ export const PLATFORMS: readonly PlatformDef[] = [
     iconFile: "sinaweibo.svg",
     domains: ["weibo.com", "weibo.cn", "m.weibo.com"],
     supportsIdParse: true,
-    engines: ONLINE,
-  }),
-  platform({
-    key: "quanminkge",
-    name: "全民K歌",
-    nameEn: "Quanminkge",
-    iconFile: "quanminkge.svg",
-    domains: ["kg.qq.com", "quanmin.kg.qq.com"],
-    supportsIdParse: true,
-    engines: ONLINE,
-  }),
-  platform({
-    key: "sixroom",
-    name: "六间房",
-    nameEn: "Sixroom",
-    iconFile: "sixroom.svg",
-    domains: ["6.cn"],
-    supportsIdParse: true,
-    engines: ONLINE,
-  }),
-  platform({
-    key: "xinpianchang",
-    name: "新片场",
-    nameEn: "Xinpianchang",
-    iconFile: "xinpianchang.svg",
-    domains: ["xinpianchang.com"],
-    engines: ONLINE,
-  }),
-  platform({
-    key: "haokan",
-    name: "好看视频",
-    nameEn: "Haokan",
-    iconFile: "haokan.svg",
-    domains: ["haokan.baidu.com", "haokan.hao123.com"],
-    supportsIdParse: true,
-    engines: ONLINE,
   }),
   platform({
     key: "acfun",
@@ -224,7 +148,6 @@ export const PLATFORMS: readonly PlatformDef[] = [
     iconFile: "acfun.svg",
     domains: ["acfun.cn"],
     supportsIdParse: true,
-    engines: ONLINE,
   }),
   platform({
     key: "twitter",
@@ -234,7 +157,6 @@ export const PLATFORMS: readonly PlatformDef[] = [
     domains: ["twitter.com", "x.com", "t.co"],
     shortDomains: ["t.co"],
     supportsIdParse: true,
-    engines: ONLINE,
   }),
   platform({
     key: "tiktok",
@@ -243,7 +165,7 @@ export const PLATFORMS: readonly PlatformDef[] = [
     iconFile: "tiktok.svg",
     domains: ["tiktok.com", "vm.tiktok.com", "vt.tiktok.com"],
     shortDomains: ["vm.tiktok.com", "vt.tiktok.com"],
-    engines: { ...ONLINE, ytdlp: "declared" },
+    engines: { ytdlp: "declared" },
   }),
   platform({
     key: "instagram",
@@ -252,7 +174,6 @@ export const PLATFORMS: readonly PlatformDef[] = [
     iconFile: "instagram.svg",
     domains: ["instagram.com"],
     shortDomains: ["instagr.am"],
-    engines: ONLINE,
   }),
   platform({
     key: "youtube",
@@ -261,16 +182,6 @@ export const PLATFORMS: readonly PlatformDef[] = [
     iconFile: "youtube.svg",
     domains: ["youtube.com", "youtube-nocookie.com"],
     shortDomains: ["youtu.be"],
-    engines: ONLINE,
-  }),
-  platform({
-    key: "qqmusic",
-    name: "QQ音乐",
-    nameEn: "QQ Music",
-    iconFile: "qqmusic.svg",
-    domains: ["y.qq.com"],
-    supportsIdParse: true,
-    engines: ONLINE,
   }),
   // 内核 PLATFORM_INFO 没有这一条：engine.ts 用正则特判 music.douyin.com 产出该键（防 .douyin.com 后缀误判成抖音）。
   // parser 与图标都在，缺的只是登记 —— 不登记就显示成裸键、也进不了平台榜。
@@ -280,7 +191,6 @@ export const PLATFORMS: readonly PlatformDef[] = [
     nameEn: "Qishui Music",
     iconFile: "qsmusic.svg",
     domains: ["music.douyin.com", "qishui.douyin.com"],
-    engines: ONLINE_UNKNOWN,
   }),
 ];
 
@@ -329,7 +239,7 @@ export function isEnabled(key: string, switches: Record<string, PlatformSwitch>)
   return override?.enabled ?? platformDef(key)?.enabledByDefault ?? false;
 }
 
-export const ENGINE_IDS: readonly EngineId[] = ["parseCore", "ytdlp", "onlineApi", "mock"];
+export const ENGINE_IDS: readonly EngineId[] = ["parseCore", "ytdlp", "mock"];
 
 export function engineCoverage(key: string, engine: EngineId): EngineCoverage | null {
   return platformDef(key)?.engines[engine] ?? null;

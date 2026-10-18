@@ -3,7 +3,7 @@
  * 每个 fmtCreated 用例都显式传 now —— 相对日（今天/昨天）不能依赖测试运行的当天，否则明天就红。
  */
 import { describe, expect, it } from "vitest";
-import { fmtCreated, fmtEta } from "../renderer/src/lib/format";
+import { avgSpeed, fmtCreated, fmtEta, fmtFileStamp } from "../renderer/src/lib/format";
 
 const at = (y: number, m: number, d: number, h = 0, mi = 0, s = 0): number =>
   new Date(y, m - 1, d, h, mi, s).getTime();
@@ -54,5 +54,32 @@ describe("fmtEta（队列页剩余时间列，一律 HH:mm:ss）", () => {
   it("超过 99 小时不显示（那已经不是「剩余」而是「别等了」）", () => {
     expect(fmtEta(100 * 3600_000, 1000)).toBe("—");
     expect(fmtEta(99 * 3600_000 + 59 * 60_000 + 59_000, 1000)).toBe("99:59:59");
+  });
+});
+
+describe("fmtFileStamp（导出文件名里的紧凑时刻）", () => {
+  it("年+月+日+时+分+秒，各段补零、无分隔符（进文件名，不能有空格与冒号）", () => {
+    expect(fmtFileStamp(at(2026, 10, 19, 0, 0, 47))).toBe("20261019000047");
+    expect(fmtFileStamp(at(2026, 1, 2, 3, 4, 5))).toBe("20260102030405");
+  });
+
+  it("到秒：同一分钟内的两次导出不再撞名", () => {
+    expect(fmtFileStamp(at(2026, 10, 19, 13, 5, 1))).not.toBe(fmtFileStamp(at(2026, 10, 19, 13, 5, 59)));
+  });
+});
+
+describe("avgSpeed（队列页完成行的平均速度）", () => {
+  it("字节 ÷ 秒：与统计页 elapsedMs 同一条尺", () => {
+    expect(avgSpeed(10 * 1024 * 1024, 5000)).toBe(2 * 1024 * 1024);
+    expect(avgSpeed(100, 1000)).toBe(100);
+  });
+
+  it("缺耗时 / 零耗时 / 零字节一律 null（界面「—」，不编 0 或 Infinity）", () => {
+    expect(avgSpeed(1024, null)).toBeNull(); // v13 之前的完成行没有 finishedAt
+    expect(avgSpeed(1024, 0)).toBeNull(); // 瞬间完成不是「无穷大的速度」
+    expect(avgSpeed(1024, -1)).toBeNull(); // 机器时钟回拨
+    expect(avgSpeed(0, 5000)).toBeNull();
+    expect(avgSpeed(Number.NaN, 5000)).toBeNull();
+    expect(avgSpeed(1024, Number.NaN)).toBeNull();
   });
 });

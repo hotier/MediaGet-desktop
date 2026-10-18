@@ -235,7 +235,6 @@ export default function StatsPage({
   const viaData = useMemo<RankDatum[]>(
     () => [
       { label: "本地内核", value: parse.byVia.local, share: parse.viaShare.local },
-      { label: "线上回落", value: parse.byVia.online, share: parse.viaShare.online },
       { label: "mock 骨架", value: parse.byVia.mock, share: parse.viaShare.mock },
     ],
     [parse]

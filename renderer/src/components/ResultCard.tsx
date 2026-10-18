@@ -1,52 +1,64 @@
 /**
- * 结果卡：三层结构（信息层 / 选择层 / 下载清单层），样式走 shadcn + Tailwind utility。
+ * 结果卡：一套通用骨架铺所有平台/资源形态，不在卡片里按 `type` 分叉。
+ *
+ * 骨架由四段组成，形态差异只决定「哪几段出现」：
+ *  - 主视觉：封面（没有封面时按形态给图标占位）+ 时长 / 图片数徽标，可点即预览；
+ *  - 身份带：平台图标 + 标题 + 作者头像昵称 + 作品计数；
+ *  - 附加区：音乐/歌词、纯文字说明，按 `ResourceMix` 叠加出现；
+ *  - 动作条：资源列表（就地展开，靠左）+ 清晰度 + 下载（靠右）；
+ *
+ * 预览入口两处：主视觉封面与资源清单**每一行**，都进同一扇预览窗。序列 = 清单里所有
+ * 可预览项（视频 / 独立音轨 / 图片，`kind !== "file"`），左右箭头与 `←`/`→` 顺着翻；
+ * 卡面只留一张主视觉，多 P 明细与图集缩略条不再铺在卡上。
+ *
+ * 为什么不用 `ResourceShape` 互斥分类：同一份结果常常同时是「视频 + 图片 + 多档清晰度」
+ * （抖音图文、微博多图带视频），互斥分类必然丢掉其中一半。`describeResourceMix` 只回答
+ * 「有几种什么」，各段自己决定要不要画。
  *
  * 契约依据 docs/ARCHITECTURE.md §3，字段消费见 docs/UIUX-DESIGN.md §2.1。
  * 「点下载 = IPC 入队主进程流式落盘」，直链本身不呈现给用户点选
- * （README「直链时效」决策）。
- *
- * 三层各自的职责边界：
- *  - 信息层：封面/标题/平台/作者/统计/音乐 —— 只读，帮用户确认「解析到的是不是这个东西」；
- *  - 选择层：清晰度 —— 改它只改下载计划，不被队列状态锁死；
- *  - 下载清单层：将要落盘的每一项（带勾选与回落标注），主按钮文案由它生成。
+ * （README「直链时效」决策）；预览走主进程代理（mgpreview:），渲染层自己不发外链，
+ * 链也不显示、不入库。
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, CircleEuro, CircleFadingPlay, ExternalLink, Heart, MessageCircle, MessageCircleText, RotateCcwClock, Share2, StarCheck } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, CircleEuro, CircleFadingPlay, ExternalLink, FileText, Heart, Images, ListTree, MessageCircle, MessageCircleText, Music, Pause, Play, Share2, StarCheck } from "lucide-react";
 import { api } from "../lib/bridge";
 import {
   buildPlan,
   buildQualityPlan,
-  deriveShape,
   DEFAULT_FILENAME_EXTRA,
+  describeResourceMix,
   type FilenameExtra,
   type FilenamePreset,
+  type PlanEntry,
   type QualityStrategy,
 } from "../lib/download-plan";
 import { fmtClock, fmtCount, fmtDuration } from "../lib/format";
+import { cn } from "../lib/utils";
 import { buildAuthorSnapshot } from "../../../shared/author";
 import { pickWorkStat, workStatItems } from "../../../shared/work-stat";
+import { buildImageSrc, buildPreviewLink } from "../../../shared/preview-link";
 import type { ParseData, ParseRunOutcome } from "../../../types/ipc";
 import { displayName } from "../../../shared/platforms";
+import { AuthorAvatar } from "./AuthorAvatar";
 import { PlatformIcon } from "./PlatformIcon";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
 import { Card, CardContent } from "./ui/card";
 import { Checkbox } from "./ui/checkbox";
 import { Alert, AlertDescription } from "./ui/alert";
-import { Separator } from "./ui/separator";
 import { Tooltip, TooltipContent, TooltipTrigger, TruncatedTooltip } from "./ui/tooltip";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import {
   Dialog,
   DialogContent,
   DialogDescription,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
+  dialogSlideMotion,
 } from "./ui/dialog";
-
-/** 超过这个条数就默认折叠，避免图集/多 P 把整屏占掉 */
-const PLAN_COLLAPSE_AT = 3;
+import { AuthorCard } from "./AuthorCard";
 
 export function ResultCard({
   outcome,
@@ -70,17 +82,32 @@ export function ResultCard({
    */
   onNavigate?: (category: string) => void;
 }): React.ReactElement {
-  const { result, via, fallbackReason, durationMs } = outcome;
+  const { result, via, durationMs } = outcome;
   const data = result.data;
-  const [queued, setQueued] = useState(false);
   const [err, setErr] = useState("");
   /** null = 还没手选，用内核主直链对应档位（SSR 与首帧都走这条，不等 effect 纠正） */
   const [qualityIdx, setQualityIdx] = useState<number | null>(null);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [planOpen, setPlanOpen] = useState(false);
-  const [previewIdx, setPreviewIdx] = useState<number | null>(null);
-  const [reasonOpen, setReasonOpen] = useState(false);
+  /** 清单里某一项的预览：只在弹窗开着的这段时间里活着（直链不进历史/日志） */
+  const [previewEntry, setPreviewEntry] = useState<PlanEntry | null>(null);
+  const [previewFailed, setPreviewFailed] = useState(false);
+  /**
+   * 开关与内容分家：关闭时先把 `open` 置假、内容留到退场动画跑完再释放。
+   * 以前是一关就把 entry 清空，退场期间框里一个字节都没有，调多长都像「啪一下消失」。
+   */
+  const [previewOpen, setPreviewOpen] = useState(false);
+  /**
+   * 预览视频的播放态：驱动舞台正中那枚播放/暂停按钮（业主指令 2026-10-19：
+   * 原生控制条里的播/停挪到画面正中央）。原生那枚由 `.preview-video` 的伪元素藏掉，
+   * 状态只认媒体元素自己的 play / pause / ended 事件，不在点击处乐观翻转——
+   * 自动播放被系统拦掉时，按钮得如实停在「播放」上。
+   */
+  const [previewPlaying, setPreviewPlaying] = useState(false);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
   const [lyricsOpen, setLyricsOpen] = useState(false);
+  /** 作者卡片：与历史页同一个组件、同一套开合（非模态 + 轻遮罩），数据就是这份解析快照 */
+  const [authorCardOpen, setAuthorCardOpen] = useState(false);
 
   // 清晰度预选策略（设置→下载）：随每次解析重读，组件复用不重挂载也能拿到最新值
   const [qualityStrategy, setQualityStrategy] = useState<QualityStrategy>("main");
@@ -99,16 +126,17 @@ export function ResultCard({
       .catch(() => {});
   }, [outcome]);
 
-  // 新一轮解析 = 全新卡片状态：队列锁、勾选、清晰度、计龄都不该带过来。
-  // 依赖只写 outcome：清晰度切换会重算 plan，那时不能把用户的勾选与队列提示清掉。
+  // 新一轮解析 = 全新卡片状态：勾选、清晰度、计龄都不该带过来。
+  // 依赖只写 outcome：清晰度切换会重算 plan，那时不能把用户的勾选清掉。
   useEffect(() => {
-    setQueued(false);
     setErr("");
     setQualityIdx(null);
     setExcluded(new Set());
-    // 短清单（≤3 项）摊开，长清单（图集/多 P）折叠 —— 结果卡不许吃掉整屏
-    const fresh = buildQualityPlan(data, qualityStrategy);
-    setPlanOpen(buildPlan(data, fresh.options[fresh.primaryIndex]).length <= PLAN_COLLAPSE_AT);
+    // 资源列表默认收起，由用户点「资源列表」就地展开
+    setPlanOpen(false);
+    setPreviewEntry(null);
+    setPreviewFailed(false);
+    setPreviewOpen(false);
     // 只随解析结果重置；策略读新值迟到由下方 memo 纠正
   }, [outcome, data, parsedAt]);
 
@@ -123,15 +151,29 @@ export function ResultCard({
 
   const platformName = displayName(result.platform ?? "");
 
-  async function enqueue(): Promise<void> {
+  /**
+   * 预览框真正写进 src 的那条链。音视频与图片**都**经主进程代理：CSP 只放行 `'self'`
+   * 让媒体外链过不去，而微博图床连**空 Referer** 都回 403，`<img>` 同样带不上防盗链头
+   * （实测见 `shared/preview-link.ts` 的 `buildImageSrc`）。代理链建不出来（地址过不了安全闸、
+   * 或是站内相对路由这类根本不该进 src 的形状）时没有可试的，两类都进失败说明。
+   */
+  const previewSrc =
+    previewEntry === null
+      ? null
+      : previewEntry.kind === "video" || previewEntry.kind === "audio"
+        ? buildPreviewLink(previewEntry.url, result.platform)
+        : buildImageSrc(previewEntry.url, result.platform);
+
+  /** 缺省 = 下载勾选中的那批（Ctrl+D 与动作条按钮）；传条目 = 只下这一条 */
+  async function enqueue(list: PlanEntry[] = selected): Promise<void> {
     setErr("");
-    if (selected.length === 0) {
+    if (list.length === 0) {
       onQueued(0);
       return;
     }
     try {
       await api.download.enqueue({
-        items: selected.map((p) => ({
+        items: list.map((p) => ({
           url: p.url,
           filename: p.filename,
           kind: p.kind,
@@ -143,8 +185,9 @@ export function ResultCard({
           author: buildAuthorSnapshot(data),
         },
       });
-      setQueued(true);
-      onQueued(selected.length);
+      // 入队反馈由 `onQueued` 的宿主（HomePage）发 toast —— 它知道数量与下一步去哪；
+      // 这里再播一条就是同一个动作两声提示（2026-10-18 实测撞了双 toast，业主点名）
+      onQueued(list.length);
     } catch (e) {
       setErr(String(e instanceof Error ? e.message : e));
     }
@@ -170,7 +213,6 @@ export function ResultCard({
         msg={result.msg}
         failType={result.failType}
         platformName={platformName}
-        fallbackReason={fallbackReason}
         via={via}
         durationMs={durationMs}
         onRetry={onRetry}
@@ -180,62 +222,326 @@ export function ResultCard({
     );
   }
 
-  const images = (data?.images ?? []).filter(Boolean);
   const stats = buildStatItems(data);
-  const shape = deriveShape(data);
+  const mix = describeResourceMix(data);
+  const author = buildAuthorSnapshot(data);
+  const authorName = author?.name ?? "";
+  const primaryEntry =
+    plan.find((p) => p.kind === "video") ??
+    plan.find((p) => p.kind === "image") ??
+    plan.find((p) => p.kind === "audio") ??
+    null;
+  const canPreview = !data?.embedOnly && primaryEntry !== null;
+  const durationText =
+    data?.durationFormat ??
+    // `ParseData.duration` 是**毫秒**（内核 d.ts 硬口径：抖音/YouTube/tiktok/B站顶层与分P/X 均已换算），
+    // 一律 /1000。旧代码按 `> 100000` 猜单位，1 分 30 秒的短片毫秒值（90867）落在阈值下被当成秒，
+    // 显示成 25:14:27 —— 2026-10-19 事故。
+    (typeof data?.duration === "number" && data.duration > 0
+      ? fmtMediaDuration(data.duration / 1000)
+      : undefined);
+  const title = data?.title || data?.desc || "（无标题）";
+
+  /**
+   * 主视觉封面的 src：建不出来（地址过不了安全闸，或站内相对路由这类根本不该进 src 的形状）
+   * 就降级成形态占位图标。2026-10-18 事故里旧内核吐的相对路由被原样写进 src，
+   * 演的是「图裂了」而不是报错。预览弹窗里的图走 `previewSrc`，同一条 `buildImageSrc`。
+   */
+  const coverSrc = mix.cover ? buildImageSrc(mix.cover, result.platform) : null;
+
+  /** 开预览：内容先就位再开门，入场那一帧就有画面，不会闪一下空框 */
+  function showPreview(p: PlanEntry): void {
+    setPreviewFailed(false);
+    setPreviewEntry(p);
+    setPreviewOpen(true);
+  }
+
+  /** 主视觉入口：封面点开就是清单里第一条可预览资源，之后靠左右箭头顺着翻 */
+  function openPrimaryPreview(): void {
+    if (!primaryEntry) return;
+    showPreview(primaryEntry);
+  }
+
+  /** 清单行自己的预览入口：从这条资源进同一扇窗，两侧箭头仍按清单顺序翻 */
+  function previewRow(p: PlanEntry): void {
+    showPreview(p);
+  }
+
+  /**
+   * 预览序列 = 清单里**所有能预览的项**，按 plan 顺序排：分 P、独立音轨与图片都在里面。
+   *
+   * 图片曾走另一扇「图集弹窗」，两套状态/两份动画/两条入口；图文混合时更糟——
+   * 第一条是视频，点封面后序列只有它自己，`length > 1` 不成立，两侧箭头根本不出现。
+   * 现在只有一扇窗：视频、图片、音频共用这个序列，序号与文件名都在固定底栏。
+   */
+  const previewItems = plan.filter((p) => p.kind !== "file");
+  const previewSeqIdx = previewEntry
+    ? previewItems.findIndex((p) => p.url === previewEntry.url)
+    : -1;
+
+  function stepPreview(delta: number): void {
+    const next = previewItems[previewSeqIdx + delta];
+    if (!next) return;
+    setPreviewFailed(false);
+    setPreviewEntry(next);
+  }
 
   return (
     <>
       <Card>
         <CardContent className="flex flex-col gap-3 py-4">
-          {/* —— 第一眼：封面 + 标题（平台图标在标题左边）—— */}
-          <div className="flex gap-3">
-            {data?.cover && (
-              <img
-                src={data.cover}
-                alt=""
-                referrerPolicy="no-referrer"
-                className="aspect-video w-32 shrink-0 rounded-md border border-border object-cover"
-              />
-            )}
-            <div className="flex min-w-0 flex-1 flex-col gap-1.5">
-              <TruncatedTooltip label={data?.title || data?.desc || "（无标题）"}>
+          {/* —— 主视觉 + 身份带 + 动作条 + 资源清单：所有形态共用同一骨架 ——
+              两列网格：左列就是封面宽（9rem = w-36），右列是内容。
+              动作条与资源清单都跨两列：前者让「资源列表」贴卡片左缘，后者让展开的
+              条目也落在封面同一条左边缘上，整卡只有一条左基准线。 */}
+          <div className="grid grid-cols-[9rem_minmax(0,1fr)] items-start gap-x-3 gap-y-3">
+            <button
+              type="button"
+              onClick={openPrimaryPreview}
+              disabled={!canPreview}
+              aria-label={canPreview ? (mix.videoCount > 0 ? "预览视频" : "预览图片") : undefined}
+              className={cn(
+                "group relative aspect-video w-36 shrink-0 self-start overflow-hidden rounded-md border border-border bg-sunken text-muted-foreground",
+                canPreview &&
+                  "cursor-pointer outline-none transition-all hover:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              )}
+            >
+              {coverSrc ? (
+                <img
+                  src={coverSrc}
+                  alt=""
+                  referrerPolicy="no-referrer"
+                  className="size-full object-cover"
+                />
+              ) : (
+                <span className="flex size-full items-center justify-center">
+                  {mix.videoCount > 0 ? (
+                    <Play className="size-6" />
+                  ) : mix.imageCount > 0 ? (
+                    <Images className="size-6" />
+                  ) : mix.hasAudio ? (
+                    <Music className="size-6" />
+                  ) : (
+                    <FileText className="size-6" />
+                  )}
+                </span>
+              )}
+              {mix.videoCount > 0 && canPreview && (
+                <span className="absolute inset-0 flex items-center justify-center bg-black/25 opacity-0 transition-opacity group-hover:opacity-100">
+                  <Play className="size-6 fill-current text-white" />
+                </span>
+              )}
+              {(durationText || mix.imageCount > 0) && (
+                /* 角标压在任意封面上，底色两档主题都是深遮罩（--overlay = veil），
+                   文字必须取「遮罩上的浅字」而不是 --text：浅色主题的 --text(#1b1e21)
+                   与 veil(#1b1e21d9) 同色，角标等于隐形字。 */
+                <span className="absolute bottom-1 right-1 flex items-center gap-1 rounded bg-[var(--overlay)] px-1 text-[11px] tabular-nums text-[color:var(--text-on-veil)]">
+                  {/* 时长不只属于视频：音乐条目同样需要它，主视觉角标是唯一展示位 */}
+                  {durationText ?? null}
+                  {durationText && mix.imageCount > 0 ? " · " : null}
+                  {mix.imageCount > 0 ? (
+                    <>
+                      <Images className="size-3" />
+                      {mix.imageCount}
+                    </>
+                  ) : null}
+                </span>
+              )}
+            </button>
+            <div className="flex min-w-0 flex-col gap-1.5">
+              <TruncatedTooltip label={title}>
                 <h2 className="truncate font-semibold text-[15px]">
                   {platformName && (
                     <span className="inline-flex items-center gap-1.5 me-1">
                       <PlatformIcon platform={result.platform} />
                     </span>
                   )}
-                  {data?.title || data?.desc || "（无标题）"}
+                  {title}
                 </h2>
               </TruncatedTooltip>
-              {/* 视频详细直接展示，不做收起展开 */}
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                {stats.length > 0 && stats.map((s) => (
-                  <span key={s.key} className="inline-flex items-center gap-1 tabular-nums">
-                    {s.icon}
-                    {s.value}
-                  </span>
-                ))}
-                {typeof data?.duration === "number" && data.duration > 0 && (
-                  <span className="inline-flex items-center gap-1 tabular-nums">
-                    <RotateCcwClock className="size-3.5" />
-                    {Math.round(data.duration > 100000 ? data.duration / 1000 : data.duration)}s
-                  </span>
-                )}
-              </div>
+
+              {/* 作者：确认「是不是这个人和这条作品」，比作者级统计更常用。
+                  发布日期 2026-10-18 业主指令移除（解析那一刻的时刻仍随历史/导出留档，
+                  卡面不再摆——各平台填法与时区解释成本高于卡面收益） */}
+              {authorName && (
+                <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+                  <AuthorAvatar
+                    avatar={author?.avatar}
+                    name={authorName}
+                    platform={result.platform}
+                    sizeClassName="size-4"
+                    textClassName="text-[9px]"
+                  />
+                  {/* 名字可点：开的是历史页那张作者卡片（粉丝/关注/获赞/简介都在里面），
+                      卡片里名字才是打开主页的外链——两处同一个组件、同一套口径 */}
+                  <TruncatedTooltip label={authorName}>
+                    <button
+                      type="button"
+                      onClick={() => setAuthorCardOpen(true)}
+                      className="min-w-0 flex-1 cursor-pointer truncate text-start hover:underline"
+                    >
+                      {authorName}
+                    </button>
+                  </TruncatedTooltip>
+                </div>
+              )}
+
+              {/* 作品计数：图标 + 数值，标签只在 tooltip 里给（图标认不出时悬停能问） */}
+              {stats.length > 0 && (
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                  {stats.map((s) => (
+                    <Tooltip key={s.key}>
+                      <TooltipTrigger asChild>
+                        <span className="inline-flex items-center gap-1 tabular-nums">
+                          {s.icon}
+                          {s.value}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        {s.label} {s.value}
+                      </TooltipContent>
+                    </Tooltip>
+                  ))}
+                </div>
+              )}
+
             </div>
+
+            {/* 动作条：跨两列的整行，「资源列表」贴卡片左缘（与封面同一条左边缘），
+                就地展开的链接式开关，不是下拉；清晰度与下载靠右。
+                构成摘要（「视频 2 · 图 2」）2026-10-18 业主指令移除——
+                下载按钮上的项数已经把「点下去会得到几颗」说清楚了，再排一行构成是重复信息。 */}
+            <div className="col-span-full flex flex-wrap items-center justify-end gap-2">
+              {plan.length > 0 && !data?.embedOnly && (
+                <Button
+                  size="sm"
+                  variant="link"
+                  className="me-auto h-auto px-0"
+                  onClick={() => setPlanOpen((v) => !v)}
+                >
+                  <ListTree className="size-3.5" />
+                  {planOpen ? "收起资源" : "资源列表"}
+                </Button>
+              )}
+              {/* 清晰度在下载动作旁，不再藏在资源清单里：设置里那档只是默认值，
+                  用户每次下载都可以改。选择器读同一份 qualityOptions，所以清单里的
+                  文件名与下载按钮的项数会当场跟着变。 */}
+              {plan.length > 0 && !data?.embedOnly && qualityOptions.length > 1 && (
+                <Select value={String(activeIdx)} onValueChange={(v) => setQualityIdx(Number(v))}>
+                  <SelectTrigger size="sm" className="w-28 shrink-0" aria-label="下载清晰度">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {qualityOptions.map((q, i) => (
+                      <SelectItem key={`${q.label}-${i}`} value={String(i)}>
+                        {q.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+              {data?.embedOnly ? (
+                <Button asChild size="sm">
+                  <a href={data.embedUrl ?? data.url ?? "#"} target="_blank" rel="noreferrer">
+                    <ExternalLink className="size-3.5" />
+                    在浏览器中打开播放
+                  </a>
+                </Button>
+              ) : plan.length > 0 ? (
+                // 文案不随「是否入过队」变化：入队反馈在 toast 里，按钮只回答「下几项」
+                <Button size="sm" onClick={() => void enqueue()} disabled={selected.length === 0}>
+                  {selected.length === 1 ? "下载" : `下载 ${selected.length} 项`}
+                </Button>
+              ) : mix.textOnly ? (
+                <>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void copyText(data?.title ?? data?.desc ?? "")}
+                  >
+                    复制文字
+                  </Button>
+                  {sourceUrl && (
+                    <Button size="sm" variant="outline" onClick={() => void openExternal(sourceUrl)}>
+                      <ExternalLink className="size-3.5" />
+                      打开原页面
+                    </Button>
+                  )}
+                </>
+              ) : data?.embedUrl ? (
+                <Button asChild variant="outline" size="sm">
+                  <a href={data.embedUrl} target="_blank" rel="noreferrer">
+                    官方播放页
+                  </a>
+                </Button>
+              ) : null}
+            </div>
+
+            {/* —— 可下载资源：跨两列，条目靠左对齐「资源列表」与封面那条边 ——
+                -ms-3 抵掉底色块自己的 px-3：块的左缘留在卡片内 8px（不顶边框也不丢面板感），
+                而条目文字正好回到 x=0，与按钮、封面同一条竖线。
+                文件清单由「资源列表」就地展开（清晰度在动作条，不在这里） —— */}
+            {planOpen && plan.length > 0 && (
+              <div className="col-span-full -ms-3 flex flex-col gap-3 rounded-md bg-muted/40 px-3 py-3">
+                <ul className="flex flex-col gap-1.5">
+                  {plan.map((p) => (
+                    <li key={p.id} className="flex items-center gap-2">
+                      <Checkbox
+                        id={p.id}
+                        checked={!excluded.has(p.id)}
+                        onCheckedChange={() =>
+                          setExcluded((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(p.id)) next.delete(p.id);
+                            else next.add(p.id);
+                            return next;
+                          })
+                        }
+                      />
+                      <label htmlFor={p.id} className="flex min-w-0 flex-1 items-center gap-2">
+                        <TruncatedTooltip label={p.filename}>
+                          <span className="min-w-0 flex-1 truncate font-mono text-xs">{p.filename}</span>
+                        </TruncatedTooltip>
+                        {p.fallbackNote && <Badge variant="warn">{p.fallbackNote}</Badge>}
+                      </label>
+                      {/* 每条资源自带预览与单条下载：不必先勾选、也不必去底部找批量按钮。
+                          file 类没有可渲染的预览（弹窗只会说「不支持」），不摆假按钮 ——
+                          当前 buildPlan 也不产 file，这条只是守住将来的入口。 */}
+                      <div className="flex shrink-0 items-center gap-2">
+                        {p.kind !== "file" && (
+                          <Button
+                            size="sm"
+                            variant="link"
+                            className="h-auto px-0 text-xs"
+                            onClick={() => previewRow(p)}
+                          >
+                            预览
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="link"
+                          className="h-auto px-0 text-xs"
+                          onClick={() => void enqueue([p])}
+                        >
+                          下载
+                        </Button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
 
-          {/* —— 形态专属区块：直接展示 —— */}
-          {shape === "gallery" && <GalleryBlock images={images} onPreview={setPreviewIdx} />}
-
-          {shape === "audio" && (
+          {/* —— 附加区：按 ResourceMix 叠加，出现哪一段由数据决定。
+              多图/多 P 不再在卡面铺缩略条或分 P 明细（业主指令 2026-10-18）：卡上只留一张
+              主视觉，其余资源从这张封面点进去翻页预览，或展开「资源列表」逐条处理 —— */}
+          {mix.hasAudio && (data?.music || data?.lyrics) && (
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-md bg-muted/40 px-3 py-2 text-xs">
-              {data?.music?.author && (
+              {(data?.music?.author || data?.music?.title) && (
                 <span className="font-medium">
-                  ♪ {data.music.author}
-                  {data.music.title ? ` - ${data.music.title}` : ""}
+                  ♪ {[data.music?.author, data.music?.title].filter(Boolean).join(" - ")}
                 </span>
               )}
               {data?.lyrics && (
@@ -249,75 +555,18 @@ export function ResultCard({
               )}
             </div>
           )}
-          {shape === "audio" && lyricsOpen && data?.lyrics && (
+          {mix.hasAudio && lyricsOpen && data?.lyrics && (
             <pre className="max-h-64 overflow-auto whitespace-pre-wrap rounded-md bg-muted/40 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
               {data.lyrics}
             </pre>
           )}
 
-          {shape === "multi-video" && (
-            <ol className="flex flex-col gap-1.5">
-              {(data?.videos ?? []).map((v, i) => (
-                <li key={i} className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] tabular-nums">
-                    {i + 1}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate">{v.title || `分 P ${i + 1}`}</span>
-                  {v.durationFormat && <span className="shrink-0 tabular-nums">{v.durationFormat}</span>}
-                </li>
-              ))}
-            </ol>
+          {mix.textOnly && !data?.embedOnly && (
+            <p className="rounded-md border border-dashed border-border px-3 py-3 text-center text-xs text-muted-foreground">
+              纯文字内容，没有可下载的文件
+            </p>
           )}
 
-          {shape === "text" && (
-            <div className="flex flex-col gap-2 rounded-md border border-dashed border-border px-3 py-4 text-center">
-              <p className="text-xs text-muted-foreground">纯文字内容，没有可下载的文件</p>
-              <div className="flex flex-wrap items-center justify-center gap-2">
-                <Button size="sm" variant="outline" onClick={() => void copyText(data?.title ?? data?.desc ?? "")}>
-                  复制文字
-                </Button>
-                {sourceUrl && (
-                  <Button size="sm" variant="outline" onClick={() => void openExternal(sourceUrl)}>
-                    <ExternalLink />
-                    打开原页面
-                  </Button>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* —— 操作区：与上方信息拉开 —— */}
-          <Separator />
-
-          {/* —— 下载配置按钮 + 主操作 —— */}
-          <div className="flex flex-wrap items-center gap-3">
-            {plan.length > 0 && (
-              <Button size="sm" variant="outline" onClick={() => setPlanOpen(true)}>
-                配置下载
-                <ChevronDown className="ms-1 size-3.5" />
-              </Button>
-            )}
-            {data?.embedOnly ? (
-              <Button asChild>
-                <a href={data.embedUrl ?? data.url ?? "#"} target="_blank" rel="noreferrer">
-                  <ExternalLink />
-                  在浏览器中打开播放
-                </a>
-              </Button>
-            ) : (
-              <Button onClick={() => void enqueue()} disabled={selected.length === 0}>
-                {queued ? "再次下载所选" : selected.length === 1 ? "下载" : `下载 ${selected.length} 项`}
-              </Button>
-            )}
-            {queued && <Badge variant="ok">已加入队列 ✓</Badge>}
-            {!data?.embedOnly && data?.embedUrl && !data.url && !data.videos?.length && (
-              <Button asChild variant="link" size="sm" className="h-auto px-0">
-                <a href={data.embedUrl} target="_blank" rel="noreferrer">
-                  官方播放页
-                </a>
-              </Button>
-            )}
-          </div>
           {err && (
             <Alert variant="destructive">
               <AlertDescription>{err}</AlertDescription>
@@ -329,113 +578,199 @@ export function ResultCard({
             <span className="tabular-nums">{fmtDuration(durationMs)}</span>
             {parsedAt && <span className="tabular-nums">解析于 {fmtClock(parsedAt)}</span>}
             {via === "local" && durationMs < 50 && <Badge variant="secondary">缓存命中</Badge>}
-            {fallbackReason && (
-              <span className="flex flex-wrap items-center gap-2">
-                <Button variant="link" size="sm" className="h-auto px-0" onClick={() => setReasonOpen((v) => !v)}>
-                  {reasonOpen ? "收起" : "为什么走了线上？"}
-                </Button>
-                {reasonOpen && <span className="text-xs">{fallbackReason}</span>}
-              </span>
-            )}
           </div>
         </CardContent>
       </Card>
 
-      {/* 下载配置 Dialog：清晰度 + 文件清单 */}
-      <Dialog open={planOpen} onOpenChange={setPlanOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
-            <DialogTitle>下载配置</DialogTitle>
-            <DialogDescription className="sr-only">选择清晰度与要下载的文件</DialogDescription>
-          </DialogHeader>
-          <div className="flex flex-col gap-4">
-            {/* 清晰度选择 */}
-            {qualityOptions.length > 1 && (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm font-medium">清晰度</span>
-                {qualityOptions.map((q, i) => (
-                  <Button
-                    key={`${q.label}-${i}`}
-                    size="sm"
-                    variant={i === activeIdx ? "default" : "outline"}
-                    className="h-7 rounded-full px-3 text-xs"
-                    onClick={() => setQualityIdx(i)}
-                  >
-                    {q.label}
-                  </Button>
-                ))}
+      {/* 资源预览：一扇窗装下清单里所有可预览项（视频 / 图片 / 音频），按 plan 顺序左右翻。
+          图片直接解码，音视频经主进程代理（mgpreview:）取流；DASH 分轨（bilibili 的 .m4s
+          视频流与音频流分开）在这里放不出画面是浏览器解码限制，不是链错——下载走主进程合流。
+          **固定舞台**：高度锁死，翻页时外框不跳，竖图也能吃满高度；标题/序号全在底栏，
+          不再让文件名长短去改变窗格尺寸。 */}
+      <Dialog
+        open={previewOpen}
+        onOpenChange={(v) => {
+          setPreviewOpen(v);
+          if (!v) {
+            setPreviewFailed(false);
+            setPreviewPlaying(false);
+          }
+        }}
+      >
+        {/* 与作者卡片同一套开合动效（`dialogSlideMotion`：上浮进入 / 下沉退场，250ms）。
+            退场跑完才释放 entry —— 见上面 previewEntry 那段注释 */}
+        <DialogContent
+          // 上/左/右 40px；底部 `pb-7`（28px）——底栏是一行 16px 的文字，居中在 36px 的条里，
+          // 文字底缘距框 28+10 ≈ 38，观感与上方 40 对齐；若也留 40，底面会明显比顶面空
+          className={cn("max-w-4xl p-10 pb-7", dialogSlideMotion)}
+          onAnimationEnd={() => {
+            if (!previewOpen) setPreviewEntry(null);
+          }}
+          onKeyDown={(e) => {
+            // 播放器自己吃方向键（seek），只在非媒体元素上接管左右键翻页
+            if (e.target instanceof HTMLMediaElement) return;
+            if (e.key === "ArrowLeft") {
+              e.preventDefault();
+              stepPreview(-1);
+            } else if (e.key === "ArrowRight") {
+              e.preventDefault();
+              stepPreview(1);
+            }
+          }}
+        >
+          {/* 标题不再上屏：可访问名仍要给 Radix 一份，不然控制台会告警 */}
+          <DialogTitle className="sr-only">资源预览</DialogTitle>
+          <DialogDescription className="sr-only">
+            {previewEntry ? `${previewEntry.label}：${previewEntry.filename}` : "资源预览"}
+          </DialogDescription>
+
+          {/* 舞台：固定高度，媒体等比放进来；音频与失败说明同样落在舞台中央。
+              用 flex 而不是 grid 居中：grid 的隐式行高是 auto，`max-h-full` 在那层会退化成
+              「没有上限」（百分比高度参照不定高），图片按原始像素铺开再被 overflow 裁掉。
+              flex 容器高度是确定的 64vh，`max-h-full` 才真正生效。
+              顶部那条缝由弹窗的 `p-10` 提供（内置 X 占 16~32px），这里不再单独加 margin。
+              `relative` + 命名 group：中央那枚播放/暂停按钮按舞台居中——`object-contain` 的
+              视频在舞台里本来就走中，视频的几何中心与舞台中心重合，不额外套一层定位壳。 */}
+          <div className="group/video relative flex h-[64vh] max-h-[calc(100dvh-10rem)] items-center justify-center overflow-hidden rounded-md bg-sunken">
+            {previewFailed || previewSrc === null ? (
+              <p className="px-6 text-center text-xs text-muted-foreground">
+                预览加载失败：平台可能拒发，或这条直链已经过期。下载不受影响。
+              </p>
+            ) : previewEntry?.kind === "image" ? (
+              <img
+                src={previewSrc}
+                alt=""
+                referrerPolicy="no-referrer"
+                onError={() => setPreviewFailed(true)}
+                className="max-h-full max-w-full object-contain"
+              />
+            ) : previewEntry?.kind === "video" ? (
+              // 视频一开就播（业主指令 2026-10-19）：预览本身就是人点开的，属于有手势的播放，
+              // 不额外做静音兜底 —— 无声自动播放比不播更让人以为「没声」是坏点。
+              // `key` 必须按 src 走：翻页时元素被复用的话，autoPlay 只在首次挂载生效，第二页就不播了。
+              // 原生控件只留「进度 / 音量 / 时间」（业主指令 2026-10-19：去掉全屏与下载）。
+              // 播放/暂停挪到画面正中央：`controlsList` 管不到单枚按钮，原生那枚由
+              // `.preview-video::-webkit-media-controls-play-button` 藏掉（styles.css），
+              // 中央这枚接管开关；播放中自动淡出，鼠标进舞台再浮出来。
+              <>
+                <video
+                  key={previewSrc}
+                  ref={previewVideoRef}
+                  src={previewSrc}
+                  controls
+                  controlsList="nodownload nofullscreen noremoteplayback noplaybackrate"
+                  // 最右那枚「⋮」不是全屏，是溢出菜单：里面还剩一项（画中画 / 投屏 / 播放速度）
+                  // 它就不会消失。三样都得关：能力属性管前两个，速度走 controlsList 的
+                  // `noplaybackrate`（Chromium 105+）。菜单空了，按钮自然不再渲染 —— 比藏按钮可靠。
+                  disablePictureInPicture
+                  disableRemotePlayback
+                  playsInline
+                  autoPlay
+                  onError={() => setPreviewFailed(true)}
+                  onPlay={() => setPreviewPlaying(true)}
+                  onPause={() => setPreviewPlaying(false)}
+                  onEnded={() => setPreviewPlaying(false)}
+                  className="preview-video max-h-full max-w-full object-contain"
+                />
+                <button
+                  type="button"
+                  aria-label={previewPlaying ? "暂停" : "播放"}
+                  onClick={() => {
+                    const v = previewVideoRef.current;
+                    if (!v) return;
+                    if (v.paused || v.ended) void v.play().catch(() => {});
+                    else v.pause();
+                  }}
+                  className={cn(
+                    "absolute top-1/2 left-1/2 z-10 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full",
+                    "border border-white/20 bg-black/55 text-white shadow-pop backdrop-blur-sm transition-opacity",
+                    "hover:bg-black/70 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
+                    previewPlaying && "opacity-0 group-hover/video:opacity-100 focus-visible:opacity-100"
+                  )}
+                >
+                  {previewPlaying ? (
+                    <Pause className="size-6 fill-current" />
+                  ) : (
+                    <Play className="size-6 fill-current" />
+                  )}
+                </button>
+              </>
+            ) : previewEntry?.kind === "audio" ? (
+              <div className="flex w-full max-w-sm flex-col items-center gap-4 px-6">
+                <Music className="size-10 text-muted-foreground" />
+                {/* 音频的原生控件同样带一枚下载按钮，按同一条口径关掉（全屏对音频本就不存在） */}
+                <audio
+                  src={previewSrc}
+                  controls
+                  controlsList="nodownload noremoteplayback noplaybackrate"
+                  onError={() => setPreviewFailed(true)}
+                  className="w-full"
+                />
               </div>
+            ) : (
+              <p className="px-6 text-center text-xs text-muted-foreground">该类型不支持预览。</p>
             )}
-            {/* 文件清单 */}
-            <div>
-              <p className="mb-2 text-sm font-medium">文件清单</p>
-              <ul className="flex flex-col gap-1.5">
-                {plan.map((p) => (
-                  <li key={p.id} className="flex items-center gap-2 text-sm">
-                    <Checkbox
-                      id={p.id}
-                      checked={!excluded.has(p.id)}
-                      onCheckedChange={() =>
-                        setExcluded((prev) => {
-                          const next = new Set(prev);
-                          if (next.has(p.id)) next.delete(p.id);
-                          else next.add(p.id);
-                          return next;
-                        })
-                      }
-                    />
-                    <label htmlFor={p.id} className="flex min-w-0 flex-1 items-center gap-2">
-                      <span className="shrink-0 text-xs text-muted-foreground">{p.label}</span>
-                      <TruncatedTooltip label={p.filename}>
-                        <span className="min-w-0 flex-1 truncate font-mono text-xs">{p.filename}</span>
-                      </TruncatedTooltip>
-                      {p.fallbackNote && <Badge variant="warn">{p.fallbackNote}</Badge>}
-                    </label>
-                  </li>
-                ))}
-              </ul>
-            </div>
           </div>
-          <DialogFooter>
-            <Button onClick={() => setPlanOpen(false)}>完成</Button>
-          </DialogFooter>
+
+          {/* 底栏：文件名 + 序号，固定高度（文件名可截断，悬停看全名） */}
+          <div className="flex h-9 items-center gap-3">
+            <TruncatedTooltip label={previewEntry?.filename ?? ""}>
+              <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground">
+                {previewEntry?.filename ?? ""}
+              </span>
+            </TruncatedTooltip>
+            <span className="shrink-0 text-xs tabular-nums text-muted-foreground">
+              {previewSeqIdx >= 0 ? `${previewSeqIdx + 1} / ${previewItems.length}` : "1 / 1"}
+            </span>
+          </div>
+
+          {/* 翻页按钮沉到舞台两侧留白里（不压视频 controls）；只有一条资源时不摆 */}
+          {previewSeqIdx >= 0 && previewItems.length > 1 && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-sm"
+                aria-label="上一个"
+                disabled={previewSeqIdx <= 0}
+                onClick={() => stepPreview(-1)}
+                className="absolute top-1/2 left-1 z-10 -translate-y-1/2 rounded-full bg-card/90 shadow-pop backdrop-blur-sm"
+              >
+                <ArrowLeft />
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-sm"
+                aria-label="下一个"
+                disabled={previewSeqIdx >= previewItems.length - 1}
+                onClick={() => stepPreview(1)}
+                className="absolute top-1/2 right-1 z-10 -translate-y-1/2 rounded-full bg-card/90 shadow-pop backdrop-blur-sm"
+              >
+                <ArrowRight />
+              </Button>
+            </>
+          )}
+
         </DialogContent>
       </Dialog>
 
-      {/* 图集预览：Radix Dialog 接管 Esc 与焦点，页面级 Esc 因此让位 */}
-      <Dialog open={previewIdx !== null && !!images[previewIdx]} onOpenChange={(v) => !v && setPreviewIdx(null)}>
-        <DialogContent className="max-w-3xl">
+      {/* 作者卡片：与历史页共用 `components/AuthorCard`；非模态 + 轻遮罩，
+          点卡片外只收这一层（与历史页「呼出不做背景遮罩」同一条口径） */}
+      <Dialog open={authorCardOpen} onOpenChange={setAuthorCardOpen} modal={false}>
+        <DialogContent
+          showOverlay="light"
+          aria-describedby={undefined}
+          className={cn("max-w-sm", dialogSlideMotion)}
+        >
           <DialogHeader>
-            <DialogTitle className="text-sm">
-              图片预览 {previewIdx !== null ? previewIdx + 1 : 0}/{images.length}
-            </DialogTitle>
-            <DialogDescription className="sr-only">图集逐张预览</DialogDescription>
+            <DialogTitle>作者卡片</DialogTitle>
           </DialogHeader>
-          {previewIdx !== null && images[previewIdx] && (
-            <img
-              src={images[previewIdx]}
-              alt=""
-              referrerPolicy="no-referrer"
-              className="max-h-[60vh] w-full rounded-md bg-sunken object-contain"
-            />
-          )}
-          <DialogFooter>
-            {previewIdx !== null && previewIdx > 0 && (
-              <Button variant="outline" size="sm" onClick={() => setPreviewIdx((i) => (i === null ? i : i - 1))}>
-                <ArrowLeft />
-                上一张
-              </Button>
-            )}
-            {previewIdx !== null && previewIdx < images.length - 1 && (
-              <Button variant="outline" size="sm" onClick={() => setPreviewIdx((i) => (i === null ? i : i + 1))}>
-                下一张
-                <ArrowRight />
-              </Button>
-            )}
-            <Button size="sm" onClick={() => setPreviewIdx(null)}>
-              关闭
-            </Button>
-          </DialogFooter>
+          <AuthorCard
+            author={author}
+            platform={result.platform}
+            platformName={displayName(result.platform)}
+          />
         </DialogContent>
       </Dialog>
     </>
@@ -445,7 +780,9 @@ export function ResultCard({
 /** stat / 频道 / 抖音微博等平台各异计数 → 统一「图标 + 数值」行。
  *
  *  只返回作品级统计（点赞/播放/评论/分享/收藏等），不包含作者相关数据。 */
-function buildStatItems(data?: ParseData): Array<{ key: string; icon: React.ReactElement; value: string }> {
+function buildStatItems(
+  data?: ParseData
+): Array<{ key: string; label: string; icon: React.ReactElement; value: string }> {
   const STAT_ICON_MAP: Record<string, React.ReactElement> = {
     view: <CircleFadingPlay className="size-3.5" />,
     danmaku: <MessageCircleText className="size-3.5" />,
@@ -458,51 +795,30 @@ function buildStatItems(data?: ParseData): Array<{ key: string; icon: React.Reac
   };
   return workStatItems(pickWorkStat(data)).map((s) => ({
     key: s.key,
+    label: s.label,
     icon: STAT_ICON_MAP[s.key] ?? <span className="size-3.5 inline-block" />,
     value: fmtCount(s.value),
   }));
 }
 
-function ViaBadge({ via }: { via: "local" | "online" | "mock" }): React.ReactElement {
-  const label = via === "local" ? "本地内核" : via === "online" ? "线上回落" : "mock 骨架";
-  return <Badge variant={via === "local" ? "ok" : via === "online" ? "warn" : "secondary"}>{label}</Badge>;
+function ViaBadge({ via }: { via: "local" | "mock" }): React.ReactElement {
+  const label = via === "local" ? "本地内核" : "mock 骨架";
+  return <Badge variant={via === "local" ? "ok" : "secondary"}>{label}</Badge>;
 }
 
-
-/** 图集形态的主视觉：缩略网格 + 大图预览（Radix Dialog 接管 Esc 与焦点） */
-function GalleryBlock({
-  images,
-  onPreview,
-}: {
-  images: string[];
-  onPreview: (i: number) => void;
-}): React.ReactElement {
-  return (
-    <ul className="grid grid-cols-4 gap-2">
-      {images.slice(0, 8).map((src, i) => (
-        <li key={i}>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={() => onPreview(i)}
-                aria-label={`查看第 ${i + 1} 张图`}
-                className="relative block aspect-square w-full overflow-hidden rounded-md border border-border outline-none transition-all hover:border-ring hover:shadow-sm focus-visible:ring-[3px] focus-visible:ring-ring/50"
-              >
-                <img src={src} alt="" loading="lazy" referrerPolicy="no-referrer" className="size-full object-cover" />
-                {i === 7 && images.length > 8 && (
-                  <span className="absolute inset-0 flex items-center justify-center bg-[var(--overlay)] text-sm font-medium text-popover-foreground">
-                    +{images.length - 8}
-                  </span>
-                )}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>查看第 {i + 1} 张图</TooltipContent>
-          </Tooltip>
-        </li>
-      ))}
-    </ul>
-  );
+/**
+ * 媒体时长（秒）→ 02:59 / 1:02:59。
+ *
+ * 与 `fmtDuration` 分开：那个报的是「耗时 ms」（解析用了多久），这里是「片子多长」，
+ * 单位与量级都不一样，共用一把尺会把 3 分钟的视频写成 180000 ms。
+ */
+function fmtMediaDuration(seconds: number): string {
+  const total = Math.round(seconds);
+  const p = (n: number): string => String(n).padStart(2, "0");
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
 }
 
 /** 打开外链：统一走 shell（renderer 不自己 window.open） */
@@ -567,7 +883,6 @@ function ParseFailure({
   msg,
   failType,
   platformName,
-  fallbackReason,
   via,
   durationMs,
   onRetry,
@@ -577,8 +892,7 @@ function ParseFailure({
   msg: string;
   failType?: string;
   platformName: string;
-  fallbackReason?: string;
-  via: "local" | "online" | "mock";
+  via: "local" | "mock";
   durationMs: number;
   onRetry?: () => void;
   onOpenSource?: () => void;
@@ -616,12 +930,6 @@ function ParseFailure({
         {detailOpen && (
           <p className="rounded-md bg-muted/50 px-2.5 py-2 font-mono text-xs break-all text-muted-foreground">
             {msg}
-          </p>
-        )}
-
-        {fallbackReason && (
-          <p className="text-xs text-muted-foreground">
-            本地内核不可用，已走线上回落：{fallbackReason}
           </p>
         )}
 

@@ -4,10 +4,11 @@
  * 复制文本决定了离开应用后用户手里剩下什么（渲染层展示口径，住在 renderer/src/lib/work-info.ts）。
  */
 import { describe, expect, it } from "vitest";
-import { buildAuthorSnapshot } from "../shared/author";
+import { buildAuthorSnapshot, normalizeAuthorSnapshot } from "../shared/author";
+import { AuthorSnapshotSchema } from "../types/ipc-contract";
 import { buildWorkInfoText } from "../renderer/src/lib/work-info";
 import { EXPORT_COLUMNS } from "../renderer/src/lib/history-selection";
-import type { ParseData } from "../types/ipc";
+import type { AuthorSnapshot, ParseData } from "../types/ipc";
 
 describe("buildAuthorSnapshot", () => {
   it("缺数据 → undefined，而不是一个空对象", () => {
@@ -44,6 +45,13 @@ describe("buildAuthorSnapshot", () => {
     });
   });
 
+  it("kuaishou 的平铺别名（authorSign / worksCount）也落位", () => {
+    // 2026-10-19 实测：匿名解析只给 worksCount（作品数），作者主页那份资料抓不到；
+    // 但这两个别名一旦上游补回 authorSign，读侧不用再改一次
+    const snap = buildAuthorSnapshot({ author: "x", authorSign: "简介", worksCount: 48360 } as ParseData);
+    expect(snap).toEqual({ name: "x", sign: "简介", videoCount: 48360 });
+  });
+
   it("YouTube 的 subscriberCount 归一到 followerCount", () => {
     const snap = buildAuthorSnapshot({ author: "Switch Lab", subscriberCount: 9000 } as ParseData);
     expect(snap?.followerCount).toBe(9000);
@@ -53,6 +61,35 @@ describe("buildAuthorSnapshot", () => {
   it("authorId 缺位时退回 uid（抖音形态）", () => {
     const snap = buildAuthorSnapshot({ author: "小满", uid: "MS4wLjAB" } as ParseData);
     expect(snap?.id).toBe("MS4wLjAB");
+  });
+
+  /**
+   * 内核把 bilibili 的 mid 填成**数字**，而 `ParseDataSchema` 末尾是 `.passthrough()`，
+   * 声明外的字段能全身而退 —— 但 `AuthorSnapshotSchema.id` 是 STR。脏值一旦进快照，
+   * 代价不是「这行少个作者」而是整次 `history:list` 出参校验失败、历史页显示空态
+   * （事故见 tests/store.test.ts 那条回归）。契约声明的是字符串，所以兜底是**写成字符串**：
+   * 信息留着，出参校验也过。旧口径「类型不符就丢空」会让作者 ID 在历史页凭空少一格。
+   */
+  it("数字 uid / authorId 收成字符串：信息保留且形状合契约", () => {
+    const snap = buildAuthorSnapshot({ author: "王刚", uid: 290526283 } as unknown as ParseData);
+    expect(snap?.id).toBe("290526283");
+    expect(snap?.name).toBe("王刚");
+    expect(() => AuthorSnapshotSchema.parse(snap)).not.toThrow();
+  });
+
+  it("authorId 是空串时仍退回 uid（|| 的回落语义不被 ?? 改掉）", () => {
+    const snap = buildAuthorSnapshot({ author: "小满", authorId: "", uid: "MS4wLjAB" } as ParseData);
+    expect(snap?.id).toBe("MS4wLjAB");
+  });
+
+  it("normalizeAuthorSnapshot 把盘上存量洗成契约形状，全空则收成 undefined", () => {
+    const dirty = { name: "王刚", id: 290526283, followerCount: "6787452" };
+    const clean = normalizeAuthorSnapshot(dirty as unknown as AuthorSnapshot);
+    expect(clean).toEqual({ name: "王刚", id: "290526283", followerCount: 6787452 });
+    expect(() => AuthorSnapshotSchema.parse(clean)).not.toThrow();
+    // 收不拢的（对象、布尔）才留空；整张快照一挡都不剩时不给历史写空对象
+    expect(normalizeAuthorSnapshot({ name: {} } as unknown as AuthorSnapshot)).toBeUndefined();
+    expect(normalizeAuthorSnapshot(undefined)).toBeUndefined();
   });
 });
 
@@ -92,7 +129,7 @@ describe("buildWorkInfoText", () => {
         // 大小走 fmtBytes 的量级缩写（表格档那一列是原始字节，两边同字段不同排版）
         "大小：32.5 MB",
         // 「数据」按 WORK_STAT_SLOTS 的顺序，缺的档不占位（这条没有收藏/投币/分享）
-        "数据：播放 52.0万 · 点赞 1.2万 · 评论 400",
+        "数据：点赞 1.2万 · 评论 400 · 播放 52.0万",
         "发布时间：2025-10-21 19:30:00",
         // 与上一行成对：标签必须说得出「作品发的」与「本机记的」是两件事
         "解析时间：2026-01-05 08:09:10",

@@ -13,7 +13,7 @@ import { createElement } from "react";
 import { UpdateActions, noSourceNotice } from "../renderer/src/components/Update";
 import type { UpdateState } from "../types/ipc";
 
-const NO_SOURCE = "当前运行环境没有更新源（开发模式或未配置发布通道）";
+const NO_SOURCE = "当前运行环境没有更新源";
 
 const render = (s: UpdateState): string =>
   renderToStaticMarkup(createElement(UpdateActions, { state: s, onState: () => {} }));

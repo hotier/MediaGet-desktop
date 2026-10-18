@@ -118,8 +118,6 @@ describe("注册表 ↔ 内核引擎对账（漂移=当天红叉）", () => {
 describe("键归一与显示", () => {
   it("历史别名归一到契约键", () => {
     expect(resolveKey("xhs")).toBe("redbook");
-    expect(resolveKey("ppxia")).toBe("pipixia");
-    expect(resolveKey("PIPIXIA")).toBe("pipixia");
   });
 
   it("未登记键原样回吐：盘上旧数据不能被注册表改写", () => {

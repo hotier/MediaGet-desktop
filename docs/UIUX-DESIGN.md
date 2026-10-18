@@ -21,7 +21,7 @@
 | # | 约束 | 出处 | 对设计的直接影响 |
 | --- | --- | --- | --- |
 | C1 | CSP `default-src 'self'`、`script-src 'self'`、`style-src 'self' 'unsafe-inline'` | `renderer/index.html:6-9` | **禁止 Web 字体（Google Fonts / CDN 字体）**。排版系统只能建立在 Windows 系统字体栈上。图标必须内联 SVG（`'self'` + `data:`），不允许 icon font / 外链 SVG |
-| C2 | `img-src 'self' data: blob: https:` | 同上 | 平台封面图、头像可远程加载 —— 但必须处理加载失败与防盗链 403（现用 `referrerPolicy="no-referrer"`） |
+| C2 | `img-src 'self' data: blob: https:`、`media-src 'self' mgpreview:` | 同上 + `electron/main/preview-protocol.ts` | 平台封面图、头像可远程加载 —— 但必须处理加载失败与防盗链 403（现用 `referrerPolicy="no-referrer"`）。音视频**不放 `https:`**：`<video>` / `<audio>` 带不了 `Referer`，直链喂进去必然 403，所以只放行自家代理 scheme，真去取流的是主进程（口径见 §11，隐私账见 `ARCHITECTURE.md §6` 第 12 条） |
 | C3 | renderer 只能经 `window.mg` 白名单通信，`sandbox:true` + `contextIsolation:true` | `electron/main/index.ts:206-213`、`docs/ARCHITECTURE.md §1 铁律 1` | 任何新增 UI 能力若要主进程配合，**载荷形状只在 `types/ipc-contract.ts` 声明一次**（2026-10-14 单一真源改造），但通道接线仍是 4 处：`types/ipc.ts`（常量+派生类型）→ `preload/index.ts` → `main/ipc.ts`（handler）→ `renderer/lib/bridge.ts`，并由 `tests/contract.test.ts` 逐条对账。设计必须优先选择**零契约变更**的方案 |
 | C4 | 依赖基线（**2026-10-14 业主第三次修订：对 UI 框架不设限**）：`package.json` runtime 依赖已含 react / react-dom / zod / electron-updater / lucide-react + `class-variance-authority` / `clsx` / `tailwind-merge` / `tw-animate-css` + 11 个 `@radix-ui/*` 原语；dev 侧 `tailwindcss@4` + `@tailwindcss/vite` | `package.json` + README「关键设计决策」 | **组件库 / 样式范式 / 动画库 / 路由一律不设限**——shadcn/ui 已按 §8 落地为渲染层基线，此前两轮修订留下的「仅允许已评审 headless 原语」白名单**作废**。仍然成立的是三条工程约束，不是审美禁令：① C1 的 CSP 禁远程字体 / 远程 SVG / icon font（技术边界，与选哪个库无关）；② 新增 runtime 依赖须与 lockfile 同 commit 提交并跑验收门；③ 换库不等于放弃语义层——色彩/密度/状态仍由 §5.2 三层 Token 描述，库的默认主题要桥进 `@theme inline`（映射表见 §8.3），组件里不许散落 hex。原为冷灰工具风写的三条审美禁令（无玻璃、单一高程、不上浮缩放）已于同日由业主解除，`tests/style-discipline.test.ts` 只剩三条工程断言 |
 
@@ -276,7 +276,7 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 | **tab 加图标** | 每个 tab 加 16px 图标 + 文字（`解析/下载/历史/设置`），文字 4 字宽度差异造成的视觉跳动用 `min-width` 固定 | 现状纯文字 tab，扫读时靠阅读中文词义定位，图标降低认知成本 |
 | **下载 tab 徽标** | tab 右上 11px 计数徽标：进行中数量（`--accent` 实心）；无进行中但有失败时显示 `--danger` 徽标 | `DownloadTaskView.status` 已具备全部判定信息，**纯渲染层，零 IPC 变更** |
 | **状态区（新增）** | topbar 右侧：主题切换按钮（`--z-tip` 提示快捷键）+ 内核/引擎健康点 + 原生窗口按钮 | 现状 `--line` 顶栏里 `meta-chip` 显示 `v0.1.0 · local`：① **内核模式是 app 级信息**，但真实通道是逐请求的 `via`（`engine.ts` 每条结果自带 `via`），二者混在一个 chip 里必然误导 ② 无主题入口 |
-| **健康点设计** | 用一个 8px 状态点 + tooltip 取代 `local` 文字：绿=本地内核可用且回落开；黄=纯线上回落；灰=mock 骨架。tooltip 文案写全 | 保留 `kernelMode` 原语义，只是降其视觉权重 |
+| **健康点设计** | 用一个 8px 状态点 + tooltip 取代 `local` 文字：绿=本地内核可用；灰=mock 骨架/不可用。tooltip 文案写全 | 保留 `kernelMode` 原语义，只是降其视觉权重 |
 | **全局下载栏（新增）** | 有 queued/downloading 任务时**常驻底部**，聚合显示：活跃数 / 总速度 / 总剩余时间 / `全部暂停·继续` | 现状：下载进度只能在切到"下载"页时看到；用户解析完就切走 → 完全盲飞。`download:onProgress` 已在 `bridge.ts` 暴露可直接复用 |
 | **`--line-control` 落地** | topbar 与内容间分隔线用 `--line`（装饰） | — |
 
@@ -326,7 +326,7 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 2. **图集预览**：`data.images[]` 现状被平铺进 `items`（`ResultCard.tsx:37-39`）但**界面上看不见有几张、长什么样**，用户只能信任按钮上那个数字。改为 **9 张缩略网格 + "+N"**，点击进入模态大图（`--z-modal`）。
 3. **元数据补全**：`data.stat`（view/like/share）、`data.avatar`、`data.music` 全部未使用 —— 在结果卡加一行统计（12px muted，`tabular-nums`），信息密度提升但需处理 `statsUnreliable`（契约字段）：为 true 时该行加 `⚠︎ 数据可能不准` tooltip。
 4. **`embedUrl` 的处理**：现状只在下载按钮旁挂一句 hint（`ResultCard.tsx:110-112`），但 `ParseData.embedUrl` 意味着"这平台只能官方嵌入播放"。建议：隐藏下载按钮，改为 `[↗ 在浏览器中打开播放]`（走 `shell.openExternal` —— 注意 renderer 无此 API，`main/index.ts:219-221` 的 `setWindowOpenHandler` 会拦截 `window.open`，所以用 `<a target="_blank">` 触发它，**零契约变更**）。
-5. **通道标注保持诚实**：`.via-line` 的「本地内核 / 线上回落 / mock 骨架」+ 耗时是本项目最好的设计之一（README「结果来源如实标注」），**只优化视觉**（tint 底 chip），**文案不改**。`fallbackReason` 从灰色 hint 升级为可展开的「为什么走了线上？」详情（默认折叠）。
+5. **通道标注保持诚实**：`.via-line` 的「本地内核 / mock 骨架」+ 耗时是本项目最好的设计之一（README「结果来源如实标注」），**只优化视觉**（tint 底 chip），**文案不改**。线上回落在 2026-10-18 移除，`fallbackReason` 与「为什么走了线上？」一并删除。
 
 **空态 / 首次使用**
 
@@ -466,11 +466,11 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 | 分组 | 字段 | 交互决策 |
 | --- | --- | --- |
 | **下载** | `downloadDir`、`maxConcurrent`、`throttleMs` | 目录输入旁实时校验：不存在 → 内联错误「目录不存在，保存时将自动创建」（主进程行为）；非写入权限 → `--danger`。`maxConcurrent` 改 **stepper + slider**（1–10 整数，`ipc.ts:65` schema 已强制 min1/max10）—— 现状裸 `type=number` 可键入 99 再被 zod 拒绝，报 `bad-input` 一长串路径文本，体验极差 |
-| **解析** | `fallbackOnline`、`onlineApiBase` | 开关改为**自定义 Switch**（32×18，`--r-full`，开=`--accent-solid`）+ 右侧"开（推荐）"文字（现状 checkbox + 文字已可用，但 checkbox 默认样式在暗色下对比不足 → 用 `--line-control` 描边）。`onlineApiBase` 加**即时校验 + `[测试连接]`**（现 `zod .url()` 校验失败 → 报 `onlineApiBase: Invalid URL`，应内联显示而非全局 banner） |
+| **解析** | — | 线上回落及 `fallbackOnline` / `onlineApiBase` 已于 2026-10-18 移除，本组不再有独立配置项。 |
 | **平台凭据（Cookie）** | 5 个 `*_COOKIE` + `supportsIdParse` 说明 | ① 每张凭据行：平台 logo chip + 状态点（**已配置 绿 / 未配置 灰**）+ `[粘贴] [清除]`；② **不要让用户"输入空并保存=清除"来猜**（现状 `SettingsPage.tsx:117` placeholder 写"输入空并保存=清除"，反直觉）→ 显式清除按钮 + 确认；③ **补"如何获取 Cookie"步骤链接**（外链走 `shell.openExternal`）—— 这是新用户流失的第一道墙，现状只写"需自行登录平台申请"；④ 保留 `.mono` 等宽 + 掩码 `***` 语义（`ipc.ts:191-195` 的脱敏是正确的，UI 必须继续显示"已配置"而不是长度） |
 | **外观（新增）** | `theme: dark \| light \| system`、`accent`（可选，蓝/青/紫）、`density: comfortable \| compact` | `system` → 主进程 `nativeTheme.shouldFollowDarkContent`（现状完全没用 `nativeTheme`，grep 零命中）。`theme` 需进 `AppSettings` 契约（§4-P4）；`density` 纯渲染层 `data-density` 属性 |
 | **快捷键（新增）** | 只读速查表 + `[复制]` + 冲突提示 | 桌面用户最需要的是"粘贴即解析"。§3.4 全表 |
-| **高级/关于** | `BinaryStatusReport`（完整性）、`probe:engines`（体检）、版本、内核模式、`exportRedacted` 导出、日志目录 | ① 现状体检 chips **只有绿/橙两色，`detail` 藏在 `title` 里**（`SettingsPage.tsx:163`）—— 三种真相（本地已抽取 / 经线上回落 / **两者皆无 → 不可用**）用两色表达不完，`ipc.ts:249-258` 明确有三种 detail。改为**三态**：绿 `本地内核` / 蓝 `经线上回落` / 灰 `不可用`，且**默认展开当前平台清单表格**而非 chip 墙 ② 二进制完整性（`已校验/降级/已拒绝/未找到`）现状已渲染，保留，但"降级"必须给**可执行建议**（现状给的是 `node scripts/fetch-binaries.cjs` 命令行 —— 对终端用户无意义，应仅 dev 构建显示，prod 显示"请重新安装或下载最新版"） |
+| **高级/关于** | `BinaryStatusReport`（完整性）、`probe:engines`（体检）、版本、内核模式、`exportRedacted` 导出、日志目录 | ① 现状体检 chips **只有绿/橙两色，`detail` 藏在 `title` 里**（`SettingsPage.tsx:163`）—— 三种真相（本地可解 / 注册表已关闭 / **无引擎 → 不可用**）用两色表达不完，`ipc.ts:249-258` 明确有三种 detail。改为**两态徽标**：绿 `本地内核` / 灰 `不可用`（线上回落在 2026-10-18 移除，不再有第三通道），且**默认展开当前平台清单表格**而非 chip 墙 ② 二进制完整性（`已校验/降级/已拒绝/未找到`）现状已渲染，保留，但"降级"必须给**可执行建议**（现状给的是 `node scripts/fetch-binaries.cjs` 命令行 —— 对终端用户无意义，应仅 dev 构建显示，prod 显示"请重新安装或下载最新版"） |
 
 **保存交互**：现状"底部 `保存设置` 全量提交 + `已保存 ✓` chip 2.5s"。**改为脏状态跟踪**：任一字段变更 → 底部条变 `--warning` tint + 「N 项未保存」+ `保存/放弃`；离开该分组/切页时若脏 → 确认弹层。切页丢设置是现状可复现的问题（`SettingsPage` 的 `s` 是局部 state，切页即卸载 → 未保存内容静默消失）。**例外（2026-10-16 定稿）**：即时生效类不进脏计数——本地缓存统计/清理（读盘结果，不是设置草稿）与平台开关（`settings.platformSwitches` 自己走 `settings:set` 落盘）。它们改了不该让用户以为"还有东西没保存"，也不该被「放弃」撤回。
 
@@ -487,7 +487,7 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 | **加载（骨架优先）** | 首次进入页面：`--surface-2` 骨架块 + `--shimmer`（1.2s linear，reduce 下关）。**骨架尺寸必须等于真实内容尺寸**（防 CLS）。局部刷新（tab 切换、筛选变化）**禁止全屏骨架** —— 保留旧内容 + 顶栏 2px 不确定进度条 | ⚠️ `SettingsPage.tsx:30` 用 `className="page empty"` 显示"加载设置…" —— **加载态被渲染成空态**，用户会以为"没有设置"。必须区分：空态=确认无数据；加载态=未知。`DownloadsPage` 首帧 `tasks=[]` 也走空态分支，是同一个 bug 的第二现场 |
 | **空（两种）** | **首次空**（从未有过数据）：插图 + 一句价值说明 + **一个主 CTA**。**过滤空**（有数据但当前条件无匹配）：一句「没有匹配「小红书」的记录」+ `[清除筛选]`。**绝不用同一个空态**。**2026-10-17 业主指令修订**：首次空的「一句价值说明」删除——空态不当说明书，只留一行标题，整组在可用高度垂直居中（队列页 / 历史页已落地） | 现状只有一个 `.empty`，`HistoryPage` 搜索无结果会显示"暂无历史记录" —— **谎报**（数据存在） |
 | **错误（三层）** | ① **控件级**（表单校验）：内联在字段下方 13px `--danger` + 左边 3px 色条 + `aria-describedby`，**禁用 toast 报表单错**；② **操作级**（解析失败/下载失败）：就近 banner（结果卡内 / 任务行内）+ `[重试]` + 技术详情折叠（`failType`、`fallbackReason`、HTTP 码）；③ **系统级**（桥未注入、更新失败）：顶部横幅 + `[复制诊断信息]` | ① `DownloadsPage.tsx:25-27` 的 `act()` **静默 `catch {}`**（注释："状态竞争忽略"）—— 用户点"暂停"没反应也不知道为什么。规范：**状态竞争类错误（409 语义）静默但必须重同步列表**（现状已重取 list ✅）；**其他错误必须 toast**。当前二者混在一个 catch 里，无法区分 → 建议主进程错误带 `code`（`ipc.ts` 已有 `code` 字段，`BridgeError.code` 已暴露但 renderer 从不读 —— **数据在手，判断没用**）② `bad-input` 的 zod 文本直接抛给用户（`ipc.ts:121` 拼 `path: message`）→ 必须映射为人话 + 保留原文在折叠区 |
-| **成功** | 300ms 内的即时反馈：按钮变 `[✓ 已加入队列]`（现状 ✅）+ **toast 带 `[前往下载页]` 动作链接**（现状 toast 是纯文本，用户还得自己切 tab）。成功反馈**不阻塞**、4s 自动消失 | `ParsePage.tsx:102-105` 文案"到「下载」页查看进度"—— 把导航工作推给用户。改为动作按钮 |
+| **成功** | 300ms 内的即时反馈：**只用 toast**（2026-10-18 业主指令「点击下载之后下载按钮右边不要出现已加入下载队列，通过 toast 显示就行」——徽标会把清晰度与下载按钮挤位）+ **toast 带 `[前往下载页]` 动作链接**（现状 toast 是纯文本，用户还得自己切 tab）。成功反馈**不阻塞**、4s 自动消失 | `ParsePage.tsx:102-105` 文案"到「下载」页查看进度"—— 把导航工作推给用户。改为动作按钮 |
 
 **Toast 规范**（现状：内联 `.banner.info` 在内容流中 → 出现/消失都造成布局跳动，且 4s 定时器在 state 里 `setToast("")` 复用同一 `.banner`，与真正的面包信息无法区分）
 
@@ -508,12 +508,11 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
   │                      ↑ engine.ts:176-180 已本地即时判定，UI 需给"为什么"的说明与「查看支持清单」
   ├─ 未提取到链接        → 输入框 invalid 态（左边条红）+ 内联错 + 「示例链接」帮助弹层
   ├─ 成功 local          → 结果卡 + via chip 绿 + 耗时
-  ├─ 成功 online         → 结果卡 + via chip 蓝 + 折叠「为什么走了线上？」= fallbackReason
   ├─ 成功 mock           → 结果卡 + via chip 灰 + **顶部黄 tint 提示条**「当前为骨架演示结果，非真实解析」
   │                      ↑ 现状 mock 只靠 chip 区分，用户可能拿假直链去下载并困惑失败
   └─ 失败               → 结果卡错误态 + failType chip + [重试]（第二次重试后追加 [换平台入口] / [反馈]）
        ↓ 用户点 [下载全部(N)]
-     按钮 → [✓ 已加入队列] + toast[前往下载页] + tab 徽标 +1
+     toast[已加入下载队列（N 项）· 前往下载页] + tab 徽标 +1（按钮旁不挂徽标，2026-10-18）
      若 items.length===0 → 按钮文案「无可下载文件」+ disabled（现状 ✅）
 ```
 
@@ -865,7 +864,6 @@ button:disabled{color:var(--text-disabled);border-color:var(--line);opacity:1} /
 | 任务 / 队列 | download task | `DownloadTaskView` / `DownloadStatus` |
 | 图集（一组文件） | group | `groupId` / `EnqueueOutcome` |
 | 历史 | history | `HistoryEntry`（**不含媒体直链**，含作者快照）|
-| 线上回落 | fallback / via=`online` | `fallbackReason` |
 | 本地内核 | via=`local` | `kernelMode`（app 级）与 `via`（请求级）**不同层级** |
 | 骨架演示 | via=`mock` | `MG_KERNEL_MODE` |
 | 随包组件完整性 | binary integrity | `BinaryStatusView.integrity`（4 态）|
@@ -1180,4 +1178,29 @@ shadcn 的语义名与本仓角色**不能望文生义**，映射钉死如下：
 - **已修未验（业主真窗口报障两轮三件，2026-10-16）**：① 「点其他图标时 history 仍有一段动画」——受控 stop 从整段回放改为短补间归位（v3 定稿，九枚统一 + history 时针在独立 controls 上瞬停，理由见 10.1），带 10 条守卫断言；② 「点击设置转到设置页时定位到的那个图标没有动画」——`AnimIcon` 增 `animateOnMount`，设置页分类挂载即播一次；③ 「history 归位更生硬」——v2 瞬停的观感反馈，v3 短补间收敛（同一条 stop 契约）。三件的**运行时行为与观感仍以业主真窗口为准**（renderer 改动走 HMR，无需重启 Electron），本机未做浏览器复验。
 - **已验（历史档）**：npm 包 `lucide-animated` 时代曾在 dev renderer（mock 桥）手动泵帧核对过切换复播与复位（AnimIcon 的 start/stop 语义即那轮坐实的，见其头注）——但 vendored 版是逐枚拉入的重写，**运行时行为未在新版复验**（业主当日指令「不用你浏览器测试」免除）。
 - **未验**：动效的**观感**（弹簧手感、快慢节奏、真实帧率下的顺滑度）待业主真窗口过一眼（renderer 改动走 HMR，无需重启 Electron）。
+
+## 11. 结果卡的资源清单与单资源预览（2026-10-18，业主指令）
+
+指令两条：「把配置下载按钮图标设置为资源列表，点击后展开可下载的资源，这个按钮不要用下拉框样式」「给下方的资源加一个预览超链接，点击后以弹窗形式预览资源内容」。落成的口径：
+
+- **选择层与下载清单层收进同一枚「资源列表」**（`ListTree` 图标、`variant="link"`、`px-0`），点它在**卡片内就地展开/收起**一块 `bg-muted/40` 的区域，里面是清晰度 chip 组 + 逐行清单（勾选框、档位标签、文件名截断 + tooltip、回落徽标、行尾「预览」）。**不是 `DropdownMenu`、不是 `Select`**：那些是"选一个值"的控件，而这里摊开的是"这一次要落盘哪几颗"的台账，需要同时看见勾选与档位；就地展开也不遮内容，收起后卡片回到三层结构的第一眼。
+- **主按钮与「资源列表」并排靠右，挂在计数徽标那行下方**，尺寸同为 `size="sm"`（此前那枚独立的大下载按钮比首页「解析」按钮大一档，同一动作在两面不同尺寸会被读成两个层级）。文案只由清单生成（`下载 N 项` / `下载`），**入过队也不切换成「再次下载所选」**（2026-10-18 业主「不要切换成再次下载所有，固定下载按钮就行」），勾选全撤时按钮置灰。
+- **「预览」是这一行唯一的读直链的入口，且只读不回显**：链不进标题栏、不进历史、不进日志，弹窗关闭即 `setPreviewEntry(null)` 释放。图片仍走原链（C2 的 `img-src … https:` 放行，`referrerPolicy="no-referrer"`），**音视频换成 `mgpreview:` 代理链**——媒体元素改不了请求头，防盗链那对 `Referer` + 桌面 UA 只有主进程带得上，而渲染层 CSP 也不放外链媒体。业主在「只放开 CSP / 主进程代理取流 / 二者都做」三选一里点了**放开 CSP + 主进程代理取流**：CSP 只多认自家这一个 scheme（不是把 `media-src` 开成 `https:`），取流、带头、Range 转发全在主进程，机制与隐私账见 `ARCHITECTURE.md §6` 第 12 条。
+- **失败态说人话且不甩锅**：「预览加载失败：平台可能拒发，或这条直链已经过期。**下载不受影响。**」——最后那句是这条入口的立项前提（预览失败不等于下不动，v12 的 403 现场续链才是下载的真源）。`kind === "file"` 那档直接说「该类型不支持预览」，不渲染一个空白弹窗。
+- **一处已知限制，写在代码注释而不是界面上**（解释不常驻）：DASH 分轨（B 站那种 `.m4s` 视频流与音频流分开发货）在弹窗里放不出画面，是浏览器解码限制而非链错。
+
+## 12. 结果卡的通用骨架（2026-10-18，业主指令）
+
+指令：「需要有通用模板来处理不同平台、不同资源类型的显示，比如有的是多视频，有的是图文，有的是视频+图片，有的还有多档清晰度等等」。口径：
+
+- **形态是叠加，不是分类**。`ParseData` 里视频、图片、音频可以同时存在（抖音图文、微博多图带视频），旧的 `deriveShape` 五选一必然丢掉其中一半。`renderer/src/lib/download-plan.ts` 的 `describeResourceMix` 只回答「有几种什么」——`videoCount`（按 URL 去重，内核把主直链双写进 `url` 与 `videos[0].url` 是真实形态）、`imageCount`、`hasAudio`、`textOnly`、`primaryVideo`、`cover`（平台封面 → 首图 → 分 P 封面 → 音乐封面）。各段自己决定要不要画，卡片里不再按 `type` 分叉。
+- **四段骨架**：① 主视觉（`w-36` 16:9 封面，缺失时按形态给 `Play`/`Images`/`Music` 占位；右上角时长 + 图片数角标；可预览时整块是按钮，视频悬停出播放蒙层）；② 身份带（平台图标 + 标题单行截断 + tooltip、作者头像昵称、作品计数图标 + 数值，**每项计数悬停出「标签 + 数值」tooltip**——图标认不出时能问，标签与顺序的真源仍是 `WORK_STAT_SLOTS`：点赞 → 转发 → 评论 → 收藏 → 播放 → 弹幕 → 投币 → 分享，结果卡、复制正文与 CSV/XLSX 列序共用这一份）；③ 附加区（音乐/歌词、纯文字说明）；④ 动作条（`资源列表` 靠左；清晰度选择 / 下载靠右）。
+- **卡面只有一张主视觉**（2026-10-18 业主「多资源时，无论是图片还是视频都只显示第一张图片/封面，但是可通过这个封面点进去预览其他的」）：多 P 明细列表与图集缩略条都从卡面撤掉（`galleryItems` / `galleryHidden` / `galleryFrom` 随缩略条一并删除），其余资源只从两个入口进——点封面翻页预览，或展开「资源列表」逐条处理。
+- **预览 = 一扇窗 + 一块固定舞台 + 一条底栏**（2026-10-18 业主「你建议怎么显示预览，最好」后定稿，取代此前并存两扇窗的做法）：入口仍两处——主视觉封面与资源清单里**每一行**（`needsRowPreview` 判据已删）；序列是 `plan` 里 `kind !== "file"` 的全部项，按清单顺序，视频、独立音轨、图片同列，从视频能一路翻到图片。**舞台**固定 `h-[64vh]`（`max-h-[calc(100dvh-10rem)]` 兜底小窗）、`flex items-center justify-center`、`bg-sunken`，媒体 `max-h-full max-w-full object-contain`——必须是 flex 而不是 grid：grid 的隐式行高是 `auto`，`max-h-full` 在不确定高度的行里会退化成「没有上限」，图片/视频按原始像素铺开再被 `overflow-hidden` 裁掉（2026-10-18 实测：640×640 的图落进 854×461 的舞台，底部被裁、视频连 controls 都被裁掉）：翻页时外框不跳，竖图吃满高度，音频与失败说明同样落在舞台中央（不再是大空框里一条细线）。**底栏**固定 `h-9`：左侧等宽字体文件名（截断 + tooltip 全名）、右侧 `2 / 5` 序号；标题/文件名不再进上方标题区，窗格尺寸不随内容长短变化（`DialogTitle`/`DialogDescription` 退成 `sr-only` 供读屏）。翻页按钮沉在舞台两侧（`left-1/right-1`，避开视频 controls），只有一条资源时不摆、尽头用 `disabled`；`←`/`→` 键同样翻页（焦点在媒体控件上时不接管，把方向键留给 seek）。**关闭按钮用内置那枚**（`top-4 right-4`，样式不动），边距由弹窗的 `p-10 pb-7` 提供：上/左/右 40px，**底部 28px**——底栏那一行 16px 文字居中在 36px 条里，`28 + 10 ≈ 38` 与上方 40 的观感对齐（2026-10-18 业主「和灰色背景重合」→「要么改按钮的位置，要么加边距」→「四个方向的边距必须统一」→「下方有一行文字，要把文字占位考虑进去，所以下边距要减小」）。内置 X 占 16~32px、舞台从 40px 起，留 8px 缝。Esc 与遮罩点击仍是另两条关闭路径。开合动效复用作者卡片的 `dialogSlideMotion`，内容等退场动画结束再释放。不支持预览的 `file` 行不挂预览（不给点了没反应的按钮）。
+- **动作条文案仍由清单生成**（`下载 N 项` / `下载`），入过队也不改成「再次下载所选」（反馈统一走 toast）。**构成摘要已于 2026-10-18 移除**（业主指令「结果卡片的 视频 1也要移除」）：按钮项数已说明「点下去会得到几颗」，`summarize` 那行「视频 2 · 图 2」是重复信息，函数随展示一并撤掉；`资源列表` 同批改靠左（`me-auto` 把清晰度与下载挤到右侧）。`embedOnly` 不给下载按钮，只给「在浏览器中打开播放」；纯文字给「复制文字 / 打开原页面」，不渲染假下载。
+- **作者层回来**：此前按「精简」撤掉的作者行，这次以「确认是不是这个人和这条作品」的理由恢复为头像 + 昵称，作者级统计仍不上卡（`buildAuthorSnapshot` 只取展示所需）。**发布日期已于 2026-10-18 移出卡面**（业主指令）：各平台的 `time` 填法三套单位、时区与「发布 vs 解析」的解释成本高于卡面收益，而解析那一刻的时刻照旧随历史与导出留档（`pickPublishedAt` 仍服务于 `history`/导出，只是结果卡不再消费）。
+- **清晰度在下载动作旁**（2026-10-18 业主「设置页配置的默认清晰度只是在用户不主动选择下的清晰度，用户依然可以再次选择」）：动作条放一枚 `w-28` 的 `Select`（`aria-label="下载清晰度"`），选项就是 `buildQualityPlan` 的 `options`，默认值取设置里的 `defaultQuality` 策略（`highest` / `lowest` / 内核主直链档）算出的 `primaryIndex`。选择器与清单共用同一份 `qualityOptions`，切换后文件名后缀与按钮项数当场跟着变；只有一项可选时不渲染这枚下拉（包括纯图集结果）。资源清单里不再重复放清晰度 chip。
+- **「仅音频」是排他档**：选中它时，主视频与各分 P 视频都不进计划，计划里只剩音频那一项；否则按钮上的「下载 N 项」会与用户预期不符。
+- **测试口径**：`tests/result-card.test.ts` 覆盖作者直出、动作条无预览按钮、多档清晰度出选择器（单档不出）、视频+图片并存但**不铺缩略条/分 P 明细**、纯图集只留封面入口（`aria-label="预览图片"`）；`tests/resource-mix.test.ts` 钉住去重计数与封面优先级；`tests/download-plan.test.ts` 钉住「仅音频」排他与默认档 URL 去重。
+
 

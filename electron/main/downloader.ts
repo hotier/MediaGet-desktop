@@ -4,8 +4,9 @@
  * - 并发上限（设置可调）、失败隔离、重试（指数退避 3 次）
  * - 落盘 `<目标>.part` → 完成 rename；`.part` 带身份 meta（`<part>.meta` 存 URL）：
  *   同 URL 断点续传复用原名；异 URL 遗留半成品清理后复用；活任务占位才序号避让
- * - 续传：`.part` 存在且 meta 匹配带 `Range: bytes=<size>-`；上游返回 200
- *   （不支持 Range）整体重下
+ * - 续传：`.part` 存在且 meta 与本次是**同一份资源**（`isSameResource`，换签名/换节点都不算换资源）
+ *   就带 `Range: bytes=<size>-`；上游返回 200（不支持 Range）才整体重下。两条入口共用这条判据：
+ *   队列里 resume/restore，以及「重新解析后重新入队」——后者拿到的是新签名链，不能当成新资源
  * - 防盗链：Referer/UA 来自任务入队时携带的字段（main/ipc 从解析结果与内核
  *   PLATFORM_INFO 域名映射组装），本模块不复制域名表
  * - 进度事件 ~200ms 节流（emitter 注入，vitest 可直接测，不依赖 electron）
@@ -35,6 +36,9 @@ import type {
   DownloadStatus,
   PersistedQueueTask,
 } from "../../types/ipc";
+// 续传身份与续链身份必须是同一把尺（pathname + 非时效参数）：`.part` 能不能接着写、
+// 403 之后哪条新链属于这一份资源，两处各写一套比较规则就会得出互相矛盾的答案
+import { isSameResource } from "../../shared/link-identity";
 
 export type PersistedQueueLike = PersistedQueueTask;
 
@@ -201,6 +205,8 @@ export class Downloader {
           received: 0,
           total: 0,
           speed: 0,
+          transferMs: 0,
+          transferBytes: 0,
           error: "不安全的下载地址（私网/非 http 协议被拒绝）",
           attempts: 0,
           createdAt: Date.now(),
@@ -227,6 +233,10 @@ export class Downloader {
         received: 0,
         total: 0,
         speed: 0,
+        // 平均速度的两个采样计数器从 0 起：接着别人的 .part 写时，分子（transferBytes）
+        // 只会长在本任务真正收到的字节上，不会把半成品的旧字节算成「这么快下完的」
+        transferMs: 0,
+        transferBytes: 0,
         attempts: 0,
         createdAt: Date.now(),
         platform: meta?.platform,
@@ -251,8 +261,12 @@ export class Downloader {
    * 目标名分配：
    * - 最终文件存在 → 避让 (n)
    * - 本实例活任务（queued/downloading/paused/error）占同一目标 → 避让（防双写）
-   * - 同名 .part：meta 与本 URL 一致 → 原名续传；不一致/无 meta → 清理后复用原名
-   *   （遗留半成品对当前下载无价值，且最终文件不存在，名字归本次任务）
+   * - 同名 .part：meta 与本次**同一份资源** → 原名续传；认不出 / 无 meta → 清理后复用原名
+   *   （遗留半成品对别的资源没有价值，且最终文件不存在，名字归本次任务）
+   *
+   * 「同一份资源」按 `isSameResource`（pathname + 非时效参数）判，不按 URL 字符串：
+   * 403 续链、隔天重新解析都会把签名换掉，字符串比较会把每次换签都当成「异资源」，
+   * 于是真正的续传永远轮不到 —— 症状是「重新下载又从 0% 开始」。
    */
   private pickTargetPath(filename: string, url: string): string {
     const dir = this.opts.getDownloadDir();
@@ -266,10 +280,8 @@ export class Downloader {
       const part = candidate + ".part";
       if (existsSync(part)) {
         const partUrl = readPartUrl(part);
-        if (partUrl !== url) {
-          // 异 URL / 无身份的遗留半成品：清理复用
-          this.removePartFiles(part);
-        }
+        const reusable = partUrl === url || (partUrl !== null && isSameResource(partUrl, url));
+        if (!reusable) this.removePartFiles(part);
       }
       return candidate;
     }
@@ -321,6 +333,8 @@ export class Downloader {
     const t = this.tasks.get(taskId);
     if (!t || t.status !== "downloading") return false;
     t.status = "paused";
+    // speed 故意不清：它是**暂停那一刻的快照**（业主指令 2026-10-18），界面据它显示暂停行的
+    // 「速度」与「剩余」——两个值都冻结在暂停时，重启后靠队列档里的同一个键带回来（契约 v17）。
     t.signal?.abort(); // runOne 收尾 flush 后保留 .part，resume 从断点续
     this.opts.events.progress(toView(t));
     this.persist();
@@ -332,6 +346,11 @@ export class Downloader {
     if (!t || (t.status !== "paused" && t.status !== "error" && t.status !== "canceled")) return false;
     t.status = "queued";
     t.error = undefined;
+    // 暂停快照的寿命到「继续」为止：重新连上游的那几秒报一个过期速度就是在说谎
+    t.speed = 0;
+    // 续链额度跟着重开：上一次已经换过一条链，不代表用户这次按下「继续/重试」时手上还是那条。
+    // 不重开的话，「续链失败 → 一行 error」之后按重试只会在同一条死链上打转，必须重启应用才有救。
+    t.renewed = undefined;
     t.attempts = 0;
     this.opts.events.progress(toView(t));
     this.persist();
@@ -376,7 +395,13 @@ export class Downloader {
       const t = {
         ...s,
         status: revived,
-        speed: 0,
+        // 只有 paused 行的 speed 是档内的暂停快照（业主指令 2026-10-18）；其余状态不承认这个数：
+        // 下载中恢复成 queued 后还没采到新样本，拿旧值当实时速度就是假象
+        speed: revived === "paused" ? Math.max(0, Math.round(s.speed ?? 0)) : 0,
+        // v18：平均速度的两个采样计数器随档回来 —— 暂停/失败行下次续完仍算得出平均速度。
+        // 旧档没这两个键 → 0，该行完成时只能显示「—」，不拿墙钟时间凑一个数
+        transferMs: Math.max(0, Math.round(s.transferMs ?? 0)),
+        transferBytes: Math.max(0, Math.round(s.transferBytes ?? 0)),
         attempts: 0,
       } as unknown as InternalTask;
       // filePath 以档内为准：同名冲突时落的是 `xxx(1).mp4`，按「目录 + 文件名」重算会指向
@@ -414,6 +439,9 @@ export class Downloader {
         kind: t.kind,
         received: t.received,
         total: t.total,
+        // 传输时长与对应字节：跨会话累积，暂停多久都不进分母（契约 v18）
+        transferMs: Math.round(t.transferMs),
+        transferBytes: Math.round(t.transferBytes),
         createdAt: t.createdAt,
         platform: t.platform,
         title: t.title,
@@ -424,6 +452,9 @@ export class Downloader {
         // 异常文本可能带路径且长度不可控（写流错误尤甚），契约上限 300，落盘前就地截
         error: t.error ? t.error.slice(0, 300) : undefined,
         finishedAt: t.finishedAt,
+        // 暂停快照（契约 v17）：只给 paused 行落这个键，它答的是「暂停那一刻多快」，
+        // 不是「这一行现在多快」——其余状态即使有值也没有意义，别把噪声写进长期档
+        speed: t.status === "paused" ? Math.max(0, Math.round(t.speed)) : undefined,
       }));
   }
 
@@ -529,14 +560,18 @@ export class Downloader {
     const part = this.partPath(t);
     let start = 0;
     if (existsSync(part)) {
-      if (readPartUrl(part) === t.url) {
+      const partUrl = readPartUrl(part);
+      // 与 pickTargetPath 同一把尺（isSameResource）：换签名不换资源 → 接着写；
+      // 认不出（没 meta / 换了清晰度或分 P）才清掉重下。入队后又被外部改动身份也走这条。
+      const reusable = partUrl === t.url || (partUrl !== null && isSameResource(partUrl, t.url));
+      if (reusable) {
         try {
           start = statSync(part).size;
         } catch {
           start = 0;
         }
       } else {
-        this.removePartFiles(part); // 兜底：入队后又被外部改动过身份
+        this.removePartFiles(part);
       }
     }
     t.received = start;
@@ -592,9 +627,12 @@ export class Downloader {
       }
       const supportsRange = resp.status === 206;
       if (start > 0 && !supportsRange) {
-        // 上游不支持 Range：整体重下（截断重开）
+        // 上游不支持 Range：整体重下（截断重开）。采样计数也得一起归零，
+        // 否则平均速度的分子保留了已丢弃的那部分字节、分母也带着上一程的时长
         start = 0;
         t.received = 0;
+        t.transferMs = 0;
+        t.transferBytes = 0;
       }
       const contentLength = Number(resp.headers.get("content-length") ?? 0);
       t.total = supportsRange ? start + contentLength : contentLength || t.total;
@@ -616,7 +654,11 @@ export class Downloader {
       let prevBytes = t.received;
       let prevTime = Date.now();
       for (;;) {
+        const readAt = performance.now();
         const { done, value } = await reader.read();
+        // 实际传输时长（契约 v18）：只累计「等一块字节」的时间。暂停/排队/重试退避都在
+        // 循环之外，天然不计入 —— 完成行的平均速度用它做分母，暂停一小时也不会被稀释
+        if (value && value.byteLength > 0) t.transferMs += performance.now() - readAt;
         if (streamErr) throw streamErr;
         if (stalled) throw stallError();
         if (done) break;
@@ -640,6 +682,8 @@ export class Downloader {
         // 否则续传时 Range 起点会跳过一段没落盘的数据。
         if (streamErr) throw streamErr;
         t.received += value.byteLength;
+        // 分子只算「真落盘的那部分」：与 transferMs 同一段区间，两个计数器必须成对增长
+        t.transferBytes += value.byteLength;
         armStall();
         const now = Date.now();
         if (now - lastEmit >= PROGRESS_THROTTLE_MS) {
@@ -668,6 +712,8 @@ export class Downloader {
         /* ignore */
       }
       t.status = "done";
+      // 完成行的速度由界面按「transferBytes ÷ transferMs」算平均（业主指令 2026-10-18），
+      // 这里清掉最后一个瞬时采样值，免得它被误读成「完成时还在跑」
       t.speed = 0;
       t.finishedAt = Date.now();
       this.opts.events.progress(toView(t));
@@ -765,6 +811,9 @@ export function toView(t: InternalTask): DownloadTaskView {
     received: t.received,
     total: t.total,
     speed: t.speed,
+    // 毫秒取整：契约要整数；this 是平均速度的分母，亚毫秒精度对结果没有意义
+    transferMs: Math.round(t.transferMs),
+    transferBytes: Math.round(t.transferBytes),
     error: t.error,
     platform: t.platform,
     title: t.title,

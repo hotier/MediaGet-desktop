@@ -117,7 +117,7 @@ export default function HomePage({
   onReparseFillDone: () => void;
 }): React.ReactElement {
   // 工作台草稿（文本 / 提示 / 结果卡 / 进行态）在 store 里：见 store/home-draft.ts
-  const { text, setText, hint: identifyHint, setHint: setIdentifyHint, items, busy, setBusy, startBatch, patchItem } =
+  const { text, setText, hint: identifyHint, setHint: setIdentifyHint, items, busy, setBusy, startBatch, patchItem, clear: clearDraft } =
     useHomeDraft();
   const [helpOpen, setHelpOpen] = useState(false);
   const [recent, setRecent] = useState<HistoryEntry[]>([]);
@@ -126,18 +126,18 @@ export default function HomePage({
 
   /**
    * 单条解析（批内逐条调用；结果卡与失败卡的 [重试] 都走它，`retry=true`）。
-   * 重试必须带 `forceOnline`：主进程有 24h 结果缓存，而 CDN 直链 5 分钟就过期——
+   * 重试必须带 `skipCache`：主进程有 24h 结果缓存，而 CDN 直链几分钟就过期——
    * 不带的话重试永远拿回同一条过期直链，用户怎么点都是同一个错。
-   * （契约字段自 v1 就有、主进程一直在听，此前缺的只是渲染层这一传。）
    */
   const parseOne = useCallback(
     async (id: number, source: string, retry = false) => {
       patchItem(id, { status: "pending", outcome: undefined, error: undefined, at: undefined });
       try {
-        const r = await api.parse(retry ? { text: source, forceOnline: true } : { text: source });
+        const r = await api.parse(retry ? { text: source, skipCache: true } : { text: source });
         // at = 结果到手时刻：切页重挂载后卡片接着算直链年龄，不把过期的链显示成刚拿到
-        // sourceUrl = 用户输入的原始分享链接/文案（续链要用它重新解析，不是 identify 提取的直链）
-        patchItem(id, { status: "done", outcome: r, sourceUrl: source, at: Date.now() });
+        // sourceUrl = 主进程归一后的真实资源页（短链已在那边跟到长链）；结果卡「来源」、
+        // 下载 meta 与历史行都读这一条，作品键三处一致。失败态没有它，保留输入框原文。
+        patchItem(id, { status: "done", outcome: r, sourceUrl: r.sourceUrl ?? source, at: Date.now() });
       } catch (e) {
         patchItem(id, {
           status: "error",
@@ -283,6 +283,21 @@ export default function HomePage({
   // 封面/主色上抛已移除（2026-10-15 蓝白指令）：焦点色由「主题风格」整带决定，
   // 不再随解析结果里的封面抽色漂移。
 
+  /**
+   * 清除工作台（业主指令 2026-10-19：解析按钮左侧的「清除」）：
+   * 输入草稿、识别提示、结果卡一起清，回到刚打开首页的样子。
+   * 必须先掐掉 600ms 防抖——那个回调捕获的是清除前的文本，不取消会在 600ms 后
+   * 把刚清掉的内容重新识别、重新解析回来。
+   */
+  const clearAll = useCallback(() => {
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
+    autoFilledRef.current = "";
+    clearDraft();
+  }, [clearDraft]);
+
   // Esc：模态优先（ResultCard 的 Dialog 自己处理）→ 清输入框
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -314,6 +329,9 @@ export default function HomePage({
       <section className="flex min-w-0 flex-1 flex-col gap-3">
         {/* 卡片即输入面：focus-host 把聚焦高亮收在卡片这一个盒上（见 styles.css） */}
         <Card className="focus-host gap-0">
+          {/* 输入框与占位文字吃设置里的字体与字号（业主指令 2026-10-19）：
+              不再写死 15px，也不额外放大——直接用基类的 text-sm（= --fs-content），
+              字体族经 body 的 --font-ui 继承，两处设置一改即同步。 */}
           <Textarea
             ref={inputRef}
             value={text}
@@ -321,8 +339,8 @@ export default function HomePage({
             onKeyDown={(e) => {
               if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) parseManual();
             }}
-            placeholder="粘贴一条或多条分享链接、整段分享文案，Ctrl+K 任意页面直达…"
-            className="min-h-28 resize-none rounded-none border-0 bg-transparent px-4 pt-3.5 pb-2 text-[15px] leading-relaxed shadow-none"
+            placeholder="粘贴分享链接或整段分享文案，多条用空格、换行隔开，Ctrl+K 任意页面直达…"
+            className="min-h-28 resize-none rounded-none border-0 bg-transparent px-4 pt-3.5 pb-2 leading-relaxed shadow-none"
             spellCheck={false}
             aria-label="解析输入"
           />
@@ -336,7 +354,9 @@ export default function HomePage({
               {identifyHint}
             </p>
           )}
-          <div className="flex items-center justify-between border-t border-border px-3 py-2">
+          {/* 底栏的 px-5 与结果卡 CardContent 同值：两张卡的控件右缘才会严格对齐
+             （解析按钮与下载按钮曾差 8px——底栏 px-3 对 CardContent px-5） */}
+          <div className="flex items-center justify-between border-t border-border px-5 py-2">
             <div className="flex items-center gap-1.5">
               <Button
                 size="sm"
@@ -370,10 +390,25 @@ export default function HomePage({
                 if (f) void onImportFile(f);
               }}
             />
-            <Button size="sm" onClick={parseManual} disabled={busy || !text.trim()}>
-              {busy && <Loader2 className="animate-spin" />}
-              {busy ? "解析中…" : "解析"}
-            </Button>
+            <div className="flex items-center gap-1.5">
+              {/* 清除：清空输入与结果卡。空态不可点，避免一枚永远无反应的按钮。
+                  白字浅红底（业主指令 2026-10-19）：破坏性动作靠底色与「解析」拉开层级。
+                  不用 text-destructive-foreground——它在暗色主题是深字（err 偏亮），
+                  与业主指定的白字相反；hover 同时压住 ghost 的 accent 前景色。 */}
+              <Button
+                size="sm"
+                variant="ghost"
+                className="bg-err/70 text-white hover:bg-err/85 hover:text-white"
+                onClick={clearAll}
+                disabled={busy || (!text.trim() && items.length === 0)}
+              >
+                清除
+              </Button>
+              <Button size="sm" onClick={parseManual} disabled={busy || !text.trim()}>
+                {busy && <Loader2 className="animate-spin" />}
+                {busy ? "解析中…" : "解析"}
+              </Button>
+            </div>
           </div>
         </Card>
 
@@ -464,7 +499,7 @@ export default function HomePage({
               onNavigate={onOpenSettings}
               onQueued={(count) =>
                 count > 0
-                  ? toast.success(`已加入下载队列（${count} 个文件），到「队列」页查看进度`)
+                  ? toast.success(`${count} 个文件已加入下载队列`)
                   : toast.warning("没有可下载的文件")
               }
             />

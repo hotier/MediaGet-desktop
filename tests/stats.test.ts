@@ -122,15 +122,15 @@ describe("parse：解析统计", () => {
   it("按通道分桶，code≠200 记失败，时长累加", () => {
     const { stats } = harness();
     stats.parse({ at: AT, platform: "douyin", via: "local", ok: true, durationMs: 120 });
-    stats.parse({ at: AT, platform: "douyin", via: "online", ok: false, durationMs: 800 });
+    stats.parse({ at: AT, platform: "douyin", via: "mock", ok: false, durationMs: 800 });
     stats.parse({ at: AT, platform: "kuaishou", via: "mock", ok: true, durationMs: Number.NaN });
     const s = stats.snapshot();
     expect(s.parse).toEqual({
       total: 3,
       failures: 1,
       local: 1,
-      online: 1,
-      mock: 1,
+      online: 0, // 线上回落已移除，旧档留下的桶不再增长
+      mock: 2,
       durationMs: 920,
     });
     expect(s.byPlatform.douyin).toMatchObject({ parses: 2, parseFailures: 1 });
@@ -226,7 +226,9 @@ describe("老档兼容", () => {
     };
     const s = createStats({ load: () => old, save: () => {} }).snapshot();
     expect(s.byPlatform.redbook).toEqual(row(5));
-    expect(s.byPlatform.pipixia).toEqual(row(1));
+    // 皮皮虾随内核 1.0.0 下线，注册表不再认 ppxia → 按「未登记键」原样留着
+    expect(s.byPlatform.ppxia).toEqual(row(1));
+    expect(s.byPlatform.pipixia).toBeUndefined();
     // 注册表认不出的键原样留着：注册表不许改写盘上看不懂的东西
     expect(s.byPlatform.nowhere).toEqual(row(4));
     expect(Object.keys(s.byPlatform)).not.toContain("xhs");

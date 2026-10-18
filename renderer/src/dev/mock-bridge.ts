@@ -28,6 +28,7 @@ import {
   type ParseRunOutcome,
   type StatsSnapshot,
   type UpdateState,
+  type WorkStat,
 } from "../../../types/ipc";
 import {
   PLATFORMS,
@@ -39,6 +40,8 @@ import {
 } from "../../../shared/platforms";
 import { buildAuthorSnapshot } from "../../../shared/author";
 import { isLanded, parseHistoryEntry, workKeyOf } from "../../../shared/history";
+import { pageUrlFromData } from "../../../shared/source-url";
+import { pickPublishedAt, pickWorkStat } from "../../../shared/work-stat";
 
 const ok = <T,>(data: T): InvokeResult<T> => ({ ok: true, data });
 
@@ -125,7 +128,29 @@ export const FIXTURES: Record<string, { platform: string; data: ParseData }> = {
       avatar: swatch(20, 96, 96),
       cover: XHS_IMAGES[0],
       images: XHS_IMAGES,
+      // 作品 ID：让预览里的「来源」也是官方笔记页，而不是用户贴进来的短链
+      noteId: "66f0c1d2000000001e012345",
       stat: { view: 48200, like: 6120, reply: 380, favorite: 2900 },
+    },
+  },
+  // 混合形态夹具：视频 + 图片 + 发布时间同时在场。旧的互斥分类会把它判成其中一种，
+  // 通用骨架必须两样都留（业主点名的「有的是视频+图片」）。
+  weibo: {
+    platform: "weibo",
+    data: {
+      type: "video",
+      title: "坝上草原的秋：一条航拍 + 九张实拍",
+      desc: "视频是剪辑，图是同期拍的素材",
+      author: "草原观察员",
+      authorId: "6612345678",
+      avatar: swatch(150, 96, 96),
+      cover: swatch(150, 480, 300),
+      duration: 96,
+      url: "https://mirror.example/weibo/video.mp4",
+      images: [swatch(140), swatch(155), swatch(170)],
+      stat: { view: 231000, like: 18200, reply: 940, share: 1260 },
+      time: "2026-10-10T12:30:00+08:00",
+      ipRegion: "北京",
     },
   },
   douyin: {
@@ -152,6 +177,7 @@ export const FIXTURES: Record<string, { platform: string; data: ParseData }> = {
     data: {
       type: "video",
       title: "Building a mechanical keyboard from scratch — full build log",
+      videoId: "mgMockVid01",
       author: "Switch Lab",
       avatar: swatch(358, 96, 96),
       cover: swatch(12, 480, 270),
@@ -170,8 +196,8 @@ export const FIXTURES: Record<string, { platform: string; data: ParseData }> = {
       statsUnreliable: true,
     },
   },
-  qqmusic: {
-    platform: "qqmusic",
+  qsmusic: {
+    platform: "qsmusic",
     data: {
       type: "music",
       title: "晚风合唱团 · 山海（现场版）",
@@ -265,6 +291,9 @@ function makeTask(item: DownloadItem, groupId: string, input: EnqueueInput, i: n
     received: 0,
     total: sizeOf(item.kind, i),
     speed: 0,
+    // 平均速度的采样对（契约 v18）：tick 只在 downloading 时累加，暂停期间不长
+    transferMs: 0,
+    transferBytes: 0,
     platform: input.meta?.platform,
     title: input.meta?.title,
     sourceUrl: input.meta?.sourceUrl,
@@ -310,6 +339,8 @@ function rememberParse(outcome: ParseRunOutcome, sourceUrl: string | undefined):
     platform: outcome.result.platform,
     title: outcome.result.data?.title ?? outcome.result.data?.desc,
     author: buildAuthorSnapshot(outcome.result.data),
+    publishedAt: pickPublishedAt(outcome.result.data),
+    stat: pickWorkStat(outcome.result.data),
     fallbackId: `p-${Date.now().toString(36)}`,
     at: Date.now(),
   });
@@ -416,7 +447,7 @@ function mockStats(): StatsSnapshot {
   const addParse = (
     at: number,
     platform: string,
-    via: "local" | "online" | "mock",
+    via: "local" | "mock",
     okParse: boolean,
     ms: number
   ): void => {
@@ -442,7 +473,7 @@ function mockStats(): StatsSnapshot {
         8_000_000 + ((back * 3 + i) % 40) * 4_500_000,
         1_200 + ((back + i) % 20) * 900
       );
-      addParse(at, platform, i % 6 === 5 ? "online" : "local", i % 7 !== 3, 90 + ((back + i) % 12) * 55);
+      addParse(at, platform, "local", i % 7 !== 3, 90 + ((back + i) % 12) * 55);
     }
     for (let f = 0; f < (back % 3); f++) {
       addFailure(dayStart.getTime() - back * DAY + 21 * 3_600_000, keys[(back + f) % keys.length]);
@@ -463,11 +494,16 @@ function tick(): void {
   for (const t of tasks) {
     if (t.status !== "downloading") continue;
     t.received = Math.min(t.total, t.received + t.speed * stepSec);
+    // 与主进程同口径：只有真正在传的这段时长进平均速度的分母；暂停的 tick 根本不走这里
+    t.transferMs += stepSec * 1000;
+    t.transferBytes = t.received;
     const boom = failAt.get(t.taskId);
     if (boom !== undefined && t.received >= boom) {
       t.status = "error";
       t.speed = 0;
-      t.error = "HTTP 403 Forbidden（直链已过期，重新解析后再下载）";
+      // 「过期」归 note（主进程已换过一次链），error 只留服务器原话
+      t.error = "HTTP 403 Forbidden";
+      t.note = "直链已过期，已自动重新取链后仍失败";
       emit("error", t);
       continue;
     }
@@ -495,7 +531,8 @@ function seedQueue(): void {
     meta: { platform: "redbook", title: "秋日通勤穿搭｜九张图拆到单品", sourceUrl: "https://xhslink.com/mock" },
   };
   const gid = "g-seed-1";
-  const seedStates = ["done", "done", "error", "downloading", "queued"] as const;
+  // 最后一条刻意是 paused：评审「暂停时保留速度与剩余」不用先去点一下暂停
+  const seedStates = ["done", "done", "error", "downloading", "paused"] as const;
   seedStates.forEach((status, i) => {
     const t = makeTask(
       { url: `https://mirror.example/xhs/${i}.jpg`, filename: `秋日通勤穿搭-${i + 1}.jpg`, kind: "image" },
@@ -508,14 +545,28 @@ function seedQueue(): void {
       t.received = t.total;
       t.filePath = `D:\\Downloads\\${t.filename}`;
       t.finishedAt = Date.now() - (i + 1) * 47_000;
+      // 完成行的平均速度 = transferBytes ÷ transferMs（契约 v18）。预览里把「传输时长」
+      // 设成 20s 上下，创建时刻同时前移 —— 两个时间都要早于完成时刻才对得上台账
+      t.createdAt = t.finishedAt - 20_000 - i * 3_000;
+      t.transferMs = 20_000 + i * 3_000;
+      t.transferBytes = t.total;
     }
     if (status === "error") {
       t.received = t.total * 0.62;
-      t.error = "HTTP 403 Forbidden（直链已过期，重新解析后再下载）";
+      t.error = "HTTP 403 Forbidden";
+      t.note = "直链已过期，已自动重新取链后仍失败";
     }
     if (status === "downloading") {
       t.speed = speedOf("image");
       t.received = t.total * 0.34;
+    }
+    if (status === "paused") {
+      // 暂停快照（契约 v17）：speed 留着不清，速度列与剩余列都按它结算
+      t.speed = speedOf("image");
+      t.received = t.total * 0.52;
+      // 已经传了的这一截也带着自己的时长（v18）：继续下完时平均速度才对得上
+      t.transferBytes = t.received;
+      t.transferMs = (t.received / t.speed) * 1000;
     }
     tasks.push(t);
   });
@@ -533,14 +584,26 @@ function seedQueue(): void {
   video.received = video.total * 0.18;
   tasks.push(video);
 
-  // 一条带作者快照、一条不带 —— 后者用来评审老记录（本版本之前写入）的优雅降级
-  const seeds: Array<{ platform: string; title: string; kind: string; bytes: number; file: string; author?: AuthorSnapshot }> = [
+  // 一条带作者快照、一条不带 —— 后者用来评审老记录（本版本之前写入）的优雅降级：
+  // 缺作者、缺发布时间、缺互动计数，导出时那几格应当留空而不是补一个假值
+  const seeds: Array<{
+    platform: string;
+    title: string;
+    kind: string;
+    bytes: number;
+    file: string;
+    author?: AuthorSnapshot;
+    publishedAt?: number;
+    stat?: WorkStat;
+  }> = [
     {
       platform: "bilibili",
       title: "【4K 修复】二十年前的城市夜景胶片",
       kind: "video",
       bytes: 96 * MB,
       file: "二十年前的城市夜景胶片-1080P.mp4",
+      publishedAt: Date.now() - 40 * 86_400_000,
+      stat: { view: 1_284_503, danmaku: 8_421, like: 98_200, reply: 3_120, favorite: 46_800, coin: 21_500, share: 9_800 },
       author: {
         name: "胶片修复所",
         id: "19324001",
@@ -553,7 +616,7 @@ function seedQueue(): void {
       },
     },
     {
-      platform: "qqmusic",
+      platform: "qsmusic",
       title: "晚风合唱团 · 山海（现场版）",
       kind: "audio",
       bytes: 6.4 * MB,
@@ -570,6 +633,8 @@ function seedQueue(): void {
       files: [`D:\\Downloads\\${s.file}`],
       sourceUrl: `https://${s.platform}.example.com/mock`,
       author: s.author,
+      publishedAt: s.publishedAt,
+      stat: s.stat,
       createdAt: Date.now() - 36 * 3600_000,
     });
   }
@@ -768,15 +833,16 @@ const mockBridge: MgBridge = {
       });
     }
     const fx = FIXTURES[key] ?? FIXTURES.douyin;
-    const online = t.includes("online");
+    const rawUrl = text.match(URL_RE)?.[0];
     const outcome: ParseRunOutcome = {
       // 平台按识别结果标：夹具正文只是替身，界面要画的是用户贴进来的那个平台
       result: { code: 200, msg: "解析成功", platform: key, data: structuredClone(fx.data) },
-      via: online ? "online" : "local",
-      fallbackReason: online ? "本地解析器未取得 vkey，已转线上回落通道" : undefined,
-      durationMs: online ? 2140 : key === "redbook" ? 38 : 168,
+      via: "local",
+      durationMs: key === "redbook" ? 38 : 168,
+      // 真实资源页（与主进程同一口径）：夹具带作品 ID 时拼官方页面，否则保留输入链接
+      sourceUrl: pageUrlFromData(key, fx.data) ?? rawUrl,
     };
-    rememberParse(outcome, text.match(URL_RE)?.[0]);
+    rememberParse(outcome, outcome.sourceUrl);
     return ok<ParseRunOutcome>(outcome);
   },
 
@@ -806,7 +872,8 @@ const mockBridge: MgBridge = {
       const t = tasks.find((x) => x.taskId === taskId);
       if (t && (t.status === "downloading" || t.status === "queued")) {
         t.status = "paused";
-        t.speed = 0;
+        // 与主进程同语义（契约 v17）：speed 是暂停那一刻的快照，暂停后不清 —— 清了速度列与剩余列
+        // 就一起变成「—」，暂停的行再也说不出「当时多快、还差多久」
         emit("progress", t);
         promote(settings.maxConcurrent);
       }
@@ -816,6 +883,7 @@ const mockBridge: MgBridge = {
       const t = tasks.find((x) => x.taskId === taskId);
       if (t && (t.status === "paused" || t.status === "error" || t.status === "canceled")) {
         t.status = "queued";
+        t.speed = 0; // 快照的寿命到「继续」为止：重新连上游时报旧速度就是说谎
         failAt.delete(taskId);
         t.error = undefined;
         promote(settings.maxConcurrent);
@@ -862,6 +930,13 @@ const mockBridge: MgBridge = {
       settings = { ...settings, ...patch, cookies };
       return ok(structuredClone(settings));
     },
+    // 假桥不开窗：延迟一拍后按「已登录」返回，并把该键置成掩码——
+    // 只为让「抓取 → 已配置 → 保存」在预览里走得通，不代表真实抓取成功率。
+    cookieLogin: async ({ cookieKey }) => {
+      await new Promise((r) => setTimeout(r, 400));
+      settings = { ...settings, cookies: { ...settings.cookies, [cookieKey]: "***" } };
+      return ok({ captured: true, reason: "captured" as const });
+    },
   },
 
   history: {
@@ -871,17 +946,14 @@ const mockBridge: MgBridge = {
       if (filter?.limit) rows = rows.slice(0, filter.limit);
       return ok(rows);
     },
-    // 与主进程 store.removeHistory 同口径：行键命中条目 id 或其 groupId 都删（选一行删整组）
+    // 与主进程 store.removeHistory 同口径：行键命中条目 id 或其 groupId 都删（选一行删整组）。
+    // 界面上的「清空」也走这条（表头全选 = 可见全部行），v9 起没有独立的 clear 通道。
     remove: async (keys) => {
       const drop = new Set(keys);
       const kept = history.filter((h) => !(drop.has(h.id) || (h.groupId && drop.has(h.groupId))));
       history.length = 0;
       history.push(...kept);
       return ok(kept.map((h) => ({ ...h })));
-    },
-    clear: async () => {
-      history.length = 0;
-      return ok({ ok: true });
     },
   },
 
@@ -892,9 +964,6 @@ const mockBridge: MgBridge = {
       const able = (key: string): string[] => {
         const list: string[] = [];
         if (engineCoverage(key, "parseCore") === "ready") list.push("本地内核");
-        if (settings.fallbackOnline && engineCoverage(key, "onlineApi") === "ready") {
-          list.push("线上 API");
-        }
         return list;
       };
       const rows: EngineHealth[] = PLATFORMS.map((p, i) => {
@@ -954,6 +1023,13 @@ const mockBridge: MgBridge = {
     },
     openLogDir: async () => ok({ ok: true }),
     openExternal: async () => ok({ ok: true }),
+    // dev 预览跑在普通浏览器里（127.0.0.1 是安全上下文，且没有主进程那条 deny-all 权限钩子），
+    // 所以这里直接写系统剪贴板：预览里点复制要真的复制得到，否则评审看不到成功态。
+    // 写失败按原样 reject —— 调用方与真应用走同一条 catch 分支。
+    copyText: async (text) => {
+      await navigator.clipboard.writeText(text);
+      return ok({ ok: true });
+    },
     log: async () => ok({ ok: true }),
     update: {
       state: async () => ok(updateSnapshot()),

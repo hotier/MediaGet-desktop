@@ -62,7 +62,10 @@ export type QualityStrategy = "main" | "highest" | "lowest";
 
 export function buildQualityPlan(data?: ParseData, strategy: QualityStrategy = "main"): QualityPlan {
   if (!data) return { options: [], primaryIndex: 0 };
-  const options: QualityOption[] = (data.qualities ?? []).map((q) => ({
+  // B站只把档位挂在分 P 上（`data.qualities` 为空，顶层也没有 qualityLabel）：
+  // 拿主视频那组当可选项，否则选择器永远只有「默认」一项、整块被隐藏。
+  const source = data.qualities?.length ? data.qualities : (data.videos?.[0]?.qualities ?? []);
+  const options: QualityOption[] = source.map((q) => ({
     label: qualityLabel(q),
     url: q.url,
     suffix: `-${qualityLabel(q)}`,
@@ -232,36 +235,56 @@ export function buildFilename(
 }
 
 /**
- * 资源形态：决定结果卡长什么样。
+ * 内容构成：结果卡按「手上实际有哪些东西」叠加区块，而不是给每个平台猜一个互斥形态。
  *
- * 为什么不直接用契约的 `data.type`：那个字段是平台各自填的，同一形态在不同平台会填出
- * 不同值（抖音图集见过返回 `text`），不可作为布局依据。这里只认**实际拿到的媒体数组**——
- * 用户最终下到什么东西，卡片就该按那个东西组织。
+ * 旧 `deriveShape` 是单选枚举：一条结果同时有视频和图片时只能归到一边，于是「单视频 + 图集」
+ * 会被判成图集、视频主视觉直接消失。这里把三样媒体分开数，卡片按构成叠图集条 / 多 P 清单 /
+ * 音频行 / 纯文字块 —— 同一套骨架因此能接住所有平台与组合。
+ *
+ * 不读契约的 `data.type`：那是平台各自填的，同一形态在不同平台会填出不同值
+ * （抖音图集见过返回 `text`），只有 `url` / `videos` / `images` / `audioUrl` 是实打实的。
  */
-export type ResourceShape =
-  | "single-video"
-  | "multi-video"
-  | "gallery"
-  | "audio"
-  | "text";
+export interface ResourceMix {
+  /** 去重后的视频条目数（主直链 + `videos[]`，同一条只算一次；主直链是图集首图时不算视频） */
+  videoCount: number;
+  imageCount: number;
+  hasAudio: boolean;
+  /** 没有任何可下载媒体（embedOnly 也归这一类，由卡片另走「去浏览器播放」） */
+  textOnly: boolean;
+  /** 主视频：`videos[0]`，没有则主直链；主视觉的预览入口与多 P 清单都从它开始 */
+  primaryVideo?: { title?: string; url: string; durationFormat?: string; duration?: number };
+  /** 主视觉：平台封面 → 首张图 → 首个分 P 封面 → 音乐封面 */
+  cover?: string;
+}
 
-export const SHAPE_LABEL: Record<ResourceShape, string> = {
-  "single-video": "单视频",
-  "multi-video": "多视频",
-  gallery: "图集",
-  audio: "音频",
-  text: "文字",
-};
-
-export function deriveShape(data?: ParseData): ResourceShape {
-  if (!data) return "text";
+export function describeResourceMix(data?: ParseData): ResourceMix {
+  if (!data) return { videoCount: 0, imageCount: 0, hasAudio: false, textOnly: true };
   const videos = (data.videos ?? []).filter((v) => Boolean(v.url));
   const images = (data.images ?? []).filter(Boolean);
-  if (videos.length > 1) return "multi-video";
-  if (images.length > 0) return "gallery";
-  if (data.audioUrl && !data.url && videos.length === 0) return "audio";
-  if (data.url || videos.length === 1) return "single-video";
-  return "text";
+  // 图集帖子把首张图同时写成主直链（内核微博分支 `url = images[0]`）：那条不是视频。
+  // 判据只看「这条 url 在不在 images 里」，不按平台或 `type` 猜——契约的 type 各平台填法不一。
+  const mainIsImage = isGalleryMain(data);
+  const videoUrls = new Set<string>();
+  if (data.url && !mainIsImage) videoUrls.add(data.url);
+  for (const v of videos) videoUrls.add(v.url);
+  return {
+    videoCount: videoUrls.size,
+    imageCount: images.length,
+    hasAudio: Boolean(data.audioUrl),
+    textOnly: videoUrls.size === 0 && images.length === 0 && !data.audioUrl,
+    primaryVideo: videos[0] ?? (data.url && !mainIsImage ? { url: data.url } : undefined),
+    cover: data.cover ?? images[0] ?? videos[0]?.cover ?? videos[0]?.pic ?? data.music?.avatar,
+  };
+}
+
+/**
+ * 主直链是不是「图集的第一张图」：真就代表这份结果没有主视频，只有图。
+ *
+ * `buildPlan` 与 `describeResourceMix` 必须同一条判据 —— 一边算视频、另一边照样下成 `.mp4`
+ * 的话，图集的第一张会以一个打不开的文件进队列，比显示错更难被发现。
+ */
+function isGalleryMain(data: ParseData): boolean {
+  return Boolean(data.url) && (data.images ?? []).includes(data.url as string);
 }
 
 /**
@@ -284,7 +307,9 @@ export function buildPlan(
   const out: PlanEntry[] = [];
 
   const mainUrl = chosen.url ?? data.url;
-  if (!chosen.audio && mainUrl) {
+  // 图集帖的主直链就是首张图：它由下面的 images 循环以 `.jpg` 落盘，这里再当视频展开，
+  // 第一张图就会变成一个打不开的 `.mp4`（判据与 describeResourceMix 同一份）
+  if (!chosen.audio && mainUrl && !isGalleryMain(data)) {
     out.push({
       id: "main",
       label: `视频 · ${chosen.label}`,
@@ -308,30 +333,33 @@ export function buildPlan(
     });
   }
 
-  (data.videos ?? []).forEach((v, i) => {
-    // 想要哪一档写在 suffix 上（默认项也可能带档位，例如主 url 就是 1080P）
-    const wanted = chosen.suffix ? chosen.suffix.slice(1) : undefined;
-    const hit = wanted ? v.qualities?.find((q) => qualityLabel(q) === wanted) : undefined;
-    const url = hit?.url ?? v.url;
-    if (!url) return;
-    out.push({
-      id: `p-${i}`,
-      label: `分 P ${i + 1}${v.title ? ` · ${v.title}` : ""}`,
-      kind: "video",
-      url,
-      filename: buildFilename(
-        {
-          title,
-          author,
-          qualitySuffix: hit ? chosen.suffix : undefined,
-          indexSuffix: `-P${i + 1}`,
-          ext: ".mp4",
-        },
-        naming
-      ),
-      fallbackNote: wanted && !hit ? `无 ${wanted}，用默认清晰度` : undefined,
+  // 「仅音频」是排他档：主视频已跳过，分 P 的视频也不能再进来（否则按钮上会写 4 项）
+  if (!chosen.audio) {
+    (data.videos ?? []).forEach((v, i) => {
+      // 想要哪一档写在 suffix 上（默认项也可能带档位，例如主 url 就是 1080P）
+      const wanted = chosen.suffix ? chosen.suffix.slice(1) : undefined;
+      const hit = wanted ? v.qualities?.find((q) => qualityLabel(q) === wanted) : undefined;
+      const url = hit?.url ?? v.url;
+      if (!url) return;
+      out.push({
+        id: `p-${i}`,
+        label: `分 P ${i + 1}${v.title ? ` · ${v.title}` : ""}`,
+        kind: "video",
+        url,
+        filename: buildFilename(
+          {
+            title,
+            author,
+            qualitySuffix: hit ? chosen.suffix : undefined,
+            indexSuffix: `-P${i + 1}`,
+            ext: ".mp4",
+          },
+          naming
+        ),
+        fallbackNote: wanted && !hit ? `无 ${wanted}，用默认清晰度` : undefined,
+      });
     });
-  });
+  }
 
   (data.images ?? []).forEach((img, i) => {
     if (!img) return;
@@ -354,16 +382,4 @@ export function buildPlan(
 function dedupeByUrl(entries: PlanEntry[]): PlanEntry[] {
   const seen = new Set<string>();
   return entries.filter((e) => (seen.has(e.url) ? false : (seen.add(e.url), true)));
-}
-
-/** 计划摘要：视频 3 · 图 12 · 音频 */
-export function summarize(entries: PlanEntry[]): string {
-  const counts = { video: 0, image: 0, audio: 0, file: 0 };
-  for (const e of entries) counts[e.kind]++;
-  const parts: string[] = [];
-  if (counts.video) parts.push(`视频 ${counts.video}`);
-  if (counts.image) parts.push(`图 ${counts.image}`);
-  if (counts.audio) parts.push(`音频 ${counts.audio}`);
-  if (counts.file) parts.push(`文件 ${counts.file}`);
-  return parts.join(" · ");
 }

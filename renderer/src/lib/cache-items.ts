@@ -7,7 +7,7 @@
 import type { CacheItemKey } from "../../../types/ipc";
 
 export const CACHE_ITEMS: Array<{ key: CacheItemKey; label: string; hint: string }> = [
-  { key: "net", label: "网络缓存", hint: "解析与线上回落留下的 HTTP 副本；清掉只是让下次重新拉取，不动本机文件" },
+  { key: "net", label: "网络缓存", hint: "解析留下的 HTTP 副本；清掉只是让下次重新拉取，不动本机文件" },
   { key: "partials", label: "孤儿断点", hint: "下载目录里没人认领的 .part 续传文件；进行中的下载会被避让，不会被打断" },
   { key: "junk", label: "临时残留", hint: "配置原子写的半成品与坏档备份，正常路径下应为 0" },
   { key: "logs", label: "日志文件", hint: "见下方「日志」卡片；清理即删除当前文件与轮转出的历史分片" },

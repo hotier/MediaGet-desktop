@@ -406,6 +406,25 @@ body {
   --y: translateX(0) !important;
 }
 
+/* 预览弹窗的视频控制条：只留 播放 / 进度 / 音量 / 时间。
+ * `controlsList` 已按能力关掉下载、全屏、投屏与播放速度，但 Chromium 仍会在右端渲染
+ * 全屏与「⋮」两枚按钮的壳（菜单空了也不一定撤）；那是控件的 shadow DOM，外部只能靠
+ * 这组伪元素隐藏。Legacy 写法，但 Chromium 一直保留；本仓只跑 Electron，不做跨引擎降级。
+ * 用类名限定在预览视频上，别误伤将来别处的原生播放器。 */
+.preview-video::-webkit-media-controls-fullscreen-button,
+.preview-video::-webkit-media-controls-overflow-button {
+  display: none;
+}
+
+/* 播放/暂停挪到画面正中央（业主指令 2026-10-19）：原生控制条里那枚是 play/pause 合一的
+ * toggle 按钮，`controlsList` 关不掉单枚，只能用伪元素藏；中央那枚由 ResultCard 接管。
+ * `start-playback-button` 一并藏 —— 自动播放被系统拦下时它会自己冒出来，
+ * 不压住就会和中央按钮叠成两枚大图标。 */
+.preview-video::-webkit-media-controls-play-button,
+.preview-video::-webkit-media-controls-start-playback-button {
+  display: none;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

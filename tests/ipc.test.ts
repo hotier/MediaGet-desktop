@@ -14,12 +14,15 @@ import { createLogger } from "../electron/main/logger";
 import { JsonStore } from "../electron/main/store";
 import { createStats } from "../electron/main/stats";
 import { createUpdater } from "../electron/main/updater";
+import type { SourceUrlResolver } from "../electron/main/source-url";
 import { workKeyOf } from "../shared/history";
 import { IPC, type EngineHealth, type InvokeResult, type ParseResult } from "../types/ipc";
 
 type Handler = (event: unknown, input: unknown) => Promise<InvokeResult<unknown>>;
 
-function harness(opts: { forceMode?: KernelMode } = {}) {
+function harness(
+  opts: { forceMode?: KernelMode; resolveSourceUrl?: SourceUrlResolver } = {}
+) {
   const handlers = new Map<string, Handler>();
   const fakeIpc = {
     handle(channel: string, listener: Handler) {
@@ -32,9 +35,6 @@ function harness(opts: { forceMode?: KernelMode } = {}) {
   const engine = createEngine({
     readKernelConfig: (k) => store.getKernelValue(k),
     getThrottleMs: () => store.loadConfig().settings.throttleMs,
-    isFallbackEnabled: () => false, // 测试全离线
-    onlineFallback: async () => null,
-    // 开关读持久值（与 index.ts 同接线）：这条链路是 P2 的验收面，下面有用例钉它
     // 开关读持久值（与 index.ts 同接线）：这条链路是 P2 的验收面，下面有用例钉它
     getPlatformSwitches: () => store.loadConfig().settings.platformSwitches,
     // 假内核：只声明 kuaishou 覆盖，探测/解析通道全部离线可控
@@ -110,6 +110,8 @@ function harness(opts: { forceMode?: KernelMode } = {}) {
     store,
     getAppMeta: () => ({ version: "0.0.0-test", electron: "44" }),
     kernelMode: () => "local",
+    // 来源链接归一：缺省离线桩（原样返回），跟跳行为归 source-url.test.ts（禁真网络）
+    resolveSourceUrl: opts.resolveSourceUrl ?? (async ({ raw }) => raw ?? undefined),
     getFonts: async () => ["Arial", "Segoe UI", "微软雅黑"],
     writeClipboard: (text) => clipboardWrites.push(text),
     logger,
@@ -596,6 +598,23 @@ describe("IPC 信封与校验", () => {
     // 同一条链接再解析一次 = 刷新那一行，历史页不许长成「重复解析的堆」
     await call(IPC.parseRun, { text });
     expect(store.loadHistory()).toHaveLength(1);
+    cleanup();
+  });
+
+  it("来源链接归一后的真实页面同时进历史与出参（v16：短链不再是历史键）", async () => {
+    const resolved = "https://www.kuaishou.com/short-video/7400000000000000001";
+    const { call, store, cleanup } = harness({ resolveSourceUrl: async () => resolved });
+    const text = "https://v.kuaishou.com/abc";
+    const r = await call(IPC.parseRun, { text });
+    if (!r.ok) throw new Error(`parse:run 应当受理，实际 ${JSON.stringify(r)}`);
+
+    expect((r.data as { sourceUrl?: string }).sourceUrl).toBe(resolved);
+    const list = store.loadHistory();
+    expect(list).toHaveLength(1);
+    // 历史行与作品键都从真实页面算出：解析行与后续下载行才会聚成同一行
+    expect(list[0].sourceUrl).toBe(resolved);
+    expect(list[0].id).toBe(workKeyOf(resolved));
+    expect(list[0].groupId).toBe(workKeyOf(resolved));
     cleanup();
   });
 

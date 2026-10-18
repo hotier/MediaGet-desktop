@@ -1,14 +1,14 @@
 /**
- * 引擎测试：本地识别（真内核纯模块）、黑名单拦截、mock 兜底、核心本地通道、线上回落通道。
+ * 引擎测试：本地识别（真内核纯模块）、黑名单拦截、mock 兜底、本地通道。
  * 全程无外网：默认注入「零覆盖假核」（localParserKeys=[]，任何平台都不走本地），
  * 本地通道用例用可控假核断言 unifiedParseLocal 的走线与出参。
  */
 import { describe, expect, it } from "vitest";
 import { createEngine, type CoreEntry } from "../electron/main/engine";
 import { PLATFORMS } from "../shared/platforms";
-import type { ParseResult } from "../types/ipc";
+import { ParseResultSchema } from "../types/ipc-contract";
 
-/** 零覆盖假核：本地通道永不 Eligible → 走线只可能 online/mock */
+/** 零覆盖假核：本地通道永不 Eligible → 走线只可能 mock */
 const emptyCore = (): CoreEntry => ({
   unifiedParseLocal: async () => ({ code: 500, msg: "不应被调用" }),
   localParserKeys: () => [],
@@ -18,8 +18,6 @@ function makeEngine(overrides: Partial<Parameters<typeof createEngine>[0]> = {})
   return createEngine({
     readKernelConfig: () => undefined,
     getThrottleMs: () => 0,
-    isFallbackEnabled: () => true,
-    onlineFallback: async () => null,
     coreLoader: async () => emptyCore(),
     ...overrides,
   });
@@ -58,86 +56,79 @@ describe("identify（本地纯识别，零网络）", () => {
 
 describe("parse 通道选择", () => {
   it("DRM 黑名单本地即拦截，不发起任何抓取", async () => {
-    let fallbackCalls = 0;
+    let coreRuns = 0;
     const e = makeEngine({
-      onlineFallback: async () => {
-        fallbackCalls++;
-        return null;
-      },
+      coreLoader: async () => ({
+        unifiedParseLocal: async () => {
+          coreRuns++;
+          return { code: 200, msg: "不该被解" };
+        },
+        localParserKeys: () => ["douyin"],
+      }),
     });
     const r = await e.parse("https://v.qq.com/x/cover/abc.html");
     expect(r.result.code).toBe(400);
     expect(r.result.msg).toContain("腾讯视频");
-    expect(fallbackCalls).toBe(0);
+    expect(coreRuns).toBe(0);
     expect(r.via).toBe("local");
   });
 
-  it("注册表未覆盖该平台（假核零覆盖）→ 线上回落通道 via=online", async () => {
-    const online: ParseResult = {
-      code: 200,
-      msg: "解析成功",
-      platform: "douyin",
-      data: { title: "t", url: "https://cdn.douyin.com/a.mp4", type: "video" },
-    };
-    const e = makeEngine({ onlineFallback: async () => online });
-    const r = await e.parse("https://v.douyin.com/xxxx/");
-    expect(r.via).toBe("online");
-    expect(r.result.code).toBe(200);
-    expect(r.result.data?.url).toBe("https://cdn.douyin.com/a.mp4");
-    expect(r.fallbackReason).toBeTruthy();
-  });
-
-  it("回落关闭 + 假核零覆盖 → mock 兜底且来源如实标注", async () => {
-    const e = makeEngine({ isFallbackEnabled: () => false });
+  it("注册表未覆盖该平台（假核零覆盖）→ mock 兜底且来源如实标注", async () => {
+    const e = makeEngine();
     const r = await e.parse("https://v.douyin.com/xxxx/");
     expect(r.via).toBe("mock");
     expect(r.result.msg).toContain("mock");
   });
 
-  it("结果缓存：第二次 parse 命中缓存（fallback 只调一次）", async () => {
+  it("结果缓存：第二次 parse 命中缓存（内核只调一次）", async () => {
     let calls = 0;
     const e = makeEngine({
-      onlineFallback: async () => {
-        calls++;
-        return { code: 200, msg: "ok", platform: "douyin", data: { url: "https://x/y.mp4" } };
-      },
+      coreLoader: async () => ({
+        unifiedParseLocal: async () => {
+          calls++;
+          return { code: 200, msg: "ok", data: { url: "https://x/y.mp4" } };
+        },
+        localParserKeys: () => ["douyin"],
+      }),
     });
     await e.parse("https://v.douyin.com/cache-me/");
     await e.parse("https://v.douyin.com/cache-me/");
     expect(calls).toBe(1);
   });
 
-  it("forceOnline 跳过缓存与本地通道", async () => {
+  it("skipCache 跳过缓存但引擎顺序不动（重试取新签名直链）", async () => {
     let calls = 0;
     const e = makeEngine({
-      onlineFallback: async () => {
-        calls++;
-        return { code: 200, msg: "ok", platform: "douyin", data: { url: "https://x/y.mp4" } };
-      },
+      coreLoader: async () => ({
+        unifiedParseLocal: async () => {
+          calls++;
+          return { code: 200, msg: "ok", data: { url: "https://x/y.mp4" } };
+        },
+        localParserKeys: () => ["douyin"],
+      }),
     });
-    await e.parse("https://v.douyin.com/fo/");
-    const r = await e.parse("https://v.douyin.com/fo/", undefined, undefined, { forceOnline: true });
+    await e.parse("https://v.douyin.com/fresh/");
+    const r = await e.parse("https://v.douyin.com/fresh/", undefined, undefined, { skipCache: true });
     expect(calls).toBe(2);
-    expect(r.via).toBe("online");
+    expect(r.via).toBe("local");
   });
 
   it("source+id 不支持平台给出明确提示", async () => {
-    const e = makeEngine({ isFallbackEnabled: () => false });
+    const e = makeEngine();
     const r = await e.parse("", "kuaishou", "123");
     expect(r.result.code).toBe(400);
     expect(r.result.msg).toContain("不支持通过 ID 解析");
   });
 
-  it("线上失败结果透传 failType", async () => {
+  it("本地内核失败结果透传 failType", async () => {
     const e = makeEngine({
-      onlineFallback: async () => ({
-        code: 403,
-        msg: "需登录",
-        failType: "bot-gated",
+      coreLoader: async () => ({
+        unifiedParseLocal: async () => ({ code: 403, msg: "需登录", failType: "bot-gated" }),
+        localParserKeys: () => ["redbook"],
       }),
     });
     const r = await e.parse("https://www.xiaohongshu.com/explore/abc");
-    expect(r.via).toBe("online");
+    expect(r.via).toBe("local");
     expect(r.result.failType).toBe("bot-gated");
     expect(r.result.code).toBe(403);
   });
@@ -151,26 +142,45 @@ describe("本地通道（注入可控假核，零网络）", () => {
   });
 
   it("核心 200 → via=local，平台字段补齐并进缓存", async () => {
-    let online = 0;
     const e = makeEngine({
       coreLoader: async () => coreReturning({ code: 200, msg: "解析成功", data: { url: "https://x/a.mp4" } }),
-      onlineFallback: async () => {
-        online++;
-        return null;
-      },
     });
     const r = await e.parse("https://v.douyin.com/loc/");
     expect(r.via).toBe("local");
     expect(r.result.code).toBe(200);
     expect(r.result.platform).toBe("douyin");
-    await e.parse("https://v.douyin.com/loc/");
-    expect(online).toBe(0);
   });
 
-  it("核心给出业务失败码（201）→ 如实透传，不降级线上", async () => {
+  /**
+   * 事故回归（2026-10-18）：内核只映射字段名、不收字段类型（`normalize-result.ts:118` 把
+   * bilibili 的数字 mid 写成 `user.uid as string`），脏值于是穿过 `parse:run` 的 passthrough
+   * 出参、被抄进历史档，再让整次 `history:list` 判成 contract-drift —— 满盘记录在屏幕上变空态。
+   * 收拢点排在 `cache.set` 之前，所以脏值出不了本文件，缓存里也只有干净那份。
+   */
+  it("假核带脏类型（数字 authorId、字符串计数）→ 出口收进契约形状，缓存里同样是干净的", async () => {
+    const e = makeEngine({
+      coreLoader: async () =>
+        coreReturning({
+          code: 200,
+          msg: "解析成功",
+          data: {
+            url: "https://x/a.mp4",
+            authorId: 402090056,
+            stat: { like: "5000", reply: "1.2万" },
+          },
+        }),
+    });
+    const first = await e.parse("https://v.douyin.com/dirty/");
+    expect(first.result.data?.authorId).toBe("402090056");
+    expect(first.result.data?.stat).toEqual({ like: 5000 });
+    expect(() => ParseResultSchema.parse(first.result)).not.toThrow();
+    const cached = await e.parse("https://v.douyin.com/dirty/");
+    expect(cached.result.data?.authorId).toBe("402090056");
+  });
+
+  it("核心给出业务失败码（201）→ 如实透传", async () => {
     const e = makeEngine({
       coreLoader: async () => coreReturning({ code: 201, msg: "视频已删除" }),
-      onlineFallback: async () => ({ code: 200, msg: "线上不该被调用" }),
     });
     const r = await e.parse("https://v.douyin.com/gone/");
     expect(r.via).toBe("local");
@@ -178,28 +188,17 @@ describe("本地通道（注入可控假核，零网络）", () => {
     expect(r.result.msg).toBe("视频已删除");
   });
 
-  it("核心返回异形结果（null）+ 回落开 → 按本地失败降级线上", async () => {
+  it("核心返回异形结果 → 明确 500，不把 null 递给 renderer", async () => {
     const e = makeEngine({
       coreLoader: async () => coreReturning(null),
-      onlineFallback: async () => ({ code: 200, msg: "ok", data: { url: "https://x/b.mp4" } }),
     });
     const r = await e.parse("https://v.douyin.com/weird/");
-    expect(r.via).toBe("online");
-    expect(r.fallbackReason).toContain("未返回有效解析结果");
-  });
-
-  it("核心返回异形结果 + 回落关 → 明确 500，不把 null 递给 renderer", async () => {
-    const e = makeEngine({
-      coreLoader: async () => coreReturning(undefined),
-      isFallbackEnabled: () => false,
-    });
-    const r = await e.parse("https://v.douyin.com/weird2/");
     expect(r.via).toBe("local");
     expect(r.result.code).toBe(500);
     expect(r.result.msg).toContain("本地内核未返回有效解析结果");
   });
 
-  it("source+id 模式走本地核心且未命中时兜底线上", async () => {
+  it("source+id 模式走本地核心，未命中如实返回失败", async () => {
     const seen: unknown[] = [];
     const e = makeEngine({
       coreLoader: async () => ({
@@ -209,17 +208,16 @@ describe("本地通道（注入可控假核，零网络）", () => {
         },
         localParserKeys: () => ["douyin"],
       }),
-      onlineFallback: async () => ({ code: 200, msg: "ok", data: { url: "https://x/c.mp4" } }),
     });
     const r = await e.parse("", "douyin", "1234567890123456789");
     expect(seen[0]).toEqual(["", { source: "douyin", id: "1234567890123456789" }]);
-    expect(r.via).toBe("online");
+    expect(r.via).toBe("local");
+    expect(r.result.code).toBe(404);
   });
 });
 
 describe("供给闸门（注册表开关在引擎被调用之前生效）", () => {
   it("关掉的平台：任何引擎都不许被调用，答复里给出去哪儿开", async () => {
-    let online = 0;
     let coreLoads = 0;
     let coreRuns = 0;
     const e = makeEngine({
@@ -234,10 +232,6 @@ describe("供给闸门（注册表开关在引擎被调用之前生效）", () =
           localParserKeys: () => ["douyin"],
         };
       },
-      onlineFallback: async () => {
-        online++;
-        return { code: 200, msg: "ok" };
-      },
     });
     const r = await e.parse("https://v.douyin.com/off/");
     expect(r.result.code).toBe(400);
@@ -247,7 +241,6 @@ describe("供给闸门（注册表开关在引擎被调用之前生效）", () =
     // 闸门在引擎层之前：内核模块不该被求值，更不该发抓取
     expect(coreLoads).toBe(0);
     expect(coreRuns).toBe(0);
-    expect(online).toBe(0);
   });
 
   it("默认开：同一个链接照解（开关表为空 = 跟随注册表）", async () => {
@@ -262,7 +255,7 @@ describe("供给闸门（注册表开关在引擎被调用之前生效）", () =
   });
 
   it("未登记的键不被闸门拦下，也不被注册表改写：交给引擎判定，判定不了就 mock", async () => {
-    const e = makeEngine({ isFallbackEnabled: () => false });
+    const e = makeEngine();
     const r = await e.parse("https://nowhere.example/v/1", undefined, undefined, {
       platformHint: "brandNewPlatform",
     });
@@ -272,9 +265,8 @@ describe("供给闸门（注册表开关在引擎被调用之前生效）", () =
 });
 
 describe("health 矩阵（注册表 × 在场引擎 × 开关）", () => {
-  it("假核只覆盖 kuaishou + 回落关：kuaishou 可解、douyin 无引擎、关掉的平台另说", async () => {
+  it("假核只覆盖 kuaishou：kuaishou 可解、douyin 无引擎、关掉的平台另说", async () => {
     const e = makeEngine({
-      isFallbackEnabled: () => false,
       coreLoader: async () => ({
         unifiedParseLocal: async () => ({}),
         localParserKeys: () => ["kuaishou"],
@@ -293,17 +285,15 @@ describe("health 矩阵（注册表 × 在场引擎 × 开关）", () => {
     expect(rows.length).toBe(PLATFORMS.length);
   });
 
-  it("回落在场时线上 API 计入可解引擎（注册表 onlineApi=ready 的平台）", async () => {
+  it("本地内核是唯一在场引擎：假核零覆盖时全表不可解，不再有「线上 API」通道", async () => {
     const e = makeEngine({
       coreLoader: async () => ({ unifiedParseLocal: async () => ({}), localParserKeys: () => [] }),
     });
     const rows = await e.health();
+    expect(rows.every((r) => !r.ok)).toBe(true);
+    expect(rows.every((r) => !(r.detail ?? "").includes("线上 API"))).toBe(true);
     const dy = rows.find((r) => r.platform === "douyin");
-    expect(dy?.ok).toBe(true);
-    expect(dy?.detail).toContain("线上 API");
-    const qsm = rows.find((r) => r.platform === "qsmusic");
-    // 汽水音乐：本地有 parser（假核没覆盖所以这里不算），线上通道注册表是 unknown → 不可解
-    expect(qsm?.ok).toBe(false);
+    expect(dy?.detail).toContain("无引擎");
   });
 
   it("localCoverage 至少含 kuaishou（真核注册表冒烟，导入不发网络）", async () => {
@@ -311,14 +301,13 @@ describe("health 矩阵（注册表 × 在场引擎 × 开关）", () => {
     const e = createEngine({
       readKernelConfig: () => undefined,
       getThrottleMs: () => 0,
-      isFallbackEnabled: () => false,
     });
     const keys = await e.localCoverage();
     expect(keys).toContain("kuaishou");
-    // 桌面化一致：识别面 20 平台全部本地覆盖，不再依赖线上回落补全
-    expect(keys.length).toBeGreaterThanOrEqual(20);
+    // 1.0.0 下线 7 平台与 QQ 音乐后，识别面 = 12 平台 + 内核漏登记的 qsmusic
+    expect(keys.length).toBe(13);
     expect(keys).toEqual(
-      expect.arrayContaining(["douyin", "bilibili", "redbook", "twitter", "qqmusic"])
+      expect.arrayContaining(["douyin", "bilibili", "redbook", "twitter", "qsmusic"])
     );
   });
 });

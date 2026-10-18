@@ -82,7 +82,8 @@ describe("浮层「文件」行不吃图标按钮、默认只摊开一个", () =
   const HISTORY = src("renderer/src/pages/HistoryPage.tsx");
 
   it("动作挂在路径上，行内不再出现图标按钮那套", () => {
-    expect(HISTORY).toMatch(/showInFolder\(dirOf\(f\)\)/);
+    // 定位到文件本身而不是所在目录（业主指令 2026-10-18）：`showItemInFolder` 就是「选中那个文件」
+    expect(HISTORY).toMatch(/showInFolder\(f\)/);
     expect(HISTORY).not.toMatch(/aria-label="打开位置"/);
     expect(HISTORY).not.toMatch(/size="icon-sm"/);
   });

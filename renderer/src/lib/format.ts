@@ -42,6 +42,19 @@ export function fmtSpeed(bytesPerSec: number | null): string {
   return `${fmtBytes(bytesPerSec)}/s`;
 }
 
+/**
+ * 完成行的**平均速度**：已下字节 ÷ 耗时（毫秒）。
+ * 分母由调用方给，且必须是**实际传输时长**（队列页给 `transferMs`，统计页的 `elapsedMs`
+ * 也是同一口径，契约 v18）—— 拿 `finishedAt − createdAt` 当分母会把暂停与排队算成下载时间，
+ * 暂停一晚上的文件会被算成几十 KB/s。
+ * 缺样本（旧档没这两个计数器）/ 耗时为 0 时返回 null，由调用方渲染「—」而不是编一个 Infinity。
+ */
+export function avgSpeed(bytes: number, elapsedMs: number | null): number | null {
+  if (elapsedMs === null || !Number.isFinite(elapsedMs) || elapsedMs <= 0) return null;
+  if (!Number.isFinite(bytes) || bytes <= 0) return null;
+  return bytes / (elapsedMs / 1000);
+}
+
 const pad2 = (n: number): string => String(n).padStart(2, "0");
 
 /** 本地日历日序号；用 UTC 折叠掉时区/夏令时，只留「哪一天」 */
@@ -60,6 +73,37 @@ export function fmtCreated(ts: number, now: number = Date.now()): string {
   if (diff === 0) return `今天 ${time}`;
   if (diff === 1) return `昨天 ${time}`;
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ${time}`;
+}
+
+/**
+ * 发布日只到天（`2026-10-17`）。结果卡那行是「作品什么时候发的」，秒级精度没有信息量；
+ * 本机记下的解析时刻另走 `fmtCreated` —— 两个时间各叫各的，不合并成一列。
+ */
+export function fmtDate(ts: number): string {
+  const d = new Date(ts);
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/**
+ * 文件名用的紧凑时刻：`20261019000047`（年+月+日+时+分+秒，14 位）。
+ * 与 `fmtDate` / `fmtCreated` 分家：那两个是**给人读**的（带分隔符、可含中文字），
+ * 这个要进文件名 —— 不带空格、冒号与中文，也不会被文件系统的非法字符规则咬到。
+ * 精确到秒（业主指令 2026-10-19）：同一分钟内连导两档格式也会撞名，多两位就没这回事。
+ */
+export function fmtFileStamp(ts: number): string {
+  const d = new Date(ts);
+  const date = `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}`;
+  return `${date}${pad2(d.getHours())}${pad2(d.getMinutes())}${pad2(d.getSeconds())}`;
+}
+
+/**
+ * 到秒的时刻（HH:mm:ss）。结果卡用它报「解析于什么时候」——只陈述到手时刻，
+ * 不推断那条直链还剩多久：各家 CDN 的有效期差异极大（抖音播放链串上没有时间签名，
+ * 封面签名约 14 天），任何「还剩几分钟」的估算都是猜。
+ */
+export function fmtClock(ts: number): string {
+  const d = new Date(ts);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
 }
 
 /**

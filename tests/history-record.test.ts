@@ -9,7 +9,14 @@
  * 零依赖纯函数，所以不需要 DOM 也不需要临时目录。
  */
 import { describe, expect, it } from "vitest";
-import { isLanded, parseHistoryEntry, workKeyOf } from "../shared/history";
+import {
+  canonicalSourceUrl,
+  isLanded,
+  normalizeHistoryKeys,
+  parseHistoryEntry,
+  workKeyOf,
+} from "../shared/history";
+import type { HistoryEntry } from "../types/ipc";
 
 const SHARE = "https://v.kuaishou.com/abc";
 
@@ -40,13 +47,129 @@ describe("workKeyOf：链接 → 作品键", () => {
     const keys = new Set([
       workKeyOf("https://v.kuaishou.com/abc"),
       workKeyOf("https://v.kuaishou.com/xyz"), // 只差尾号
-      workKeyOf("https://v.kuaishou.com/abc?extra=1"), // 只差查询参数
+      workKeyOf("https://v.kuaishou.com/abc?extra=1"), // 认不出的参数仍参与身份
       workKeyOf("https://www.bilibili.com/video/BV1xx"),
       // 长 URL 也不能把差异挤出摘要：截断式 key 会在 200 字符后全部相同
       workKeyOf(`https://v.douyin.com/${"a".repeat(400)}`),
       workKeyOf(`https://v.douyin.com/${"a".repeat(400)}b`),
     ]);
     expect(keys.size).toBe(6);
+  });
+});
+
+describe("canonicalSourceUrl：同一条作品的不同复制形态归到同一个键", () => {
+  it("尾部斜杠不算另一个作品（本机真实重复行就是这一对）", () => {
+    expect(workKeyOf("https://www.bilibili.com/video/BV1VTYT6tEV2/")).toBe(
+      workKeyOf("https://www.bilibili.com/video/BV1VTYT6tEV2")
+    );
+  });
+
+  it("分享追踪参数被剔除，且不影响路径里的作品 ID", () => {
+    expect(canonicalSourceUrl("https://www.bilibili.com/video/BV1xx/?share_source=copy_web&vd_source=38f9d9e5bde97cc452a9493c3d2ec9b5")).toBe(
+      "bilibili.com/video/BV1xx"
+    );
+    expect(canonicalSourceUrl("https://www.xiaohongshu.com/explore/abc?xsec_token=x&xsec_source=pc_share&utm_source=wx")).toBe(
+      "xiaohongshu.com/explore/abc"
+    );
+    expect(canonicalSourceUrl("https://www.youtube.com/watch?v=abc&si=xyz&feature=share&t=30")).toBe(
+      "youtube.com/watch?v=abc"
+    );
+    expect(canonicalSourceUrl("https://www.instagram.com/p/abc/?igsh=zzz&img_index=1")).toBe(
+      "instagram.com/p/abc"
+    );
+  });
+
+  it("查询参数顺序、片段、协议、www/移动前缀都不进身份", () => {
+    expect(canonicalSourceUrl("https://weibo.com/a?b=2&a=1#comment")).toBe(
+      canonicalSourceUrl("http://m.weibo.com/a?a=1&b=2")
+    );
+    expect(canonicalSourceUrl("https://www.bilibili.com/video/BV1xx?p=2&vd_source=x")).toBe(
+      "bilibili.com/video/BV1xx?p=2"
+    );
+    // p=1 是默认分 P，与不带 p 等价
+    expect(workKeyOf("https://www.bilibili.com/video/BV1xx?p=1")).toBe(
+      workKeyOf("https://www.bilibili.com/video/BV1xx")
+    );
+  });
+
+  it("大小写敏感的作品 ID、YouTube 的 v、非默认分 P 仍算不同作品", () => {
+    expect(workKeyOf("https://www.bilibili.com/video/BV1xx")).not.toBe(
+      workKeyOf("https://www.bilibili.com/video/bv1xx")
+    );
+    expect(workKeyOf("https://www.youtube.com/watch?v=abc")).not.toBe(
+      workKeyOf("https://www.youtube.com/watch?v=xyz")
+    );
+    expect(workKeyOf("https://www.bilibili.com/video/BV1xx?p=2")).not.toBe(
+      workKeyOf("https://www.bilibili.com/video/BV1xx?p=3")
+    );
+  });
+
+  it("两端空白与零宽字符不影响键", () => {
+    expect(workKeyOf("\u200b  https://v.douyin.com/abc/ \n\ufeff")).toBe(
+      workKeyOf("https://v.douyin.com/abc")
+    );
+  });
+
+  it("认不出的查询参数保守保留：宁可多一行，不可合错一行", () => {
+    expect(canonicalSourceUrl("https://example.com/watch?id=7&utm_source=x")).toBe(
+      "example.com/watch?id=7"
+    );
+    expect(workKeyOf("https://example.com/watch?id=7&foo=1")).not.toBe(
+      workKeyOf("https://example.com/watch?id=7&foo=2")
+    );
+  });
+});
+
+describe("normalizeHistoryKeys：读侧给旧行补算键", () => {
+  const parseRow = (id: string, sourceUrl: string, at: number): HistoryEntry => ({
+    id,
+    groupId: id,
+    platform: "bilibili",
+    title: "同一个作品",
+    files: [],
+    sourceUrl,
+    createdAt: at,
+  });
+  const fileRow = (id: string, groupId: string, sourceUrl: string): HistoryEntry => ({
+    id,
+    groupId,
+    platform: "bilibili",
+    title: "同一个作品",
+    kind: "video",
+    files: [`/tmp/${id}.mp4`],
+    sourceUrl,
+    createdAt: 10,
+  });
+
+  it("旧解析行按归一后的键合并，只留最新一条", () => {
+    const key = workKeyOf("https://www.bilibili.com/video/BV1VTYT6tEV2") ?? "w-broken";
+    const list = normalizeHistoryKeys([
+      parseRow("w-newish", "https://www.bilibili.com/video/BV1VTYT6tEV2/", 300),
+      parseRow("w-old", "https://www.bilibili.com/video/BV1VTYT6tEV2", 100),
+    ]);
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ id: key, groupId: key, createdAt: 300 });
+  });
+
+  it("下载行只换 groupId，任务 id 与文件一条不少", () => {
+    const key = workKeyOf("https://www.bilibili.com/video/BV1xx/?vd_source=x") ?? "w-broken";
+    const list = normalizeHistoryKeys([
+      fileRow("dl-1", "w-stale-a", "https://www.bilibili.com/video/BV1xx"),
+      fileRow("dl-2", "w-stale-b", "https://www.bilibili.com/video/BV1xx/"),
+    ]);
+    expect(list.map((e) => e.id)).toEqual(["dl-1", "dl-2"]);
+    expect(list.map((e) => e.groupId)).toEqual([key, key]);
+  });
+
+  it("算不出键与本来就没键的行原样返回", () => {
+    const entry: HistoryEntry = {
+      id: "p-fallback",
+      platform: "bilibili",
+      title: "ID 直解",
+      files: [],
+      createdAt: 1,
+    };
+    expect(normalizeHistoryKeys([entry])).toEqual([entry]);
   });
 });
 

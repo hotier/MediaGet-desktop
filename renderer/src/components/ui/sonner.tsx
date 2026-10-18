@@ -57,6 +57,10 @@ function Toaster({ ...props }: ToasterProps): React.ReactElement {
     <Sonner
       theme={theme}
       position="top-right"
+      // 垂直下移：sonner 桌面默认 32px，紧贴窗控带与顶栏，读起来像贴在标题上；
+      // 56px 让 toast 落进内容区上沿（业主指令 2026-10-18「全局 toast 都往下移动一点」）。
+      // 只给 top，right/bottom/left 仍取 sonner 自己的默认值
+      offset={{ top: 56 }}
       // 浮层层级：压过 Radix 浮层（z-50）与底部 Sheet，但不与原生菜单争抢
       className="toaster group"
       icons={ICONS}

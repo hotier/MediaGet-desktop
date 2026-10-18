@@ -8,7 +8,7 @@
  * 提到纯函数就是为了这条规则可测（tests/history-works.test.ts），手法与
  * renderer/src/lib/history-selection.ts 同一档。
  */
-import type { AuthorSnapshot, HistoryEntry } from "../../../types/ipc";
+import type { AuthorSnapshot, HistoryEntry, WorkStat } from "../../../types/ipc";
 
 /** 界面里的一行 = 一个作品（同作品键的解析行与下载行聚合成它） */
 export interface WorkRow {
@@ -27,6 +27,13 @@ export interface WorkRow {
   files: string[];
   /** 文件字节总数（历史无 records 时 undefined，浮层不显示大小行） */
   bytes?: number;
+  /**
+   * 作品在平台上的发布时刻（本地毫秒）。界面不显示它（业主 2026-10-17 定「只在导出里」），
+   * 但必须穿过聚合层到 `WorkRow` —— 导出吃的就是这一行。
+   */
+  publishedAt?: number;
+  /** 解析那一刻的公开互动数快照；同样只进导出与复制文本，不进表格 */
+  stat?: WorkStat;
 }
 
 /**
@@ -58,6 +65,9 @@ export function groupWorks(list: HistoryEntry[]): WorkRow[] {
       authorName: author?.name || author?.id || undefined,
       files: g.flatMap((e) => e.files),
       bytes: bytesList.length > 0 ? bytesList.reduce((s, b) => s + b, 0) : undefined,
+      // 发布时间与计数只有解析行有（下载行不带平台元数据），同一条「逐字段取有值的行」规则
+      publishedAt: g.find((e) => e.publishedAt != null)?.publishedAt,
+      stat: g.find((e) => e.stat)?.stat,
     };
   });
 }

@@ -7,7 +7,8 @@
  * ③ 档位标签与顺序只有 `WORK_STAT_SLOTS` 一份（txt、结果卡、表格三档都读它）。
  */
 import { describe, expect, it } from "vitest";
-import { pickPublishedAt, pickWorkStat, toCount, WORK_STAT_SLOTS, workStatItems } from "../shared/work-stat";
+import { toCount } from "../shared/coerce";
+import { pickPublishedAt, pickWorkStat, WORK_STAT_SLOTS, workStatItems } from "../shared/work-stat";
 import type { ParseData, WorkStat } from "../types/ipc";
 
 /** 现在固定在 2026-01-05：单位换算的用例要的是「相对今天的量级」，不能让用例跟着日历漂 */
@@ -16,20 +17,20 @@ const SEC = Math.floor(NOW / 1000) - 3 * 86_400;
 const MS = NOW - 3 * 86_400_000;
 
 describe("toCount", () => {
-  it("只收非负有限数字与纯数字串", () => {
-    expect(toCount(0)).toBe(0);
+  it("只收正数有限数字与纯数字串", () => {
     expect(toCount(1234)).toBe(1234);
     expect(toCount("1234")).toBe(1234);
     expect(toCount(" 1234 ")).toBe(1234);
     expect(toCount("12.5")).toBe(12.5);
   });
 
-  it("缩水的写法一律留空，而不是近似值进表", () => {
+  it("缩水的写法一律留空，而不是近似值进表；0 也算没统计（结果卡不占位）", () => {
     expect(toCount("1.2万")).toBeUndefined();
     expect(toCount("5.6亿")).toBeUndefined();
     expect(toCount("")).toBeUndefined();
     expect(toCount("  ")).toBeUndefined();
     expect(toCount("abc")).toBeUndefined();
+    expect(toCount(0)).toBeUndefined();
     expect(toCount(-1)).toBeUndefined();
     expect(toCount(Number.NaN)).toBeUndefined();
     expect(toCount(Number.POSITIVE_INFINITY)).toBeUndefined();
@@ -60,6 +61,24 @@ describe("pickWorkStat", () => {
       share: 2,
     });
     expect(pickWorkStat({ channelViews: 4500 } as ParseData)).toEqual({ view: 4500 });
+  });
+
+  it("平铺的 likeCount 一档也进表（kuaishou 分支不写 stat，2026-10-19 核对）", () => {
+    // 内核 `extractVideoFromPhoto` 把五个计数原样平铺在 data 上，`stat` 一个都没有。
+    // 这条漏读时，结果卡与导出整排空白，而解析本身是成功的。
+    const snap = pickWorkStat({
+      likeCount: 1200,
+      commentCount: 88,
+      shareCount: 12,
+      viewCount: 45000,
+      forwardCount: 7,
+    } as ParseData);
+    expect(snap).toEqual({ like: 1200, reply: 88, share: 12, view: 45000, retweet: 7 });
+  });
+
+  it("stat 与平铺同场时 stat 优先，不因别名重复计数", () => {
+    const snap = pickWorkStat({ stat: { like: 20 }, likeCount: 999 } as ParseData);
+    expect(snap).toEqual({ like: 20 });
   });
 
   it("一档都没有 → undefined，而不是往历史里塞空对象", () => {
@@ -97,7 +116,7 @@ describe("pickPublishedAt", () => {
 
 describe("workStatItems", () => {
   it("档位顺序即 WORK_STAT_SLOTS 的顺序，缺的档不占位", () => {
-    expect(workStatItems({ favorite: 9, view: 1 }).map((s) => s.label)).toEqual(["播放", "收藏"]);
+    expect(workStatItems({ favorite: 9, view: 1 }).map((s) => s.label)).toEqual(["收藏", "播放"]);
     expect(workStatItems(undefined)).toEqual([]);
     expect(workStatItems({})).toEqual([]);
   });

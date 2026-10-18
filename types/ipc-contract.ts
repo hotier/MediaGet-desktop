@@ -17,6 +17,7 @@
  */
 import { z } from "zod";
 import { IPC } from "./ipc";
+import { COOKIE_LOGIN_KEYS, type CookieLoginKey } from "../shared/cookie-login";
 
 const STR = z.string();
 
@@ -37,9 +38,15 @@ export const ParsedVideoItemSchema = z.object({
   url: STR,
   duration: z.number().optional(),
   durationFormat: STR.optional(),
+  /** 本档直链的清晰度展示（微博每 P 一行） */
+  qualityLabel: STR.optional(),
   accept: z.array(STR).optional(),
   qualities: z.array(ParsedVideoQualitySchema).optional(),
   cover: STR.optional(),
+  /** 原始键并存（非契约）：B站 `video_url`，新消费方读 `url` */
+  video_url: STR.optional(),
+  /** 原始键并存：B站 `pic`，新消费方读 `cover` */
+  pic: STR.optional(),
 });
 
 export const ParseStatSchema = z.object({
@@ -58,6 +65,10 @@ export const ParseDataSchema = z
     title: STR.optional(),
     desc: STR.optional(),
     type: z.enum(["video", "image", "music", "text"]).optional(),
+    /**
+     * 视频时长，**毫秒**（内核硬口径：抖音/YouTube/tiktok/B站顶层与分P/X 均已在归一化时换算）。
+     * 消费方一律 `/1000`，不许再按量级猜单位——短片毫秒值会落在任何「大数才当毫秒」的阈值之下。
+     */
     duration: z.number().optional(),
     author: STR.optional(),
     authorId: STR.optional(),
@@ -84,26 +95,54 @@ export const ParseDataSchema = z
     videoCount: z.number().optional(),
     /** 频道累计播放（YouTube） */
     channelViews: z.number().optional(),
+    /** 作品数平铺位（`kuaishou` 的 `worksCount`；与 `videoCount` 同义，读侧归并） */
+    worksCount: z.number().optional(),
+    /** 作者简介平铺位（`kuaishou` 的 `authorSign`；与 `sign` 同义，读侧归并） */
+    authorSign: STR.optional(),
     name: STR.optional(),
     lyrics: STR.optional(),
     /** 音乐高潮片段（汽水音乐等） */
     core: STR.optional(),
+    /** 解析来源标记（快手 init-state / json-fragment、YouTube yt-dlp…，诊断用） */
+    source: STR.optional(),
     like: z.number().optional(),
+    favorite: z.union([z.number(), STR]).optional(),
+    reply: z.union([z.number(), STR]).optional(),
+    share: z.union([z.number(), STR]).optional(),
+    playCount: z.union([z.number(), STR]).optional(),
+    likeCount: z.union([z.number(), STR]).optional(),
+    commentCount: z.union([z.number(), STR]).optional(),
+    shareCount: z.union([z.number(), STR]).optional(),
+    collectionCount: z.union([z.number(), STR]).optional(),
+    /** 播放数（`kuaishou` 的 `photo.viewCount` 平铺位；与 `stat.view` 是同一档，读侧归并） */
+    viewCount: z.union([z.number(), STR]).optional(),
+    /** 转发数（`kuaishou` 的 `photo.forwardCount`；与 `retweets` 是同一档，读侧归并） */
+    forwardCount: z.union([z.number(), STR]).optional(),
+    /** 格式化时长，如 "00:02:59"（`duration` 的展示伴生字段） */
+    durationFormat: STR.optional(),
+    /** 笔记 / 帖子 ID（小红书等） */
+    noteId: STR.optional(),
     retweets: z.number().optional(),
     replies: z.number().optional(),
     views: z.number().optional(),
     time: z.union([z.number(), STR]).optional(),
+    /** IP 属地（微博等，发布时所在地） */
+    ipRegion: STR.optional(),
     uid: STR.optional(),
     awemeId: STR.optional(),
     followerCount: z.number().optional(),
     followingCount: z.number().optional(),
     totalFavorited: z.number().optional(),
+    /** 认证说明（微博桌面作者接口 `verified_reason`） */
+    verifiedReason: STR.optional(),
+    /** 作者微博总条数（微博桌面作者接口 `statuses_count`） */
+    statusesCount: z.number().optional(),
     statsUnreliable: z.boolean().optional(),
     music: z.object({ author: STR, title: STR.optional(), avatar: STR }).optional(),
   })
   .passthrough();
 
-/** 统一解析响应（IPC `parse:run` 的 data 载荷，与线上 API 契约同构） */
+/** 统一解析响应（IPC `parse:run` 的 data 载荷，与解析内核输出同构） */
 export const ParseResultSchema = z.object({
   code: z.number(),
   msg: STR,
@@ -124,8 +163,8 @@ export const ParseInputSchema = z.object({
   platformHint: STR.max(40).optional(),
   source: STR.max(40).optional(),
   id: STR.max(200).optional(),
-  /** 强制走线上回落（跳过本地），内测对比用 */
-  forceOnline: z.boolean().optional(),
+  /** 跳过 24h 结果缓存（重试取新签名直链用：缓存里存的正是会过期的那份） */
+  skipCache: z.boolean().optional(),
 });
 
 export const DownloadItemSchema = z.object({
@@ -211,10 +250,6 @@ export const AppSettingsSchema = z.object({
   downloadDir: STR,
   /** 并发上限 */
   maxConcurrent: z.number(),
-  /** 本地解析失败回落线上 API */
-  fallbackOnline: z.boolean(),
-  /** 线上 API 基址（默认站点，可换自建） */
-  onlineApiBase: STR,
   /** 用户自配 Cookie（键位沿用 mediaGet；出参侧永远是 "***"/"" 的脱敏视图） */
   cookies: z.record(STR, STR),
   /** 温和节流（毫秒，0=不限） */
@@ -274,6 +309,22 @@ export const AppSettingsSchema = z.object({
 /** 部分字段 set —— strict：未知键直接拒，避免把拼错的键当成「已保存」 */
 export const SettingsPatchSchema = AppSettingsSchema.partial().strict();
 
+/**
+ * settings:cookieLogin（v19）：打开登录窗口 → 登录后自动抓 Cookie。
+ *
+ * 入参只认 `shared/cookie-login.ts` 登记过的四个键：这条通道会在主进程开窗、读会话 Cookie
+ * 并直接写档，权限面比 settings:set 大，不能让它接受任意键名。
+ * 出参只有「抓到没有 + 原因」——**值永远不出主进程**（与 settings:get 的掩码同一条隐私契约）。
+ */
+export const CookieLoginInputSchema = z.object({
+  cookieKey: z.enum([...COOKIE_LOGIN_KEYS] as [CookieLoginKey, ...CookieLoginKey[]]),
+});
+
+export const CookieLoginResultSchema = z.object({
+  captured: z.boolean(),
+  reason: z.enum(["captured", "no-login", "timeout", "busy", "error"]),
+});
+
 /** app:listFonts 出参：本机已安装字体的 family 名数组（font-list 枚举，已去引号/去重/排序） */
 export const FontListSchema = z.array(STR.max(64));
 
@@ -325,6 +376,19 @@ export const PersistedQueueTaskSchema = z.object({
   sourceUrl: STR.optional(),
   author: AuthorSnapshotSchema.optional(),
   status: z.enum(["queued", "downloading", "paused", "done", "error", "canceled"]),
+  /**
+   * 暂停那一刻的下载速度（字节/秒）。**只有 paused 行会写这个键**（契约 v17，业主指令 2026-10-18）：
+   * 它是快照而不是实时值，落盘是为了让暂停行的「速度」与「剩余」挺过重启 —— 队列从 v13 起是
+   * 跨重启的台账，一重启就把暂停行说成「速度未知」等于台账缺一页。其余状态不写（实时速度不落盘）。
+   */
+  speed: z.number().optional(),
+  /**
+   * 实际传输时长（毫秒）与这段时长里收到的字节（契约 v18）。落盘是为了让暂停行、失败行
+   * 在下次续传并完成后仍然算得出平均速度 —— 分母跨会话累积，暂停多久都不算进去。
+   * 旧档没有这两个键 → 该行「速度」列显示「—」，不拿墙钟时间编一个数。
+   */
+  transferMs: z.number().optional(),
+  transferBytes: z.number().optional(),
   /** 实际落地路径（含同名冲突后的最终名）；done 行的「位置」动作靠它 */
   filePath: STR.optional(),
   /** 失败原因文本；上限 300 是因为它来自上游异常，不该把任意长的报文灌进长期档 */
@@ -342,7 +406,7 @@ export const OkFlagSchema = z.object({ ok: z.boolean() });
 export const AppMetaSchema = z.object({
   version: STR,
   electron: STR,
-  kernelMode: z.enum(["local", "online", "mock"]),
+  kernelMode: z.enum(["local", "mock"]),
   // v6 起不再带 `platforms`：平台清单的真源是本仓 `shared/platforms.ts`，
   // 两进程 import 同一模块即可，过 IPC 复制一张表正是这次要消灭的并行真源
 });
@@ -358,11 +422,15 @@ export const IdentifyOutcomeSchema = z.object({
 
 export const ParseRunOutcomeSchema = z.object({
   result: ParseResultSchema,
-  /** 结果来源 */
-  via: z.enum(["local", "online", "mock"]),
-  /** 本地失败转线上的原因（via=online 时有值） */
-  fallbackReason: STR.optional(),
+  /** 结果来源（线上回落在 2026-10-18 移除，只剩本地内核与 mock 演示） */
+  via: z.enum(["local", "mock"]),
   durationMs: z.number(),
+  /**
+   * 来源链接的真实资源页（v16）：短链已跟到长链，或由作品 ID 直接拼成官方页面；
+   * 跟不动/认不出时就是用户输入的那条。首页拿它写结果卡与下载 meta，主进程拿它写历史，
+   * 所以三处的 `sourceUrl` 与作品键不会再各算一套。
+   */
+  sourceUrl: STR.max(2000).optional(),
 });
 
 export const EnqueueOutcomeSchema = z.object({
@@ -380,8 +448,24 @@ export const DownloadTaskViewSchema = z.object({
   status: z.enum(["queued", "downloading", "paused", "done", "error", "canceled"]),
   received: z.number(),
   total: z.number(),
-  /** 字节/秒 */
+  /**
+   * 字节/秒。下载中是实时采样值；**paused 时是暂停那一刻的快照**（主进程不再刷新它，
+   * 界面据此显示「暂停时的速度/剩余」）；done 时主进程清 0 —— 完成行的平均速度按
+   * `transferBytes ÷ transferMs` 算，不占这个键。
+   */
   speed: z.number(),
+  /**
+   * 实际传输时长（毫秒，v18）：只累计「正在收字节」的区间，暂停、排队、重试退避、
+   * 连接与首字节等待都不计入。**它是完成行平均速度的分母** —— 用 `finishedAt − createdAt`
+   * 会暂停一小时就把速度稀释掉，那不是一个能解释的数。
+   */
+  transferMs: z.number(),
+  /**
+   * 与 `transferMs` 同一段区间里真正收到的字节（v18）。普通下载等于 `received`；
+   * 接着一个更早的半成品（换签名重新入队）继续写时小于 `received` —— 分母只覆盖了后半程，
+   * 分子也必须只算后半程，否则平均速度凭空翻倍。
+   */
+  transferBytes: z.number(),
   /** 落地路径（done 后） */
   filePath: STR.optional(),
   error: STR.optional(),
@@ -642,7 +726,11 @@ export const StatsSnapshotSchema = z.object({
     failures: COUNT,
     canceled: COUNT,
     bytes: COUNT,
-    /** Σ(finishedAt - createdAt)：速度/耗时的唯一持久线索（逐任务 speed 不落盘） */
+    /**
+     * Σ实际传输时长（v18 起：主进程改传 `transferMs`）。速度/耗时的唯一持久线索（逐任务 speed 不落盘）。
+     * **暂停、排队、重试退避不计入** —— 旧口径 Σ(finishedAt − createdAt) 会把「挂了一晚上」算成下载时间。
+     * v18 之前落下的样本仍是旧口径，与新样本同处一个合计：这会让平均值偏低于纯新口径，但不会虚高。
+     */
     elapsedMs: COUNT,
     elapsedCount: COUNT,
     /**
@@ -656,6 +744,7 @@ export const StatsSnapshotSchema = z.object({
     total: COUNT,
     failures: COUNT,
     local: COUNT,
+    /** 已移除的线上回落通道：保留旧档计数、不再增长（不删是为了 total 与历史对得上） */
     online: COUNT,
     mock: COUNT,
     durationMs: COUNT,
@@ -694,6 +783,7 @@ export const CONTRACT = {
   [IPC.downloadClear]: invoke(ClearTasksInputSchema, ClearTasksResultSchema),
   [IPC.settingsGet]: invoke(null, AppSettingsSchema),
   [IPC.settingsSet]: invoke(SettingsPatchSchema, AppSettingsSchema),
+  [IPC.settingsCookieLogin]: invoke(CookieLoginInputSchema, CookieLoginResultSchema),
   [IPC.historyList]: invoke(HistoryFilterSchema.optional(), z.array(HistoryEntrySchema)),
   [IPC.historyRemove]: invoke(HistoryRemoveInputSchema, z.array(HistoryEntrySchema)),
   [IPC.probeEngines]: invoke(null, z.array(EngineHealthSchema)),

@@ -4,8 +4,12 @@
  * 应用生命周期 / 窗口 / 托盘 / 单实例锁。业务逻辑一律不在这里（只装配）。
  *
  * 安全（§6.4）：nodeIntegration:false、contextIsolation:true、sandbox:true、
- * webSecurity 不关、renderer 只加载本地文件。
+ * webSecurity 不关、renderer 只加载本地文件。结果卡要预览的媒体经主进程 `mgpreview:`
+ * 代理取流（preview-protocol.ts），渲染层自己仍然一条外链都不发。
  */
+// ⚠️ 必须排第一条：内核 xhs/bilibili/instagram 在模块作用域读 Cookie，晚于 `./engine`
+// 求值就永远读不到用户配置（2026-10-18 实测 cookieLen=0）。改 import 顺序前先读 kernel-env.ts。
+import "./kernel-env";
 import {
   app,
   BrowserWindow,
@@ -24,16 +28,20 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Agent, ProxyAgent, setGlobalDispatcher } from "undici";
 import { createEngine } from "./engine";
-import { createOnlineFallback } from "./fallback";
 import { Downloader } from "./downloader";
-import { JsonStore } from "./store";
+import { createLinkRenewer } from "./link-renew";
+import { JsonStore, queueDigest } from "./store";
 import { createStats } from "./stats";
 import { createResources, readManifest } from "./resources";
 import { createClipboardWatcher } from "./clipboard";
 import { createDownloadNotifier } from "./notify";
 import { createLogger } from "./logger";
 import { createCacheProbe } from "./cache";
-import { normalizeProxyUrl, proxyUrlFromRule } from "./proxy";
+import { normalizeProxyUrl, proxyUrlFromRule, sessionProxyFor } from "./proxy";
+import { createCookieLogin } from "./cookie-login";
+import type { CookieLoginKey } from "../../shared/cookie-login";
+import { DESKTOP_USER_AGENT } from "./hotlink";
+import { installPreviewProtocol, registerPreviewScheme } from "./preview-protocol";
 import { SECRET_CONFIG_KEYS } from "../../core-adapter/config";
 import { registerIpc } from "./ipc";
 import { listInstalledFonts } from "./fonts";
@@ -61,9 +69,16 @@ if (!app.requestSingleInstanceLock()) {
 // Windows 通知/任务栏身份
 app.setAppUserModelId("cc.hotier.mediaget.desktop");
 
+// 预览取流的自定义 scheme：Chromium 在 ready 时就固化协议分类，这行必须在 whenReady 之前
+registerPreviewScheme();
+
 // —— 装配 ——
-// onError 用后绑定箭头：logger 本身要读 store，构造期还不能互相引用
-const store = new JsonStore(app.getPath("userData"), (m) => logger.error(m));
+// onError/onInfo 用后绑定箭头：logger 本身要读 store，构造期还不能互相引用
+const store = new JsonStore(
+  app.getPath("userData"),
+  (m) => logger.error(m),
+  (m) => logger.info(m)
+);
 
 /**
  * 文件日志（设置→通用→日志）：userData/logs/app.log。
@@ -76,6 +91,24 @@ const logger = createLogger({
   getRetentionDays: () => store.loadConfig().settings.logRetentionDays,
   mirrorConsole: isDev,
 });
+
+/**
+ * 下载目录首次实体化（业主指令 2026-10-19：设置页要显示真路径，不是空串 + 占位提示）。
+ *
+ * `""` 的语义仍是「系统下载目录」（downloader 与缓存清理都按 `|| app.getPath("downloads")` 兜底），
+ * 只是不再把它留白：启动时若还是空串，就写成本机真实路径，界面于是「填好了」。
+ * 用户清空输入框点保存 = 回到跟随系统，下次启动会再落一次——空串始终是合法值，不是错误态。
+ */
+function materializeDownloadDir(): void {
+  const cur = store.loadConfig();
+  if (cur.settings.downloadDir) return;
+  store.saveConfig({
+    settings: { ...cur.settings, downloadDir: app.getPath("downloads") },
+    kernel: cur.kernel,
+  });
+  // 只记「做过这件事」，不记路径本身（日志不进用户目录信息）
+  logger.info("[settings] 下载目录已落为系统默认");
+}
 logger.pruneExpired();
 
 /**
@@ -135,7 +168,7 @@ if (!resources.verified) {
 /**
  * 内核配置读取：用户自配 > （YTDLP/FFMPEG）资源定位自动值。
  * 内核 ytDlpClient 按 YTDLP_BIN 取二进制；随包释放后这里自动接上，
- * 未随包时 locate 返回 null → 不注入（TikTok 走线上回落）。
+ * 未随包时 locate 返回 null → 不注入（TikTok 会解析失败；线上回落已于 2026-10-18 移除，没有转线上一说）。
  */
 function readKernelConfig(key: string): string | undefined {
   const user = store.getKernelValue(key);
@@ -151,8 +184,7 @@ function readKernelConfig(key: string): string | undefined {
  * 为什么必须在这一层做（两个独立事实叠出来的）：
  *  1. 内核多个模块在**模块作用域**读取 env 并固化 —— ytDlpClient.js:11
  *     `const YTDLP_CMD = (process.env.YTDLP_BIN || "yt-dlp")...`、
- *     instagram.js:18 `IG_COOKIE`、qqmusic-id.js:31 `QQMUSIC_COOKIE`、
- *     youtube.js:45 `YOUTUBE_API_KEY`。
+ *     instagram.js:18 `IG_COOKIE`、youtube.js:45 `YOUTUBE_API_KEY`。
  *  2. core-adapter/config 的 env 级只在 NODE_ENV=development 时开启
  *     （engine.ts:97 `allowEnv`），prod 下 config 层读不到 env。
  * 所以 prod 必须由主进程显式写 process.env，config 层只能算 dev 便利。
@@ -192,12 +224,8 @@ publishKernelEnv();
 const engine = createEngine({
   readKernelConfig,
   getThrottleMs: () => store.loadConfig().settings.throttleMs,
-  isFallbackEnabled: () => store.loadConfig().settings.fallbackOnline,
   // 供给开关读持久值（每次解析/体检各读一次）：渲染层 store 只是视图，不是第二本账
   getPlatformSwitches: () => store.loadConfig().settings.platformSwitches,
-  onlineFallback: createOnlineFallback({
-    getBase: () => store.loadConfig().settings.onlineApiBase,
-  }),
 });
 
 /**
@@ -271,9 +299,14 @@ const downloader = new Downloader({
   getMaxConcurrent: () => store.loadConfig().settings.maxConcurrent,
   getRetryTimes: () => store.loadConfig().settings.retryTimes,
   getKeepPartials: () => store.loadConfig().settings.keepPartials,
-  // UA 治理照抄内核（lib/http.ts），不私自加码
-  defaultUserAgent:
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+  // UA 治理照抄内核（lib/http.ts），不私自加码；与预览代理共用同一枚常量（hotlink.ts）
+  defaultUserAgent: DESKTOP_USER_AGENT,
+  // 直链到期（403）就顺着这条任务的分享链接重新取一次签名；认不出同一份资源则返回 null，
+  // 交回原有重试与报错。合并与 TTL 都在 link-renew.ts，日志里不会出现直链（隐私红线）。
+  renewUrl: createLinkRenewer({
+    reparse: async (sourceUrl) =>
+      (await engine.parse(sourceUrl, undefined, undefined, { skipCache: true })).result.data,
+  }),
   events: {
     progress: (t) => emit(IPC.evDownloadProgress, t),
     done: (t) => {
@@ -284,8 +317,11 @@ const downloader = new Downloader({
         platform: t.platform,
         kind: t.kind,
         bytes: t.received,
-        // 耗时是速度的唯一持久线索：逐任务 speed 不落盘（重启后本来也没意义）
-        elapsedMs: t.finishedAt ? t.finishedAt - t.createdAt : undefined,
+        // 耗时是速度的唯一持久线索：逐任务 speed 不落盘（重启后本来也没意义）。
+        // 分母用**实际传输时长**（契约 v18）：墙钟时间把暂停与排队也算了进去，暂停一会儿速度就掉成零头。
+        // 只有「整段字节都被测到」的下载才进样本 —— 接着旧 .part 写时分子只覆盖后半程，配对会虚高
+        elapsedMs:
+          t.transferMs > 0 && t.transferBytes === t.received ? Math.round(t.transferMs) : undefined,
       });
       // 完成自动定位文件：默认关，开着并发下载会连环弹资源管理器（业主知情选择）
       if (store.loadConfig().settings.openFolderOnDone && t.filePath) {
@@ -324,11 +360,11 @@ const downloader = new Downloader({
 /**
  * 内核态标记（app:getMeta / 关于页展示）：
  * - MG_KERNEL_MODE=mock → "mock"（离线骨架演示）
- * - 其余 → "local"：parse-core 统一入口注册表覆盖全平台，本地即主通道，
- *   线上回落只是异常逃生口（不再按「抽取进度」猜测，避免为取 meta 提前求值内核）。
- * UI 里每条解析结果的 via 字段（local/online/mock）才是逐请求的真实通道。
+ * - 其余 → "local"：解析全在本机完成（线上回落在 2026-10-18 移除，
+ *   不再按「抽取进度」猜测，避免为取 meta 提前求值内核）。
+ * UI 里每条解析结果的 via 字段（local/mock）才是逐请求的真实通道。
  */
-function kernelMode(): "local" | "online" | "mock" {
+function kernelMode(): "local" | "mock" {
   return process.env.MG_KERNEL_MODE === "mock" ? "mock" : "local";
 }
 
@@ -389,7 +425,7 @@ function applyLoginItem(enabled: boolean): void {
 
 /**
  * 网络代理（设置→下载→网络代理）→ 两套网络栈统一生效：
- * - Node fetch（解析内核 / 下载器 / 线上回落）：undici 全局 dispatcher。Node 的 fetch
+ * - Node fetch（解析内核 / 下载器）：undici 全局 dispatcher。Node 的 fetch
  *   不读系统代理也不读 HTTP_PROXY，必须显式挂 ProxyAgent；npm 版 undici 的
  *   setGlobalDispatcher 经全局符号与内置 undici 互通（node24 与 electron44 实测一致）。
  * - Electron net（更新器）：session.setProxy。system 模式本就走 Chromium 默认系统代理。
@@ -397,16 +433,11 @@ function applyLoginItem(enabled: boolean): void {
  * manual 地址非法/为空时回落直连（设置页有说明）；不 destroy 旧 agent，避免误杀在途下载连接。
  */
 async function applyProxy(): Promise<void> {
-  const { proxyMode, proxyUrl } = store.loadConfig().settings;
+  const settings = store.loadConfig().settings;
   let nodeProxy: string | null = null;
-  let sessionProxy: Electron.ProxyConfig;
-  if (proxyMode === "off") {
-    sessionProxy = { mode: "direct" };
-  } else if (proxyMode === "manual") {
-    nodeProxy = normalizeProxyUrl(proxyUrl);
-    sessionProxy = nodeProxy ? { mode: "fixed_servers", proxyRules: nodeProxy } : { mode: "direct" };
-  } else {
-    sessionProxy = { mode: "system" };
+  if (settings.proxyMode === "manual") {
+    nodeProxy = normalizeProxyUrl(settings.proxyUrl);
+  } else if (settings.proxyMode === "system") {
     try {
       // PAC 静态代理时结果与目标 URL 无关；动态 PAC 取对外流量口径
       nodeProxy = proxyUrlFromRule(await session.defaultSession.resolveProxy("https://github.com/"));
@@ -415,7 +446,7 @@ async function applyProxy(): Promise<void> {
     }
   }
   setGlobalDispatcher(nodeProxy ? new ProxyAgent(nodeProxy) : new Agent());
-  await session.defaultSession.setProxy(sessionProxy);
+  await session.defaultSession.setProxy(sessionProxyFor(settings));
 }
 
 /** 代理初应用（随 app ready 起跑）：打包侧更新检查发起前先 await 它，别让检查跑在直连上 */
@@ -443,6 +474,41 @@ if (app.isPackaged) {
   })();
 }
 
+/**
+ * 设置写入后的副作用（`settings:set` 与「登录抓取 Cookie」共用这一条）。
+ * 抽成具名函数是因为**第二条写入路径**出现了：抓取直接写档，若绕过这里，
+ * 内核在模块作用域固化的 env 就还是旧 Cookie，症状恰好是「配了不生效」。
+ */
+function onSettingsChanged(): void {
+  publishKernelEnv();
+  updater.setPolicy(updatePolicy()); // 静默下载开关保存即热更
+  clipboardWatcher.setEnabled(store.loadConfig().settings.clipboardWatch); // 通知两开关是读取时求值，无需热更
+  applyLoginItem(store.loadConfig().settings.launchAtLogin); // 开机自启保存即同步系统登录项
+  applyTitleBarOverlay(); // 明暗改完重贴按钮符号色（浅档配深符号，否则白符号消失在白底上）
+  void applyProxy(); // 代理保存即热更（对新请求生效；在途连接不打断）
+  logger.pruneExpired(); // 保留天数改完即清一次（级别是读取时求值，无需动作）
+}
+
+/** 登录抓取成功后写档：与 `settings:set` 的 cookies 分支同语义（settings.cookies + kernel 双写） */
+function saveCapturedCookie(key: CookieLoginKey, header: string): void {
+  const cur = store.loadConfig();
+  store.saveConfig({
+    settings: { ...cur.settings, cookies: { ...cur.settings.cookies, [key]: header } },
+    kernel: { ...cur.kernel, [key]: header },
+  });
+}
+
+const cookieLogin = createCookieLogin({
+  saveCookie: saveCapturedCookie,
+  onCaptured: onSettingsChanged,
+  // 登录窗口跑在独立分区，不继承 defaultSession 的代理：按当前设置铺一次
+  prepareSession: async (ses) => {
+    await ses.setProxy(sessionProxyFor(store.loadConfig().settings));
+  },
+  getParent: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null),
+  logger,
+});
+
 registerIpc({
   ipcMain,
   engine,
@@ -450,15 +516,8 @@ registerIpc({
   store,
   getAppMeta: () => ({ version: app.getVersion(), electron: process.versions.electron }),
   kernelMode,
-  onSettingsChanged: () => {
-    publishKernelEnv();
-    updater.setPolicy(updatePolicy()); // 静默下载开关保存即热更
-    clipboardWatcher.setEnabled(store.loadConfig().settings.clipboardWatch); // 通知两开关是读取时求值，无需热更
-    applyLoginItem(store.loadConfig().settings.launchAtLogin); // 开机自启保存即同步系统登录项
-    applyTitleBarOverlay(); // 明暗改完重贴按钮符号色（浅档配深符号，否则白符号消失在白底上）
-    void applyProxy(); // 代理保存即热更（对新请求生效；在途连接不打断）
-    logger.pruneExpired(); // 保留天数改完即清一次（级别是读取时求值，无需动作）
-  },
+  onSettingsChanged,
+  cookieLogin,
   logger,
   cache,
   stats,
@@ -469,6 +528,9 @@ registerIpc({
     binaries: resources.describe(),
   }),
   getFonts: () => listInstalledFonts(),
+  // 复制动作由主进程代发：下面那条「所有权限请求一律拒」把渲染层的 navigator.clipboard
+  // 整条挡死（Electron 把写剪贴板也报成 clipboard-read），而隐私面不接受为它开洞。
+  writeClipboard: (text) => clipboard.writeText(text),
   // dev 里出参不符契约会当场报 contract-drift；打包版不为校验付代价
   validateOutputs: !app.isPackaged,
 });
@@ -621,9 +683,18 @@ function createFallbackTrayIcon(): Electron.NativeImage {
 app.on("second-instance", showMainWindow);
 
 app.whenReady().then(() => {
+  // 下载目录先落成真实路径，设置页才有值可显示（见本函数上方说明）
+  materializeDownloadDir();
+
   // 桌面 UA/Referer 下载链路依赖主进程 fetch 的 UA；平台 Cookie 由内核按
   // core-adapter/config 注入，不经过 session cookie 库（隐私边界）。
+  // 这条 deny-all 顺带挡死渲染层的 navigator.clipboard.writeText：Chromium 写剪贴板要过这条钩子，
+  // 且 Electron 把写也报成 `clipboard-read`（无法只放行写）。所以复制走 `app:copyText` 由主进程
+  // 代发，不放宽这里 —— 详见 types/ipc.ts 的 v11 注与 docs/UIUX-HANDOFF.md §6。
   session.defaultSession.setPermissionRequestHandler((_wc, _p, cb) => cb(false));
+
+  // 预览代理：ready 之后才装（protocol.handle 在就绪前调用会返回 false），scheme 特权已在模块期声明
+  installPreviewProtocol();
 
   // 无应用菜单栏：Windows 用户不知道 Alt 后面是什么，菜单里的动作这里全有替代——
   // 编辑类由 Chromium 原生快捷键完成，退出与显示由托盘完成，重载 dev 走 detach 的开发者工具。
@@ -642,9 +713,11 @@ app.whenReady().then(() => {
   const restoredQueue = store.loadQueue();
   downloader.restore(restoredQueue as PersistedQueueTask[]);
 
-  // 启动留痕：只有报错的日志看不出「进程什么时候起过」，一行档期信息给排查一个锚点
+  // 启动留痕：只有报错的日志看不出「进程什么时候起过」，一行档期信息给排查一个锚点。
+  // 队列那半写的是摘要（条数 + 状态分布）而不是光一个数：「恢复了 0 项」和
+  // 「恢复了 5 项（done 5）」是两种完全不同的事故，前者才需要去追 queue.json 的写入方
   logger.info(
-    `[app] 启动 v${app.getVersion()} ${isDev ? "dev" : "packaged"} · 内核 ${kernelMode()} · 队列恢复 ${restoredQueue.length} 项`
+    `[app] 启动 v${app.getVersion()} ${isDev ? "dev" : "packaged"} · 内核 ${kernelMode()} · 队列恢复 ${queueDigest(restoredQueue)}`
   );
 
   app.on("activate", () => {

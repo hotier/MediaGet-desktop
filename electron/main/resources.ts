@@ -11,7 +11,7 @@
  *   `scripts/fetch-binaries.cjs` 下载 → 比对 pin 的 size/sha256 → 写
  *   `<binDir>/manifest.json` → 随 extraResources 打包 → 本模块 `readManifest()`
  *   读出后作为 `expectedHashes` 注入 `createResources` → `locate()` 在释放前后
- *   强校验，不匹配即拒绝使用（返回 null，该平台回落线上通道）。
+ *   强校验，不匹配即拒绝使用（返回 null，依赖它的解析会失败）。
  *   CI 用 `fetch-binaries.cjs --verify-only` 在打包前断言清单在位且自洽，
  *   使「清单缺失」在构建期暴露，而不是拖到用户机器上降级。
  *

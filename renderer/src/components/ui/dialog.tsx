@@ -8,6 +8,15 @@ const DialogTrigger = DialogPrimitive.Trigger;
 const DialogPortal = DialogPrimitive.Portal;
 const DialogClose = DialogPrimitive.Close;
 
+/**
+ * 上下滑移的开合动效（进入上浮 2rem / 退场下沉 2rem）：作者卡片与预览弹窗共用同一套，
+ * 别在两个调用点各写一遍曲线。基类退场用 ease、淡出被前置（实测 0.59@50ms），位移还没走完
+ * 就先透明了，看着像「直接消失」——所以进入 ease-out / 退场 ease-in + 250ms，
+ * 前半段留住不透明度，位移才看得见。
+ */
+export const dialogSlideMotion =
+  "slide-in-from-bottom-8 data-[state=closed]:slide-out-to-bottom-8 data-[state=open]:ease-out data-[state=closed]:ease-in data-[state=closed]:duration-250";
+
 function DialogOverlay({ className, ...props }: React.ComponentProps<typeof DialogPrimitive.Overlay>): React.ReactElement {
   return (
     <DialogPrimitive.Overlay

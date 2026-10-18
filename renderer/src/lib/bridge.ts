@@ -12,6 +12,8 @@ import type {
   CacheItemKey,
   CacheStatus,
   ClearTasksResult,
+  CookieLoginInput,
+  CookieLoginResult,
   DownloadTaskView,
   EnqueueInput,
   EnqueueOutcome,
@@ -77,12 +79,14 @@ export const api = {
     get: () => unwrap<AppSettings>(bridge().settings.get()),
     set: (patch: Partial<AppSettings>) =>
       unwrap<AppSettings>(bridge().settings.set(patch)),
+    /** 打开登录页自动获取 Cookie：值在主进程落档，这里只拿到「抓到没有」 */
+    cookieLogin: (input: CookieLoginInput) =>
+      unwrap<CookieLoginResult>(bridge().settings.cookieLogin(input)),
   },
   history: {
     list: (filter?: HistoryFilter) =>
       unwrap<HistoryEntry[]>(bridge().history.list(filter)),
     remove: (keys: string[]) => unwrap<HistoryEntry[]>(bridge().history.remove(keys)),
-    clear: () => unwrap(bridge().history.clear()),
   },
   probe: {
     engines: () => unwrap<EngineHealth[]>(bridge().probe.engines()),
@@ -99,6 +103,7 @@ export const api = {
     clearCache: (keys: CacheItemKey[]) => unwrap<CacheClearResult>(bridge().app.clearCache(keys)),
     openLogDir: () => unwrap(bridge().app.openLogDir()),
     openExternal: (url: string) => unwrap(bridge().app.openExternal(url)),
+    copyText: (text: string) => unwrap(bridge().app.copyText(text)),
     /** 转发失败不该再生出一条转发（上报通道自身故障时无处可报）：静默吞掉 */
     log: async (level: LogSeverity, message: string) => {
       try {
