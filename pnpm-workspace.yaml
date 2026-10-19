@@ -1,12 +1,18 @@
 # Windows: pnpm 默认 isolated linker 在 peer 循环图上触发 symlink 栈溢出（本机 pnpm 11.22 实测）；
 # hoisted 与 npm 布局一致，electron-builder 兼容性最好。
 nodeLinker: hoisted
+
+packages:
+  # 落地页（Astro 静态站）：单 lockfile，命令经 pnpm --filter mediaget-landing 调用
+  - landing
 allowBuilds:
   # esbuild 平台二进制走 optionalDependencies（win32-x64 已就位）；
   # install.js 兜底脚本在沙箱内 spawn 会 EPERM，明确关闭
   esbuild: false
   # electron-winstaller 仅打包 nsis 阶段需要（CI/发布机自然触发）；骨架期跳过
   electron-winstaller: false
+  # Astro 依赖树里的 sharp：落地页全 SVG、不用 astro:assets，不需要其 install 脚本
+  sharp: false
 minimumReleaseAgeExclude:
   - electron@44.7.2
   - lucide-react@1.57.0
@@ -21,6 +27,7 @@ overrides:
   # 精确只抬 3.x 这一支，不碰 electron 自己需要的 5.x。
   # 上游修好（声明改为 ^3.1.0 或更高）后可删本 override。
   "@electron/get@^3.0.0": "3.1.0"
+
 # 注意：不要在这里写死 storeDir 绝对路径（如 D:\dsh_store\.pnpm-store）——
 # 那是开发机专属路径，泄漏进共享配置后换机器/CI 会失效。需要自定义 store
 # 位置时用环境变量 PNPM_STORE_DIR 或 `pnpm config set store-dir`，属本机配置。

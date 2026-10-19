@@ -82,8 +82,13 @@ pnpm run typecheck            # tsc --noEmit
 pnpm run lint                 # eslint（flat config）
 pnpm run test                 # vitest run（全离线，禁真网络）
 pnpm run fetch:binaries       # 手动补齐/重下随包二进制（CI 用严格版，缺件即红）
+pnpm run landing:dev          # 落地页（Astro 静态站）本地预览，127.0.0.1:5174
+pnpm run landing:build        # 离线出 landing/dist（版本号对，体积与发布日期留空）
+pnpm run landing:build:online # 同上，但向 GitHub Release 要真实直链/体积/日期（私有仓需 GITHUB_TOKEN）
 pnpm run release              # 过三门禁 → 按 commit 前缀升版本 → 写 CHANGELOG → 打 tag → push
 ```
+
+落地页由 `v*` tag 触发的 `release.yml` 末尾一个 job 发布到 GitHub Pages，排在 `publish` 之后——它报的版本号、发布日期与安装包体积必须来自刚发布的那个 Release。Pages 要求仓库对该站点可见（`Settings → Pages → Source = GitHub Actions`）；产物资源引用是文档相对路径，所以 `landing/dist` 双击打开、塞进任何子路径都原样可用。
 
 提交格式 `type(scope): 摘要`（scope 必填）——前缀不是审美而是发版输入：`feat`→minor、`fix`→patch、`!` 或 `BREAKING CHANGE`→major。
 

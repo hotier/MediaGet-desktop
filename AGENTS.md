@@ -30,7 +30,7 @@ MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet
 
 ## 平台清单只有一个真源：`shared/platforms.ts`
 
-「有哪些平台、叫什么、哪枚图标、哪个引擎能解、供不供」只写在这张零依赖表里，主进程与渲染进程 import 同一份。加平台 = 改这一处 + 放一枚 `renderer/public/logos/*.svg`，五页自动跟上；**再抄一份平台名或图标映射就是缺陷**——`tests/platform-registry.test.ts` 把「图标文件不存在」「与内核 `PLATFORM_INFO` 逐字段漂移」「声明 `parseCore: ready` 却没有本地 parser」「renderer 里手抄平台名」都变成红叉。
+「有哪些平台、叫什么、哪枚图标、哪个引擎能解、供不供」只写在这张零依赖表里，主进程、渲染进程与落地页（`landing/`）import 同一份。加平台 = 改这一处 + 放一枚 `renderer/public/logos/*.svg`，五页自动跟上，落地页平台带也自动跟上（它按 `enabledByDefault` 生成，图标由 `scripts/build-landing.cjs` 从 `renderer/public/logos` 镜像到 `landing/public/logos`，那份是生成物、不入库）；**再抄一份平台名或图标映射就是缺陷**——`tests/platform-registry.test.ts` 把「图标文件不存在」「与内核 `PLATFORM_INFO` 逐字段漂移」「声明 `parseCore: ready` 却没有本地 parser」「renderer 里手抄平台名」都变成红叉。
 
 - **引擎与供给解耦**（2026-10-16 业主定调）：parse-core 只是引擎之一（还有 yt-dlp、后续更多）。`engines` 记覆盖度 `ready`/`declared`/`unknown`，`enabledByDefault` 由 ready 推出；内核那份降级成引擎侧事实，不再当产品边界。
 - **契约键 vs 别名**：上游路由目录名（`xhs`）只许活在 `legacyKeys`；写进 history/stats 前一律 `resolveKey()` 归一，**盘上存量则在读侧归一**（`store.loadHistory` 逐条、`stats` 的 `byPlatform` 并键相加），未登记键原样回吐、不进界面——注册表不许改写盘上历史。

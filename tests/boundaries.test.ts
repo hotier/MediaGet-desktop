@@ -27,8 +27,11 @@ function walk(dir: string, pred: (p: string) => boolean): string[] {
     const p = join(dir, e);
     // .qoder-credits 是 Qoder 应用写入本仓的会话画布产物（IDE 工件，非项目源码）——
     // 不排除的话，用例数会随 IDE 活动漂移，且边界规则会误扫这些文件
+    // dist / .astro：landing 的产物与 Astro 生成物，同理不该按压缩后的 bundle 生成用例
     if (
       e === "node_modules" ||
+      e === "dist" ||
+      e === ".astro" ||
       e === "dist-electron" ||
       e === "dist-renderer" ||
       e === "release" ||

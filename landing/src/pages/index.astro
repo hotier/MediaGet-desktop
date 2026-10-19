@@ -1,0 +1,961 @@
+---
+/*
+ * MediaGet 落地页（Astro 静态页，不参与 renderer 构建，也不 import 应用运行时模块）。
+ *
+ * 风格基准：克制的技术感——全页只有一个强视觉记忆点（首屏 WebGL 奇点），
+ * 其余区域用大留白与排版分割，不使用装饰性卡片、阴影与插图。
+ * 唯一的例外是第 01 段的应用界面模拟：它按 renderer 的真值复刻窗口（含卡片与描边），
+ * 装得越像应用，读者越不需要读文案就知道这工具能干什么。
+ *
+ * 平台带不在这里抄名字：清单直接 import shared/platforms.ts（与主进程、渲染层同一张表），
+ * 图标由 scripts/build-landing.cjs 从 renderer/public/logos 镜像到 landing/public/logos（生成物，不入库）。
+ * 在这里手抄一份平台名或数量就是第二真源——加平台时它不会变红，只会静默少一个。
+ *
+ * 版本号来自 version.json（同一脚本在构建时产出；仓库内始终保留一份本地默认值，
+ * 未执行脚本也不会拿到空值白屏）。下载入口只有首屏那一枚按钮，指向 releases/latest，
+ * 所以安装包体积与发布日期不再抄进页面——那两个数是 Release 那页的真值，抄过来只会落后。
+ */
+import "../styles/global.css";
+import { PLATFORMS } from "../../../shared/platforms";
+import { WORK_STAT_SLOTS } from "../../../shared/work-stat";
+import release from "../../version.json";
+
+const REPO_FALLBACK = "hotier/mediaGet-desktop";
+const repo = release.repo || REPO_FALLBACK;
+const releasesLatest = `https://github.com/${repo}/releases/latest`;
+
+// 只有默认提供的平台才上首页：登记了但引擎未验证（enabledByDefault=false）的不在这里承诺。
+const supplied = PLATFORMS.filter((platform) => platform.enabledByDefault);
+const platformCount = supplied.length;
+
+/** 图标光学尺寸分档：源文件 viewBox 比例不同，属落地页自己的视觉元数据，按契约键挂载 */
+const iconFit: Record<string, "wide" | "wordmark" | "chip"> = {
+  youtube: "wide",
+  acfun: "wordmark",
+  twitter: "chip",
+};
+
+/**
+ * 界面模拟（第 01 段）里的平台图标与计数标签一律回注册表取，不在这里抄第二份：
+ * 查不到就当场抛错让 astro build 变红，比页面上静默少一枚图、少一个字好发现。
+ */
+const logoBy = new Map(PLATFORMS.map((platform) => [platform.key, platform.iconFile]));
+const logo = (key: string) => {
+  const file = logoBy.get(key);
+  if (!file) throw new Error(`界面模拟引用了未登记的平台键 "${key}"：shared/platforms.ts 里没有它`);
+  return file;
+};
+const statLabel = (key: string) => {
+  const slot = WORK_STAT_SLOTS.find((item) => item.key === key);
+  if (!slot) throw new Error(`界面模拟引用了未登记的计数字段 "${key}"：shared/work-stat.ts 里没有它`);
+  return slot.label;
+};
+
+/** 数值取自 renderer/src/dev/mock-bridge.ts 的 bilibili 夹具；这是演示数据，不是实测统计 */
+const DEMO_STAT: Record<string, number> = { view: 1284503, danmaku: 8421, like: 98200 };
+const statRow = ["view", "danmaku", "like"].map((key) => ({
+  label: statLabel(key),
+  value: DEMO_STAT[key],
+}));
+
+/**
+ * 星期轴与 renderer/src/lib/stats.ts 的 WEEKDAYS 同序（索引 = getDay()）。
+ * 热力 7 行 × 12 格，一格两小时；真页是 7×24=168 格，这里收一档，168 枚方块在落地页只增体积不增信息。
+ * 数字是密度档（0–3），不是计数。
+ */
+const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+const HEAT = [
+  "000001001110",
+  "001122101220",
+  "012332123321",
+  "012331023320",
+  "001221012210",
+  "000110001110",
+  "000011011221",
+].map((row) => row.split("").map(Number));
+
+const version = release.version || "0.1.0";
+---
+
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MediaGet — 粘贴一条链接，剩下的交给你的电脑</title>
+    <meta
+      name="description"
+      content={`MediaGet 是一款 Windows 桌面视频下载器：解析与下载都在本机完成，链接不经过第三方服务器，直链拿到就落盘。支持 ${platformCount} 个平台，含资源列表预览与断点续传，Cookie 只存本机。`}
+    />
+    <meta name="theme-color" content="#08090b" />
+    <meta property="og:title" content="MediaGet — 本地解析、本地下载" />
+    <meta
+      property="og:description"
+      content="粘贴一条链接。解析、预览与下载，都在你自己的电脑上完成。"
+    />
+    <meta property="og:type" content="website" />
+    <!-- 绝对链接来自 astro.config 的 site（Pages 项目站），页面里不写死域名 -->
+    <link rel="canonical" href={Astro.site?.href} />
+    <meta property="og:url" content={Astro.site?.href} />
+    <meta property="og:site_name" content="MediaGet" />
+    <meta name="twitter:card" content="summary" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%234b8dff'/%3E%3Cpath d='M16 8v10m0 0 4-4m-4 4-4-4M9.5 22.5h13' stroke='%23fff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E"
+    />
+    <script is:inline>
+      /* 主题：head 里定初值，并把开关也挂在这里。
+         ?theme=light|dark 可强制预览某一主题（不写入存储）。
+         开关只能活在这段内联脚本里，不能交给 src/scripts/main.js：那个入口被打成
+         type="module"，file:// 下模块脚本会被 CORS 拦掉，监听器挂不上去，按钮就成了死键。
+         同一条理由也限制了这里能做什么——初值必须在 CSS 与正文之前定下来，而 html.js 标记
+         绝不能跟进来：内联脚本在 file:// 下照样执行，标记一打，正文就按 CSS 藏进 opacity:0，
+         而负责揭示的模块永远不来，页面比不做动画更糟（整页空白）。标记留给 main.js。 */
+      (function () {
+        var root = document.documentElement;
+
+        function applySavedTheme() {
+          try {
+            var forced = new URLSearchParams(location.search).get("theme");
+            var saved = forced || localStorage.getItem("mg-landing-theme");
+            if (saved === "light" || saved === "dark") root.dataset.theme = saved;
+          } catch (error) {
+            /* 存储不可用时保持默认深色 */
+          }
+        }
+
+        /* 按钮文案、tooltip 与 theme-color 跟着主题走；head 阶段正文还没出来，所以只在 DOM 就绪后调用 */
+        function syncChrome(theme) {
+          var toLight = theme !== "light";
+          var label = toLight ? "切换到浅色主题" : "切换到深色主题";
+          var toggle = document.getElementById("themeToggle");
+          if (toggle) {
+            toggle.setAttribute("aria-label", label);
+            toggle.setAttribute("title", label);
+          }
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", toLight ? "#08090b" : "#f5f6f8");
+        }
+
+        applySavedTheme();
+
+        document.addEventListener("DOMContentLoaded", function () {
+          var toggle = document.getElementById("themeToggle");
+          syncChrome(root.dataset.theme);
+          if (!toggle) return;
+          toggle.addEventListener("click", function () {
+            var theme = root.dataset.theme === "light" ? "dark" : "light";
+            root.dataset.theme = theme;
+            try {
+              localStorage.setItem("mg-landing-theme", theme);
+            } catch (error) {
+              /* 隐私模式禁用存储时仅本次会话生效 */
+            }
+            syncChrome(theme);
+            /* 首屏 WebGL island 在跑，靠这个事件换粒子配色 */
+            document.dispatchEvent(new CustomEvent("mg:theme", { detail: { theme: theme } }));
+          });
+        });
+      })();
+    </script>
+  </head>
+
+  <body>
+    <a class="skip-link" href="#main">跳到主要内容</a>
+
+    <header class="nav" id="nav">
+      <div class="nav-inner">
+        <a class="brand" href="#top" aria-label="MediaGet 首页">
+          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+            <rect width="32" height="32" rx="9" />
+            <path d="M16 8v10m0 0 4-4m-4 4-4-4M9.5 22.5h13" />
+          </svg>
+          <span>MediaGet</span>
+        </a>
+
+        <nav class="nav-links" aria-label="页面导航">
+          <a href="#faq">常见问题</a>
+        </nav>
+
+        <div class="nav-actions">
+          <button class="theme-toggle" id="themeToggle" type="button" aria-label="切换到浅色主题">
+            <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="12" cy="12" r="4" />
+              <path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+            </svg>
+            <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z" />
+            </svg>
+          </button>
+          <a
+            class="nav-github"
+            href={`https://github.com/${repo}`}
+            aria-label="GitHub 仓库"
+            target="_blank"
+            rel="noopener"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 6v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"
+              />
+            </svg>
+          </a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- 首屏：唯一的强视觉。canvas 由 src/scripts/main.js 按需水合，接管前显示静态海报 -->
+      <section class="hero" id="top">
+        <div class="hero-stage" aria-hidden="true">
+          <div class="hero-poster"></div>
+          <div class="hero-rings">
+            <i class="ring-core"></i>
+            <i class="ring-horizon"></i>
+            <i class="ring-accretion"></i>
+          </div>
+          <canvas id="heroCanvas" class="hero-canvas"></canvas>
+          <div class="hero-vignette"></div>
+        </div>
+
+        <div class="hero-content">
+          <h1 class="hero-title"
+            ><span class="word-draw"
+              ><span class="word word-hollow">Media</span><i class="pen" aria-hidden="true"></i></span
+            ><span class="word word-solid">Get</span></h1
+          >
+          <p class="hero-sub">粘贴一条链接。解析、预览与下载，都在你自己的电脑上完成。</p>
+          <p class="hero-cta">
+            <a class="cta-primary" href={releasesLatest} target="_blank" rel="noopener"
+              >下载 Windows 版</a
+            >
+            <span class="cta-version">v{version}</span>
+          </p>
+        </div>
+
+        <div class="hero-cue" aria-hidden="true">
+          <span>向下</span>
+          <i></i>
+        </div>
+      </section>
+
+      <!-- 界面模拟：一扇窗 + 侧栏四个导航页，外加侧栏脚注的「设置」。
+           radio 驱动，零 JS——入口脚本在 file:// 下不执行，任何依赖 JS 的切页在那种场合都是死图。
+           面板里的每一串文字都照 renderer 的现值写：HomePage / DownloadsPage / HistoryPage /
+           StatsPage / SettingsPage 的标题、列名、徽标与按钮，不在此处美化或另起一套说法。
+           与应用的三处有意偏离都标在对应位置：队列少两列时间、设置只出「引擎」一类、数据是演示值。 -->
+      <section class="tour" id="ui">
+        <div class="tour-head">
+          <p class="block-index">01</p>
+          <h2>界面展示</h2>
+        </div>
+
+        <input class="tour-radio" type="radio" name="tour" id="tour-home" checked aria-label="首页界面" />
+        <input class="tour-radio" type="radio" name="tour" id="tour-queue" aria-label="队列界面" />
+        <input class="tour-radio" type="radio" name="tour" id="tour-history" aria-label="历史界面" />
+        <input class="tour-radio" type="radio" name="tour" id="tour-stats" aria-label="统计界面" />
+        <input class="tour-radio" type="radio" name="tour" id="tour-settings" aria-label="设置界面" />
+
+        <div class="app" role="group" aria-label="MediaGet 应用界面模拟">
+          <div class="app-wco">
+            <span class="app-brand">MediaGet</span>
+            <span class="app-wco-set">设置</span>
+            <!-- 真窗由 Windows 在透明带上画三枚符号，renderer 一个按钮也不自绘；这里描出来只为读得出「这是桌面窗口」 -->
+            <span class="app-glyphs" aria-hidden="true"><i></i><i></i><i class="is-close"></i></span>
+          </div>
+
+          <div class="app-body">
+            <aside class="app-side">
+              <nav class="app-nav" aria-label="模拟导航">
+                <label class="app-nav-item" for="tour-home">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+                    <path d="M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8" />
+                  </svg>
+                  <span>首页</span>
+                </label>
+                <label class="app-nav-item" for="tour-queue">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <path points="7 10 12 15 17 10" d="m7 10 5 5 5-5" />
+                    <path d="M12 15V3" />
+                  </svg>
+                  <span>队列</span>
+                  <b class="app-nav-count" title="2 个任务进行中">2</b>
+                </label>
+                <label class="app-nav-item" for="tour-history">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                    <path d="M3 3v5h5" />
+                    <path d="M12 7v5l4 2" />
+                  </svg>
+                  <span>历史</span>
+                </label>
+                <label class="app-nav-item" for="tour-stats">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3 3v16a2 2 0 0 0 2 2h16" />
+                    <path d="m7 13 3-3 4 4 5-5" />
+                  </svg>
+                  <span>统计</span>
+                </label>
+              </nav>
+
+              <!-- 设置态的侧栏整壳换成分类表（真应用的 settingsMode 就是这个动作）。
+                   分类画成不可点：这里只复刻「引擎」一面，做成能点就等于承诺另外四面也在。 -->
+              <div class="app-side-set">
+                <label class="app-back" for="tour-home">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="m12 19-7-7 7-7" />
+                    <path d="M19 12H5" />
+                  </svg>
+                  <span>返回</span>
+                  <em>Esc</em>
+                </label>
+                <span class="app-cat">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M21 4h-7M10 4H3M21 12h-9M8 12H3M3 20h9M16 20h5" />
+                    <path d="M14 2v4M8 10v4M16 18v4" />
+                  </svg>
+                  <span>通用</span>
+                </span>
+                <span class="app-cat">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <path d="m7 10 5 5 5-5" />
+                    <path d="M12 15V3" />
+                  </svg>
+                  <span>下载</span>
+                </span>
+                <span class="app-cat">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M12 2a1 1 0 0 0 0 20l.25 0a1.75 1.75 0 0 0 1.4-2.8l-.3-.4a1.75 1.75 0 0 1 1.4-2.8h2.25a5 5 0 0 0 5-5 10 9 0 0 0-10-9z" />
+                    <circle cx="6.5" cy="12.5" r=".5" />
+                    <circle cx="8.5" cy="7.5" r=".5" />
+                    <circle cx="13.5" cy="6.5" r=".5" />
+                    <circle cx="17.5" cy="10.5" r=".5" />
+                  </svg>
+                  <span>外观</span>
+                </span>
+                <span class="app-cat is-on">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="4" y="4" width="16" height="16" rx="2" />
+                    <rect x="9" y="9" width="6" height="6" rx="1" />
+                    <path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2" />
+                  </svg>
+                  <span>引擎</span>
+                </span>
+                <span class="app-cat">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z" />
+                    <path d="m15 9-6 6" />
+                    <path d="M9 9h.01" />
+                    <path d="M15 15h.01" />
+                  </svg>
+                  <span>关于</span>
+                </span>
+              </div>
+
+              <label class="app-nav-item app-side-foot" for="tour-settings">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path
+                    d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"
+                  />
+                  <circle cx="12" cy="12" r="3" />
+                </svg>
+                <span>设置</span>
+              </label>
+            </aside>
+
+            <div class="app-main">
+              <!-- 首页：解析输入 + 结果卡 + 右栏队列轨（QueueRail 常驻在首页右侧，不是独立页） -->
+              <section class="app-page" data-page="home">
+                <div class="app-home">
+                  <div class="app-home-col">
+                    <div class="app-input">
+                      <p class="app-ph">粘贴分享链接或整段分享文案，多条用空格、换行隔开，Ctrl+K 任意页面直达…</p>
+                      <p class="app-hint">识别为 哔哩哔哩（从分享文案提取链接）</p>
+                      <div class="app-input-bar">
+                        <span class="app-btn">导入文件</span>
+                        <span class="app-btn is-quiet">清除</span>
+                        <span class="app-btn is-primary">解析</span>
+                      </div>
+                    </div>
+
+                    <div class="app-card">
+                      <div class="app-cover">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 4 12 8-12 8z" /></svg>
+                        <em>06:12</em>
+                      </div>
+                      <div class="app-card-main">
+                        <p class="app-title">【4K 修复】二十年前的城市夜景胶片，一帧一帧重新上色</p>
+                        <p class="app-author"><i></i>胶片修复所<span class="app-div">影视剪辑</span></p>
+                        <p class="app-counters">
+                          {
+                            statRow.map((item) => (
+                              <span>
+                                {item.label} <b>{item.value.toLocaleString("zh-CN")}</b>
+                              </span>
+                            ))
+                          }
+                        </p>
+                        <div class="app-res">
+                          <p class="app-res-bar">
+                            资源列表
+                            <span class="app-div">3 / 5 已选</span>
+                            <span class="app-btn is-quiet">收起资源</span>
+                          </p>
+                          <div class="app-res-row is-on">
+                            <i class="app-check is-on"></i>
+                            <span class="app-file">P1 夜景篇 · 1080P · m4s</span>
+                            <span class="app-size">48.2 MB</span>
+                            <span class="app-link">预览</span>
+                          </div>
+                          <div class="app-res-row is-on">
+                            <i class="app-check is-on"></i>
+                            <span class="app-file">P2 街巷篇 · 1080P · m4s</span>
+                            <span class="app-size">41.7 MB</span>
+                            <span class="app-link">预览</span>
+                          </div>
+                          <div class="app-res-row">
+                            <i class="app-check"></i>
+                            <span class="app-file">音频 · m4a</span>
+                            <span class="app-size">8.4 MB</span>
+                            <span class="app-link">预览</span>
+                          </div>
+                        </div>
+                        <div class="app-card-foot">
+                          <span class="app-badge">本地内核</span>
+                          <span class="app-div">1.2 s</span>
+                          <span class="app-div">解析于 12:04</span>
+                          <span class="app-btn is-primary">下载 2 项</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="app-recent">
+                      <p class="app-res-bar">
+                        最近解析
+                        <span class="app-btn is-quiet">全部历史</span>
+                      </p>
+                      <div class="app-mini">
+                        <img src={`./logos/${logo("redbook")}`} alt="" width="16" height="16" />
+                        <span>秋日通勤穿搭｜九张图拆到单品</span>
+                        <em>12:01</em>
+                      </div>
+                      <div class="app-mini">
+                        <img src={`./logos/${logo("douyin")}`} alt="" width="16" height="16" />
+                        <span>一分钟讲清楚：为什么地铁上的手机信号会突然掉</span>
+                        <em>11:46</em>
+                      </div>
+                    </div>
+                  </div>
+
+                  <aside class="app-rail">
+                    <p class="app-res-bar">队列<span class="app-div">1 进行 · 3 排队</span></p>
+                    <div class="app-task">
+                      <p class="app-task-row">
+                        <span class="app-status is-ok">下载中</span>
+                        <span class="app-size">62%</span>
+                      </p>
+                      <p class="app-file">秋日通勤穿搭-1.jpg</p>
+                      <span class="app-track"><i style="width: 62%"></i></span>
+                      <p class="app-task-row"><span>4.2 MB/s</span><span class="app-size">6.1 MB</span></p>
+                    </div>
+                    <div class="app-task">
+                      <p class="app-task-row">
+                        <span class="app-status">排队</span>
+                        <span class="app-size">—</span>
+                      </p>
+                      <p class="app-file">P3 幕后：调色台本 · 720P.m4s</p>
+                      <span class="app-track"><i style="width: 0%"></i></span>
+                      <p class="app-task-row"><span>待开始</span><span class="app-size">19.4 MB</span></p>
+                    </div>
+                    <p class="app-rail-more">还有 2 个任务…</p>
+                    <span class="app-btn is-quiet app-rail-foot">打开完整队列</span>
+                  </aside>
+                </div>
+              </section>
+
+              <!-- 队列页：8 列台账。这里只出 6 列——真表 min-w-[69.7em] 在窄窗里横向滚动，
+                   模拟窗放不下，省掉的两列是「创建时间 / 完成时间」。 -->
+              <section class="app-page" data-page="queue">
+                <div class="app-tools">
+                  <span class="app-btn is-select">全部状态</span>
+                  <span class="app-btn is-select">全部时间</span>
+                  <span class="app-btn is-select">全部平台</span>
+                  <span class="app-search">搜索文件名 / 标题</span>
+                </div>
+                <div class="app-scroll">
+                  <table class="app-table" aria-label="下载队列（示意数据）">
+                    <thead>
+                      <tr>
+                        <th>文件</th>
+                        <th>状态</th>
+                        <th>进度</th>
+                        <th>大小</th>
+                        <th>速度</th>
+                        <th>剩余</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td class="cell-file">
+                          <span class="app-file">城市夜跑 10km · 花絮.mp4</span>
+                          <span class="app-sub">1080P · .part 断点在 62%</span>
+                        </td>
+                        <td><span class="app-status is-ok">下载中</span></td>
+                        <td><span class="app-track"><i style="width: 62%"></i></span></td>
+                        <td class="num">62.0 MB</td>
+                        <td class="num">4.2 MB/s</td>
+                        <td class="num">00:01:48</td>
+                      </tr>
+                      <tr>
+                        <td class="cell-file">
+                          <span class="app-file">秋日通勤穿搭-1.jpg</span>
+                          <span class="app-sub">图集第 1 / 9 张</span>
+                        </td>
+                        <td><span class="app-status is-ok">下载中</span></td>
+                        <td><span class="app-track"><i style="width: 28%"></i></span></td>
+                        <td class="num">1.9 MB</td>
+                        <td class="num">2.8 MB/s</td>
+                        <td class="num">00:00:31</td>
+                      </tr>
+                      <tr>
+                        <td class="cell-file">
+                          <span class="app-file">P2 街巷篇 · 1080P.m4s</span>
+                          <span class="app-sub">同一作品第 2 个文件</span>
+                        </td>
+                        <td><span class="app-status">排队</span></td>
+                        <td><span class="app-track"><i style="width: 0%"></i></span></td>
+                        <td class="num">41.7 MB</td>
+                        <td class="num">—</td>
+                        <td class="num">—</td>
+                      </tr>
+                      <tr>
+                        <td class="cell-file">
+                          <span class="app-file">坝上草原的秋：一条航拍.mp4</span>
+                          <span class="app-sub">直链已过期，已自动重新取链后仍失败</span>
+                        </td>
+                        <td><span class="app-status is-warn">失败</span></td>
+                        <td><span class="app-track"><i class="is-bad" style="width: 100%"></i></span></td>
+                        <td class="num">88.1 MB</td>
+                        <td class="num">—</td>
+                        <td class="num">—</td>
+                      </tr>
+                      <tr>
+                        <td class="cell-file">
+                          <span class="app-file">晚风合唱团 · 山海（现场版）.m4a</span>
+                          <span class="app-sub">D:\Downloads</span>
+                        </td>
+                        <td><span class="app-status is-ok">完成</span></td>
+                        <td><span class="app-track"><i class="is-done" style="width: 100%"></i></span></td>
+                        <td class="num">8.4 MB</td>
+                        <td class="num">3.1 MB/s</td>
+                        <td class="num">—</td>
+                      </tr>
+                      <tr>
+                        <td class="cell-file">
+                          <span class="app-file">Building a mechanical keyboard.mp4</span>
+                          <span class="app-sub">yt-dlp 取流，ffmpeg 合流</span>
+                        </td>
+                        <td><span class="app-status is-warn">已暂停</span></td>
+                        <td><span class="app-track"><i style="width: 44%"></i></span></td>
+                        <td class="num">216.0 MB</td>
+                        <td class="num">2.4 MB/s</td>
+                        <td class="num">00:01:12</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <!-- 历史页：解析成功即落一行，没下载也留着。文件数列 0 显示「未下载」是界面上的原话。 -->
+              <section class="app-page" data-page="history">
+                <div class="app-tools">
+                  <span class="app-btn is-select">全部平台</span>
+                  <span class="app-btn is-select">近 30 天</span>
+                  <span class="app-search">搜索标题 / 作者 / 文件名</span>
+                </div>
+                <div class="app-scroll">
+                  <table class="app-table" aria-label="解析历史（示意数据）">
+                    <thead>
+                      <tr>
+                        <th class="cell-pick"><i class="app-check"></i></th>
+                        <th>作品</th>
+                        <th>作者</th>
+                        <th>类型</th>
+                        <th>文件数</th>
+                        <th>解析时间</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr class="is-picked">
+                        <td class="cell-pick"><i class="app-check is-on"></i></td>
+                        <td class="cell-file">
+                          <span class="app-file">
+                            <img src={`./logos/${logo("bilibili")}`} alt="哔哩哔哩" width="16" height="16" />
+                            【4K 修复】二十年前的城市夜景胶片
+                          </span>
+                        </td>
+                        <td>胶片修复所</td>
+                        <td>视频</td>
+                        <td class="num">3 个</td>
+                        <td class="num">今天 12:04:31</td>
+                      </tr>
+                      <tr class="is-picked">
+                        <td class="cell-pick"><i class="app-check is-on"></i></td>
+                        <td class="cell-file">
+                          <span class="app-file">
+                            <img src={`./logos/${logo("redbook")}`} alt="小红书" width="16" height="16" />
+                            秋日通勤穿搭｜九张图拆到单品
+                          </span>
+                        </td>
+                        <td>穿搭存档</td>
+                        <td>图集</td>
+                        <td class="num">9 个</td>
+                        <td class="num">今天 12:01:07</td>
+                      </tr>
+                      <tr>
+                        <td class="cell-pick"><i class="app-check"></i></td>
+                        <td class="cell-file">
+                          <span class="app-file">
+                            <img src={`./logos/${logo("douyin")}`} alt="抖音" width="16" height="16" />
+                            一分钟讲清楚：为什么地铁上的手机信号会突然掉
+                          </span>
+                        </td>
+                        <td>信号铺子</td>
+                        <td>视频</td>
+                        <td class="num">未下载</td>
+                        <td class="num">今天 11:46:52</td>
+                      </tr>
+                      <tr>
+                        <td class="cell-pick"><i class="app-check"></i></td>
+                        <td class="cell-file">
+                          <span class="app-file">
+                            <img src={`./logos/${logo("youtube")}`} alt="YouTube" width="16" height="16" />
+                            Building a mechanical keyboard from scratch
+                          </span>
+                        </td>
+                        <td>Keybench Labs</td>
+                        <td>视频</td>
+                        <td class="num">2 个</td>
+                        <td class="num">昨天 21:18:40</td>
+                      </tr>
+                      <tr>
+                        <td class="cell-pick"><i class="app-check"></i></td>
+                        <td class="cell-file">
+                          <span class="app-file">
+                            <img src={`./logos/${logo("qsmusic")}`} alt="汽水音乐" width="16" height="16" />
+                            山海（现场版）
+                          </span>
+                        </td>
+                        <td>晚风合唱团</td>
+                        <td>音频</td>
+                        <td class="num">1 个</td>
+                        <td class="num">昨天 20:02:15</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div class="app-bulk">
+                  已选 2 项
+                  <span class="app-btn">导出</span>
+                  <span class="app-btn">重新解析</span>
+                  <span class="app-btn is-quiet">移除记录</span>
+                  <span class="app-btn is-quiet">取消选择</span>
+                </div>
+              </section>
+
+              <!-- 统计页：数字全部来自计数档，不从明细反推（比率同一条口径）。
+                   真页有七块面板，这里只出趋势 / 平台 / 活跃 / 解析四块——其余三块
+                   （类型、单文件体积、常看作者）都是同一种排行条，多摆只是刷屏。 -->
+              <section class="app-page" data-page="stats">
+                <div class="app-figs">
+                  <p class="app-fig"><b>98.4%</b><span>成功率</span></p>
+                  <p class="app-fig"><b>1.8 GB</b><span>累计字节</span></p>
+                  <p class="app-fig"><b>3.6 MB/s</b><span>平均速度</span></p>
+                  <p class="app-fig"><b>246 次</b><span>解析</span></p>
+                  <p class="app-fig"><b>自 2026-09-20</b><span>计数 · 第 29 天</span></p>
+                  <span class="app-btn">刷新</span>
+                </div>
+                <div class="app-panels">
+                  <div class="app-panel">
+                    <p class="app-res-bar">趋势<span class="app-div">近 30 天 · 246 次 / 1.8 GB / 失败 4</span></p>
+                    <svg class="app-trend" viewBox="0 0 300 78" aria-hidden="true" preserveAspectRatio="none">
+                      <path class="area" d="M0 66 12 58 24 62 38 44 50 52 64 34 78 42 92 26 106 38 120 30 134 46 148 22 162 36 176 28 190 40 204 18 218 32 232 24 246 34 260 14 274 26 288 20 300 24 300 78 0 78Z" />
+                      <path
+                        class="line"
+                        d="M0 66 12 58 24 62 38 44 50 52 64 34 78 42 92 26 106 38 120 30 134 46 148 22 162 36 176 28 190 40 204 18 218 32 232 24 246 34 260 14 274 26 288 20 300 24"
+                      />
+                    </svg>
+                  </div>
+                  <div class="app-panel">
+                    <p class="app-res-bar">平台<span class="app-div">按次数排 · 点一条在历史页只看它</span></p>
+                    <div class="app-rank">
+                      <span class="app-rank-name">
+                        <img src={`./logos/${logo("bilibili")}`} alt="" width="14" height="14" />
+                        哔哩哔哩
+                      </span>
+                      <span class="app-track"><i style="width: 54%"></i></span>
+                      <em>133</em>
+                    </div>
+                    <div class="app-rank">
+                      <span class="app-rank-name">
+                        <img src={`./logos/${logo("redbook")}`} alt="" width="14" height="14" />
+                        小红书
+                      </span>
+                      <span class="app-track"><i style="width: 31%"></i></span>
+                      <em>76</em>
+                    </div>
+                    <div class="app-rank">
+                      <span class="app-rank-name">
+                        <img src={`./logos/${logo("kuaishou")}`} alt="" width="14" height="14" />
+                        快手
+                      </span>
+                      <span class="app-track"><i style="width: 15%"></i></span>
+                      <em>37</em>
+                    </div>
+                  </div>
+                  <div class="app-panel">
+                    <p class="app-res-bar">活跃<span class="app-div">高峰 周三 20:00 · 14 次</span></p>
+                    <div class="app-heat">
+                      <span class="app-heat-days" aria-hidden="true">
+                        {WEEKDAYS.map((day) => <i>{day}</i>)}
+                      </span>
+                      <span class="app-heat-grid">
+                        {
+                          HEAT.map((row) => (
+                            <span class="app-heat-row">
+                              {row.map((level) => <i data-l={level}></i>)}
+                            </span>
+                          ))
+                        }
+                      </span>
+                    </div>
+                  </div>
+                  <div class="app-panel">
+                    <p class="app-res-bar">解析<span class="app-div">均耗时 1.2 s</span></p>
+                    <div class="app-rank">
+                      <span class="app-rank-name">本地内核</span>
+                      <span class="app-track"><i style="width: 96%"></i></span>
+                      <em>236</em>
+                    </div>
+                    <div class="app-rank">
+                      <span class="app-rank-name">mock 骨架</span>
+                      <span class="app-track"><i style="width: 4%"></i></span>
+                      <em>10</em>
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <!-- 设置面：整壳换成分类导航（真应用同一条语义）。这里只出「引擎」分类的体检表，
+                   其余四类（通用 / 下载 / 外观 / 关于）不铺开——它们不是本段的卖点。 -->
+              <section class="app-page" data-page="settings">
+                <div class="app-item">
+                  <p class="app-item-title">解析引擎</p>
+                  <p class="app-item-desc">
+                    「提供」列是注册表开关：关掉后主进程在调用任何引擎之前就回绝该平台的解析请求，落盘即生效、不等「保存」。
+                  </p>
+                  <div class="app-scroll">
+                    <table class="app-table is-engine" aria-label="引擎体检（示意数据）">
+                      <thead>
+                        <tr>
+                          <th>平台</th>
+                          <th>提供</th>
+                          <th>Cookie</th>
+                          <th>通道</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr>
+                          <td class="cell-file">
+                            <span class="app-file">
+                              <img src={`./logos/${logo("bilibili")}`} alt="" width="16" height="16" />
+                              哔哩哔哩
+                            </span>
+                          </td>
+                          <td><i class="app-switch is-on"></i></td>
+                          <td><span class="app-badge is-ok">已配置</span></td>
+                          <td><span class="app-badge is-ok">本地内核</span></td>
+                        </tr>
+                        <tr>
+                          <td class="cell-file">
+                            <span class="app-file">
+                              <img src={`./logos/${logo("redbook")}`} alt="" width="16" height="16" />
+                              小红书
+                            </span>
+                          </td>
+                          <td><i class="app-switch is-on"></i></td>
+                          <td><span class="app-badge is-warn">待保存</span></td>
+                          <td><span class="app-badge is-ok">本地内核</span></td>
+                        </tr>
+                        <tr>
+                          <td class="cell-file">
+                            <span class="app-file">
+                              <img src={`./logos/${logo("kuaishou")}`} alt="" width="16" height="16" />
+                              快手
+                            </span>
+                          </td>
+                          <td><i class="app-switch is-on"></i></td>
+                          <td><span class="app-badge">未配置</span></td>
+                          <td><span class="app-badge is-ok">本地内核</span></td>
+                        </tr>
+                        <tr>
+                          <td class="cell-file">
+                            <span class="app-file">
+                              <img src={`./logos/${logo("youtube")}`} alt="" width="16" height="16" />
+                              YouTube
+                            </span>
+                          </td>
+                          <td><i class="app-switch"></i></td>
+                          <td><span class="app-badge">未配置</span></td>
+                          <td><span class="app-badge">不可用</span></td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <div class="app-save">
+                    <span class="app-save-count">1 项未保存</span>
+                    <span class="app-btn is-quiet">放弃更改</span>
+                    <span class="app-btn is-primary">保存</span>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+
+        <!-- 右列只放当前那一面的说明：五段都在，靠 radio 换显隐，不做页名目录 -->
+        <div class="tour-desc">
+          <div class="page-desc" data-desc="home">
+            <p class="page-name">首页</p>
+            <p>
+              贴一条链接，或一整段分享文案、多条一起贴；识别出平台就照实写「识别为 哔哩哔哩」。
+              结果卡列资源、逐行勾选、逐行预览，清晰度另选一档，解析来源与耗时标在卡脚。
+            </p>
+            <p class="page-note">预览经主进程代理取流，直链不进渲染层、也不入库</p>
+          </div>
+          <div class="page-desc" data-desc="queue">
+            <p class="page-name">队列</p>
+            <p>
+              跨重启的全量台账：文件、状态、进度、大小、速度、剩余逐行排开，筛选与搜索都在表头那一行。
+              暂停、继续、重试、取消各归各的任务，断点从 <span class="page-mono">.part</span> 接着走。
+            </p>
+            <p class="page-note">直链到期自动换一条同资源的新链重跑一次；关窗后留在托盘继续</p>
+          </div>
+          <div class="page-desc" data-desc="history">
+            <p class="page-name">历史</p>
+            <p>
+              解析成功就记一条，没下载也留着，文件数那列写「未下载」。多选能导出、重新解析、移除记录，
+              整表清空也走这一条（表头全选 → 移除记录），没有单独的「清空历史」按钮。导出四档里
+              <span class="page-mono">xlsx / csv / json</span> 吃同一张表，<span class="page-mono">txt</span> 是作品信息全文。
+            </p>
+            <p class="page-note">「移除记录」只撤台账那一行，磁盘上的文件不动</p>
+          </div>
+          <div class="page-desc" data-desc="stats">
+            <p class="page-name">统计</p>
+            <p>
+              成功率、累计字节、平均速度、解析次数与计数起点在页首，趋势、平台榜、活跃热力、解析通道各自成块，
+              比率只从计数档算，不从明细反推。
+            </p>
+            <p class="page-note">点平台榜的一条，历史页就只看那个平台</p>
+          </div>
+          <div class="page-desc" data-desc="settings">
+            <p class="page-name">设置</p>
+            <p>
+              五类：通用、下载、外观、引擎、关于。引擎体检逐平台标注谁在解、供不供、Cookie 什么状态，
+              翻开关当场切断该平台的路由。主题与字号在「外观」，一整套配色 × 明暗 × 四档字号。
+            </p>
+            <p class="page-note">Cookie 只写进本机 userData，界面与日志里一律掩码</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="block" id="platforms">
+        <p class="block-index">02</p>
+        <h2>平台支持</h2>
+        <!--
+          走马灯：名字与图标来自 shared/platforms.ts，后面三份只是同一段轨道的接续拷贝
+          （aria-hidden + alt=""，读屏与视觉都不重复播报），轨道位移靠 CSS 动画，
+          份数与位移量的算法见 global.css 的 .marquee 注释。
+          容器统一 44px，data-fit 按源文件 viewBox 比例分档调光学尺寸（详见 global.css）。
+          src 用 ./ 前缀：产物可能从磁盘路径或子目录被打开，根绝对路径在那两种场合都是断的。
+        -->
+        <div class="marquee">
+          <div class="marquee-track">
+            {[0, 1, 2, 3].map((copy) => (
+              <ul class="platform-list" aria-hidden={copy > 0 || undefined}>
+                {supplied.map((platform) => (
+                  <li data-fit={iconFit[platform.key]}>
+                    <img
+                      src={`./logos/${platform.iconFile}`}
+                      alt={copy > 0 ? "" : platform.name}
+                      width="26"
+                      height="26"
+                    />
+                  </li>
+                ))}
+              </ul>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section class="block" id="faq">
+        <p class="block-index">03</p>
+        <h2>常见问题</h2>
+        <div class="faq">
+          <details>
+            <summary>需要注册或登录吗？</summary>
+            <p>
+              不需要注册账号。抖音、小红书、Instagram 等需要登录态的平台，可以在设置里用内置窗口登录获取
+              Cookie，也可以手动粘贴，两条路都只保存在本机。
+            </p>
+          </details>
+          <details>
+            <summary>Cookie 会被上传吗？</summary>
+            <p>
+              不会。Cookie 只写进本机的 userData 配置，界面与日志里始终以掩码出现；获取它的登录窗口也由主进程自己加载，不经过第三方服务器。
+            </p>
+          </details>
+          <details>
+            <summary>和在线解析网站有什么区别？</summary>
+            <p>
+              在线站点需要先把链接提交给它的服务器排队解析；客户端在本机直接跑对应平台的解析器，链接不经过第三方队列。直链拿到后立刻落盘，也不会出现「复制出去就过期」。
+            </p>
+          </details>
+          <details>
+            <summary>解析失败怎么办？</summary>
+            <p>
+              先看设置里的「引擎体检」：它会逐平台标注由哪个引擎解、当前是否被关掉。需要登录态的平台，补上
+              Cookie 往往就能过；被关掉的平台也可以在那里重新打开。
+            </p>
+          </details>
+          <details>
+            <summary>为什么先做 Windows？</summary>
+            <p>
+              首发目标是 Windows 10 / 11，提供安装版与免安装便携版。代码本身没有写死 Windows-only 假设，macOS
+              与 Linux 目标会按需要再加。
+            </p>
+          </details>
+        </div>
+      </section>
+
+      <!-- 下载只在首屏那一个按钮：链接永远指向 releases/latest，具体资产与体积由 GitHub 那页报。 -->
+    </main>
+
+    <footer class="footer">
+      <p>© 2026 MediaGet · MIT License</p>
+      <p class="footer-note">
+        本地工具，不托管、不分发任何内容。请仅下载你有权保存的作品，并遵守各平台服务条款与当地法律。本项目与所列平台无隶属关系。
+      </p>
+    </footer>
+
+    <script>
+      // 按需水合入口：滚动状态与克制的淡入；WebGL 奇点由其内部按条件动态 import()
+      // （src/scripts/hero-visual.js）。主题开关不在这条路上，它在 head 的内联脚本里。
+      import "../scripts/main.js";
+    </script>
+  </body>
+</html>

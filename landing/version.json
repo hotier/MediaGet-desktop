@@ -1,0 +1,18 @@
+{
+  "version": "0.1.0",
+  "date": "2026-10-18",
+  "source": "github",
+  "repo": "hotier/mediaGet-desktop",
+  "assets": [
+    {
+      "name": "MediaGet-Setup-0.1.0.exe",
+      "size": "160.8 MB",
+      "url": "https://github.com/hotier/mediaGet-desktop/releases/download/v0.1.0/MediaGet-Setup-0.1.0.exe"
+    },
+    {
+      "name": "MediaGet-Portable-0.1.0.exe",
+      "size": "160.6 MB",
+      "url": "https://github.com/hotier/mediaGet-desktop/releases/download/v0.1.0/MediaGet-Portable-0.1.0.exe"
+    }
+  ]
+}

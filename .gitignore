@@ -3,9 +3,14 @@ node_modules/
 dist/
 dist-electron/
 dist-renderer/
+.astro/
 release/
 *.tsbuildinfo
 .vite/
+
+# 落地页的品牌图标：由 scripts/build-landing.cjs 从 renderer/public/logos 镜像过来（生成物）。
+# 图标真源只有一处，第二份入库就会变成「加了平台忘了同步落地页」那种静默缺陷。
+landing/public/logos/
 
 # bundled binaries (fetched by CI / first-run, never in git)
 resources/bin/

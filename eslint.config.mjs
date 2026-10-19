@@ -11,6 +11,9 @@ export default tseslint.config(
       "node_modules/**",
       // 本机诊断产物（崩溃探针输出、临时探针脚本）；.gitignore 已排除，lint 同样不该看
       ".cache/**",
+      // 落地页（Astro）的生成物：框架自管，不属于本仓 lint 范围
+      "landing/dist/**",
+      "landing/.astro/**",
     ],
   },
   js.configs.recommended,

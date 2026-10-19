@@ -1,0 +1,17 @@
+{
+  "name": "mediaget-landing",
+  "version": "0.1.0",
+  "description": "MediaGet 落地页（Astro 静态站）：默认零 JS，重型视觉按 island 按需加载；version.json 与品牌图标由 scripts/build-landing.cjs 产出",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node ../scripts/build-landing.cjs && astro dev",
+    "build": "node ../scripts/build-landing.cjs && astro build",
+    "build:online": "node ../scripts/build-landing.cjs --online && astro build",
+    "preview": "astro preview",
+    "astro": "astro"
+  },
+  "dependencies": {
+    "astro": "^5.0.0"
+  }
+}
