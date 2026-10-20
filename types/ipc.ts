@@ -45,6 +45,8 @@ import type {
   ParsedVideoQualitySchema,
   PersistedQueueTaskSchema,
   StatsSnapshotSchema,
+  StatsDateRangeSchema,
+  StatsQueryResultSchema,
   UpdateStateSchema,
   WorkStatSchema,
 } from "./ipc-contract";
@@ -166,7 +168,7 @@ export type InvokeResult<T> = InvokeOk<T> | InvokeErr;
 //     与 settings:get 的 "***" 掩码同一条隐私契约。通道集合变了，按 v6 起同一条口径升号。
 // ————————————————————————————————————————————————
 
-export const CONTRACT_VERSION = 19;
+export const CONTRACT_VERSION = 20;
 
 // ————————————————————————————————————————————————
 // channel 常量（preload/main/renderer 三方共用字面量，禁止散落拼写）
@@ -351,6 +353,8 @@ export type UpdateState = z.infer<typeof UpdateStateSchema>;
 
 /** stats:get 出参：生命周期计数器快照（只有计数/字节/时长，无 url、无文件名） */
 export type StatsSnapshot = z.infer<typeof StatsSnapshotSchema>;
+export type StatsDateRange = z.infer<typeof StatsDateRangeSchema>;
+export type StatsQueryResult = z.infer<typeof StatsQueryResultSchema>;
 
 // ————————————————————————————————————————————————
 // preload 暴露给 window.mg 的 API 面（contextBridge 白名单）
@@ -387,9 +391,10 @@ export interface MgBridge {
   probe: {
     engines(): Promise<InvokeResult<EngineHealth[]>>;
   };
-  /** 统计页数据源：生命周期计数器快照（主进程内存态，落盘走 stats.json 节流） */
+  /** 统计查询；无日期参数仅用于统计 UI 切换前的兼容快照。 */
   stats: {
     get(): Promise<InvokeResult<StatsSnapshot>>;
+    get(range: StatsDateRange): Promise<InvokeResult<StatsQueryResult>>;
   };
   app: {
     pickDownloadDir(): Promise<InvokeResult<string | null>>;

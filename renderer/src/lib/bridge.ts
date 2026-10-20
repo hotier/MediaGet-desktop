@@ -27,6 +27,8 @@ import type {
   ParseInput,
   ParseRunOutcome,
   StatsSnapshot,
+  StatsDateRange,
+  StatsQueryResult,
   UpdateState,
 } from "../../../types/ipc";
 
@@ -55,6 +57,14 @@ async function unwrap<T>(p: Promise<InvokeResult<T>>): Promise<T> {
   const r = await p;
   if (r.ok) return r.data;
   throw new BridgeError(r.error.code, r.error.message, r.error.failType);
+}
+
+function getStats(): Promise<StatsSnapshot>;
+function getStats(range: StatsDateRange): Promise<StatsQueryResult>;
+function getStats(range?: StatsDateRange): Promise<StatsSnapshot | StatsQueryResult> {
+  return range
+    ? unwrap<StatsQueryResult>(bridge().stats.get(range))
+    : unwrap<StatsSnapshot>(bridge().stats.get());
 }
 
 export const api = {
@@ -92,7 +102,7 @@ export const api = {
     engines: () => unwrap<EngineHealth[]>(bridge().probe.engines()),
   },
   stats: {
-    get: () => unwrap<StatsSnapshot>(bridge().stats.get()),
+    get: getStats,
   },
   app: {
     pickDownloadDir: () => unwrap<string | null>(bridge().app.pickDownloadDir()),

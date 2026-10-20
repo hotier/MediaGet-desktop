@@ -31,7 +31,7 @@ import { createEngine } from "./engine";
 import { Downloader } from "./downloader";
 import { createLinkRenewer } from "./link-renew";
 import { JsonStore, queueDigest } from "./store";
-import { settingsRepository } from "./storage-runtime";
+import { settingsRepository, statsRepository } from "./storage-runtime";
 import { createStats } from "./stats";
 import { createResources, readManifest } from "./resources";
 import { createClipboardWatcher } from "./clipboard";
@@ -293,6 +293,9 @@ const stats = createStats({
   load: () => store.loadStats(),
   save: (s) => store.saveStatsThrottled(s),
   onReset: (reason) => logger.warn(`[stats] ${reason}`),
+  recordEvent: (event, historyEntry) => statsRepository.recordEvent(event, historyEntry),
+  query: (range) => statsRepository.query(range),
+  onEventError: () => logger.error("[stats] 统计事件写入失败"),
 });
 
 const downloader = new Downloader({
@@ -314,17 +317,6 @@ const downloader = new Downloader({
     done: (t) => {
       emit(IPC.evDownloadDone, t);
       notifier.onTaskEvent("done", t);
-      stats.done({
-        at: t.finishedAt ?? Date.now(),
-        platform: t.platform,
-        kind: t.kind,
-        bytes: t.received,
-        // 耗时是速度的唯一持久线索：逐任务 speed 不落盘（重启后本来也没意义）。
-        // 分母用**实际传输时长**（契约 v18）：墙钟时间把暂停与排队也算了进去，暂停一会儿速度就掉成零头。
-        // 只有「整段字节都被测到」的下载才进样本 —— 接着旧 .part 写时分子只覆盖后半程，配对会虚高
-        elapsedMs:
-          t.transferMs > 0 && t.transferBytes === t.received ? Math.round(t.transferMs) : undefined,
-      });
       // 完成自动定位文件：默认关，开着并发下载会连环弹资源管理器（业主知情选择）
       if (store.loadConfig().settings.openFolderOnDone && t.filePath) {
         shell.showItemInFolder(t.filePath);
@@ -333,7 +325,7 @@ const downloader = new Downloader({
     error: (t) => {
       emit(IPC.evDownloadError, t);
       notifier.onTaskEvent("error", t);
-      stats.failure({ at: Date.now(), platform: t.platform });
+      stats.failure({ at: Date.now(), platform: t.platform, kind: t.kind, workKey: workKeyOf(t.sourceUrl) });
       // 失败是日志里最有价值的一类：只投文件名与原因，**不投 url**（隐私红线：日志不落媒体直链）
       logger.error(`[download] ${t.filename} 失败: ${t.error ?? "未知原因"}`);
     },
@@ -354,6 +346,18 @@ const downloader = new Downloader({
         author: groupTask.author,
         createdAt: Date.now(),
       };
+      stats.done({
+        at: groupTask.finishedAt ?? entry.createdAt,
+        platform: groupTask.platform,
+        kind: groupTask.kind,
+        bytes: groupTask.received,
+        elapsedMs:
+          groupTask.transferMs > 0 && groupTask.transferBytes === groupTask.received
+            ? Math.round(groupTask.transferMs)
+            : undefined,
+        workKey: entry.groupId,
+        historyEntry: entry,
+      });
       store.appendHistory(entry);
     },
   },

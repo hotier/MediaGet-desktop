@@ -17,7 +17,7 @@ import { sanitizeFilename } from "@mediaget/parse-core";
 import { resolveKey } from "../../shared/platforms";
 import { refererFor } from "./hotlink";
 import { buildAuthorSnapshot } from "../../shared/author";
-import { parseHistoryEntry } from "../../shared/history";
+import { parseHistoryEntry, workKeyOf } from "../../shared/history";
 import { pickPublishedAt, pickWorkStat } from "../../shared/work-stat";
 import {
   describeIssues,
@@ -33,6 +33,7 @@ import {
   LogWriteInputSchema,
   ParseInputSchema,
   SettingsPatchSchema,
+  StatsDateRangeSchema,
   TaskIdInputSchema,
   UrlInputSchema,
   CONTRACT,
@@ -48,7 +49,6 @@ import {
   type EnqueueOutcome,
   type HistoryEntry,
   type InvokeResult,
-  type StatsSnapshot,
   type UpdateState,
 } from "../../types/ipc";
 import type { createEngine } from "./engine";
@@ -211,44 +211,46 @@ export function registerIpc(deps: IpcRegistryDeps): void {
       platformHint: parsed.platformHint,
       skipCache: parsed.skipCache,
     });
-    deps.stats.parse({
-      at,
-      // 归一到契约键后落盘：否则 `xhs` 与 `redbook` 会在平台榜上算成两个平台
-      platform: resolveKey(outcome.result.platform ?? parsed.platformHint ?? ""),
-      via: outcome.via,
-      ok: outcome.result.code === 200,
-      durationMs: outcome.durationMs,
-    });
     // 来源链接统一换成真实资源页（v16）：短链跟到最终长链、或由作品 ID 拼官方页面。
     // 只对成功结果做 —— 失败时 UI 用的是输入框原文，历史也不落行；探测失败回落原文。
     let sourceUrl: string | undefined;
-    if (outcome.result.code === 200) {
-      // 用户输入里抽出的原始链接（identify 纯本地，不发请求）
-      sourceUrl = await resolveSource({
-        raw: engine.identify(parsed.text).url,
-        platform: outcome.result.platform,
-        data: outcome.result.data,
+    let historyEntry: HistoryEntry | undefined;
+    try {
+      if (outcome.result.code === 200) {
+        // 用户输入里抽出的原始链接（identify 纯本地，不发请求）
+        sourceUrl = await resolveSource({
+          raw: engine.identify(parsed.text).url,
+          platform: outcome.result.platform,
+          data: outcome.result.data,
+        });
+      }
+      if (outcome.result.code === 200 && outcome.via !== "mock") {
+        historyEntry = parseHistoryEntry({
+          sourceUrl,
+          platform: outcome.result.platform,
+          title: outcome.result.data?.title ?? outcome.result.data?.desc,
+          author: buildAuthorSnapshot(outcome.result.data),
+          publishedAt: pickPublishedAt(outcome.result.data, at),
+          stat: pickWorkStat(outcome.result.data),
+          fallbackId: `p-${at.toString(36)}-${(++parseSeq).toString(36)}`,
+          at,
+        });
+      }
+    } finally {
+      deps.stats.parse({
+        at,
+        platform: resolveKey(outcome.result.platform ?? parsed.platformHint ?? ""),
+        via: outcome.via,
+        ok: outcome.result.code === 200,
+        durationMs: outcome.durationMs,
+        workKey: workKeyOf(sourceUrl),
+        historyEntry,
       });
     }
     // 解析成功即落一条历史（业主指令 2026-10-17：历史页是**解析历史**，不下载也要有记录）。
     // 写在主进程而不是首页：首页关掉、切页、dev 之外的任何入口都该有同一条记录。
     // mock 兜底不写：那是「没有引擎在场」时的演示结果，标题就写着 mock，落进用户历史只是脏数据。
-    if (outcome.result.code === 200 && outcome.via !== "mock") {
-      store.upsertHistory(
-        parseHistoryEntry({
-          sourceUrl,
-          platform: outcome.result.platform,
-          title: outcome.result.data?.title ?? outcome.result.data?.desc,
-          author: buildAuthorSnapshot(outcome.result.data),
-          // 发布时间与互动数在这一刻定格（业主指令 2026-10-17：导出要带完整作品信息）。
-          // 只在这一刻拿得到：历史之后没有任何通道再去访问平台。
-          publishedAt: pickPublishedAt(outcome.result.data, at),
-          stat: pickWorkStat(outcome.result.data),
-          fallbackId: `p-${at.toString(36)}-${(++parseSeq).toString(36)}`,
-          at,
-        })
-      );
-    }
+    if (historyEntry) store.upsertHistory(historyEntry);
     return { ...outcome, sourceUrl };
   });
 
@@ -288,9 +290,14 @@ function sanitizeWithExt(name: string, maxLen: number): string {
 
   // —— download:cancel / pause / resume / list ——
   wrap(IPC.downloadCancel, TaskIdInputSchema, ({ taskId }) => {
+    const task = downloader.list().find((row) => row.taskId === taskId);
     const okCancel = downloader.cancel(taskId);
-    // 取消是用户动作不是失败，但它决定「队列里为什么少了一个」——只记总数，不记平台
-    if (okCancel) deps.stats.cancel();
+    if (okCancel) deps.stats.cancel({
+      at: Date.now(),
+      platform: task?.platform,
+      kind: task?.kind,
+      workKey: workKeyOf(task?.sourceUrl),
+    });
     return { ok: okCancel };
   });
   wrap(IPC.downloadPause, TaskIdInputSchema, ({ taskId }) => ({
@@ -465,5 +472,9 @@ function sanitizeWithExt(name: string, maxLen: number): string {
     return { ok: true };
   });
   // —— stats:get（统计页数据源：recorder 的内存态直出，不让 UI 每次读盘再对不上）——
-  wrap<null, StatsSnapshot>(IPC.statsGet, null, () => deps.stats.snapshot());
+  wrap(
+    IPC.statsGet,
+    StatsDateRangeSchema.optional(),
+    (range) => range ? deps.stats.query(range) : deps.stats.snapshot()
+  );
 }

@@ -27,6 +27,8 @@ import {
   type ParseData,
   type ParseRunOutcome,
   type StatsSnapshot,
+  type StatsDateRange,
+  type StatsQueryResult,
   type UpdateState,
   type WorkStat,
 } from "../../../types/ipc";
@@ -487,6 +489,51 @@ function mockStats(): StatsSnapshot {
   }
 
   return snap;
+}
+
+function mockStatsQuery(range: StatsDateRange): StatsQueryResult {
+  const snapshot = mockStats();
+  const start = new Date(...range.from.split("-").map(Number).map((value, index) => index === 1 ? value - 1 : value) as [number, number, number]);
+  const end = new Date(...range.to.split("-").map(Number).map((value, index) => index === 1 ? value - 1 : value) as [number, number, number]);
+  const byDay: StatsQueryResult["byDay"] = {};
+  const totals: StatsQueryResult["totals"] = {
+    downloads: 0, failures: 0, canceled: 0, bytes: 0, elapsedMs: 0,
+    elapsedCount: 0, elapsedBytes: 0, parses: 0, parseFailures: 0,
+  };
+  for (const day = new Date(start); day <= end; day.setDate(day.getDate() + 1)) {
+    const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+    const source = snapshot.byDay[key];
+    const row = {
+      downloads: source?.downloads ?? 0,
+      failures: source?.failures ?? 0,
+      canceled: 0,
+      bytes: source?.bytes ?? 0,
+      parses: source?.parses ?? 0,
+      parseFailures: 0,
+    };
+    byDay[key] = row;
+    totals.downloads += row.downloads;
+    totals.failures += row.failures;
+    totals.bytes += row.bytes;
+    totals.parses += row.parses;
+  }
+  return {
+    range,
+    availableFrom: `${new Date(snapshot.since).getFullYear()}-${String(new Date(snapshot.since).getMonth() + 1).padStart(2, "0")}-${String(new Date(snapshot.since).getDate()).padStart(2, "0")}`,
+    totals,
+    byDay,
+    byPlatform: Object.fromEntries(Object.entries(snapshot.byPlatform).map(([key, row]) => [key, {
+      downloads: row.downloads, failures: row.failures, bytes: row.bytes, parses: row.parses, parseFailures: row.parseFailures,
+    }])),
+    byKind: snapshot.byKind,
+    authors: [],
+  };
+}
+
+function mockStatsGet(): Promise<InvokeResult<StatsSnapshot>>;
+function mockStatsGet(range: StatsDateRange): Promise<InvokeResult<StatsQueryResult>>;
+function mockStatsGet(range?: StatsDateRange): Promise<InvokeResult<StatsSnapshot | StatsQueryResult>> {
+  return Promise.resolve(range ? ok(mockStatsQuery(range)) : ok(mockStats()));
 }
 
 function tick(): void {
@@ -986,7 +1033,7 @@ const mockBridge: MgBridge = {
   },
 
   stats: {
-    get: async () => ok<StatsSnapshot>(mockStats()),
+    get: mockStatsGet,
   },
 
   app: {

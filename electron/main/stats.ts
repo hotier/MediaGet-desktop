@@ -12,8 +12,9 @@
  * 落盘交给 JsonStore 的节流口（与 queue 同一套 pending + 定时器 + flush 语义）：
  * 批量下载收尾时一秒内几十次累加，不该钉几十次整档重写。
  */
-import type { StatsSnapshot } from "../../types/ipc";
+import type { HistoryEntry, StatsDateRange, StatsQueryResult, StatsSnapshot } from "../../types/ipc";
 import { resolveKey } from "../../shared/platforms";
+import type { StatsEventInput } from "./repositories";
 
 /** byDay 保留的自然日数：再多就丢最旧的（趋势图最长要看的就是这一年） */
 export const STATS_DAY_RETENTION = 366;
@@ -88,11 +89,15 @@ export interface StatsDoneInput {
   bytes: number;
   /** 单任务**实际传输时长**（v18：`transferMs`，暂停/排队不计）；缺样本时只计字节不计耗时 */
   elapsedMs?: number;
+  workKey?: string;
+  historyEntry?: HistoryEntry;
 }
 
 export interface StatsFailureInput {
   at: number;
   platform?: string;
+  kind?: string;
+  workKey?: string;
 }
 
 export interface StatsParseInput {
@@ -101,13 +106,16 @@ export interface StatsParseInput {
   via: "local" | "mock";
   ok: boolean;
   durationMs: number;
+  workKey?: string;
+  historyEntry?: HistoryEntry;
 }
 
 export interface StatsRecorder {
   done(input: StatsDoneInput): void;
   failure(input: StatsFailureInput): void;
-  cancel(): void;
+  cancel(input?: { at: number; platform?: string; kind?: string; workKey?: string }): void;
   parse(input: StatsParseInput): void;
+  query(range: StatsDateRange): StatsQueryResult;
   /** 当前内存态（`stats:get` 的唯一出口，避免 UI 与盘各读一份对不上） */
   snapshot(): StatsSnapshot;
 }
@@ -120,6 +128,9 @@ export interface StatsOptions {
   now?: () => number;
   /** 档被丢弃重来时的留痕口（形状不认识 / 读盘失败） */
   onReset?: (reason: string) => void;
+  recordEvent?: (event: StatsEventInput, historyEntry?: HistoryEntry) => void;
+  query?: (range: StatsDateRange) => StatsQueryResult;
+  onEventError?: () => void;
 }
 
 export function createStats(opts: StatsOptions): StatsRecorder {
@@ -161,6 +172,15 @@ export function createStats(opts: StatsOptions): StatsRecorder {
     opts.save(cur);
   };
 
+  const recordEvent = (event: StatsEventInput, entry?: HistoryEntry): void => {
+    try {
+      opts.recordEvent?.(event, entry);
+    } catch {
+      // Storage errors must never bubble through downloader/parse lifecycle callbacks or expose secrets.
+      opts.onEventError?.();
+    }
+  };
+
   const ensure = (): StatsSnapshot => {
     if (cur) return cur;
     const loaded = opts.load();
@@ -185,7 +205,8 @@ export function createStats(opts: StatsOptions): StatsRecorder {
   };
 
   return {
-    done({ at, platform, kind, bytes, elapsedMs }) {
+    done({ at, platform, kind, bytes, elapsedMs, workKey, historyEntry }) {
+      recordEvent({ type: "download", at, platform, kind: kind || "unknown", outcome: "success", bytes, transferMs: elapsedMs, workKey }, historyEntry);
       const s = ensure();
       const size = NON_NEGATIVE_INT(bytes);
       s.totals.downloads += 1;
@@ -214,7 +235,8 @@ export function createStats(opts: StatsOptions): StatsRecorder {
       commit();
     },
 
-    failure({ at, platform }) {
+    failure({ at, platform, kind, workKey }) {
+      recordEvent({ type: "download", at, platform, kind: kind ?? "unknown", outcome: "failure", bytes: 0, workKey });
       const s = ensure();
       s.totals.failures += 1;
       bumpPlatform(platform, (p) => {
@@ -226,12 +248,14 @@ export function createStats(opts: StatsOptions): StatsRecorder {
       commit();
     },
 
-    cancel() {
+    cancel(input?) {
+      if (input) recordEvent({ type: "cancel", ...input });
       ensure().totals.canceled += 1;
       commit();
     },
 
-    parse({ at, platform, via, ok, durationMs }) {
+    parse({ at, platform, via, ok, durationMs, workKey, historyEntry }) {
+      recordEvent({ type: "parse", at, platform, via, ok, durationMs, workKey }, historyEntry);
       const s = ensure();
       s.parse.total += 1;
       s.parse[via] += 1;
@@ -245,6 +269,11 @@ export function createStats(opts: StatsOptions): StatsRecorder {
         d.parses += 1;
       });
       commit();
+    },
+
+    query(range) {
+      if (!opts.query) throw new Error("Statistics query is unavailable");
+      return opts.query(range);
     },
 
     snapshot() {

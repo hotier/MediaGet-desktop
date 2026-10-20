@@ -755,6 +755,57 @@ export const StatsSnapshotSchema = z.object({
   byHour: z.array(COUNT).length(168),
 });
 
+const DateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+}, "Expected a local calendar date");
+
+export const StatsDateRangeSchema = z.object({
+  from: DateKeySchema,
+  to: DateKeySchema,
+}).refine(({ from, to }) => from <= to, "Start date must not be after end date");
+
+const StatsCountSchema = z.object({
+  downloads: COUNT,
+  failures: COUNT,
+  canceled: COUNT,
+  bytes: COUNT,
+  parses: COUNT,
+  parseFailures: COUNT,
+});
+
+export const StatsQueryResultSchema = z.object({
+  range: StatsDateRangeSchema,
+  availableFrom: DateKeySchema.nullable(),
+  totals: z.object({
+    downloads: COUNT,
+    failures: COUNT,
+    canceled: COUNT,
+    bytes: COUNT,
+    elapsedMs: COUNT,
+    elapsedCount: COUNT,
+    elapsedBytes: COUNT,
+    parses: COUNT,
+    parseFailures: COUNT,
+  }),
+  byDay: z.record(DateKeySchema, StatsCountSchema),
+  byPlatform: z.record(STR.max(40), z.object({
+    downloads: COUNT,
+    failures: COUNT,
+    bytes: COUNT,
+    parses: COUNT,
+    parseFailures: COUNT,
+  })),
+  byKind: z.record(STR.max(20), z.object({ downloads: COUNT, bytes: COUNT })),
+  authors: z.array(z.object({
+    name: STR.max(100),
+    parsedWorks: COUNT,
+    downloadedFiles: COUNT,
+    downloadedBytes: COUNT,
+  })),
+});
+
 // ————————————————————————————————————————————————
 // 通道注册表：新增通道只在这里登记 in/out，main 的集中校验与守门测试同时生效
 // ————————————————————————————————————————————————
@@ -797,7 +848,7 @@ export const CONTRACT = {
   [IPC.appLog]: invoke(LogWriteInputSchema, OkFlagSchema),
   [IPC.appOpenExternal]: invoke(UrlInputSchema, OkFlagSchema),
   [IPC.appCopyText]: invoke(CopyTextInputSchema, OkFlagSchema),
-  [IPC.statsGet]: invoke(null, StatsSnapshotSchema),
+  [IPC.statsGet]: invoke(StatsDateRangeSchema.optional(), z.union([StatsQueryResultSchema, StatsSnapshotSchema])),
   [IPC.updateGetState]: invoke(null, UpdateStateSchema),
   [IPC.updateCheck]: invoke(null, UpdateStateSchema),
   [IPC.updateDownload]: invoke(null, UpdateStateSchema),

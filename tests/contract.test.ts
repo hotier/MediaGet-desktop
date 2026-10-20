@@ -188,7 +188,17 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
       clear: async () => ({ freed: 1024, skipped: [], report: CACHE_REPORT }),
     },
     /** 真计数器而不是桩：stats:get 的出参形状要靠它验，parse:run 也在这条路上记账 */
-    stats: createStats({ load: () => null, save: () => {}, now: () => 1700000000000 }),
+    stats: createStats({
+      load: () => null,
+      save: () => {},
+      now: () => 1700000000000,
+      query: (range) => ({
+        range,
+        availableFrom: null,
+        totals: { downloads: 0, failures: 0, canceled: 0, bytes: 0, elapsedMs: 0, elapsedCount: 0, elapsedBytes: 0, parses: 0, parseFailures: 0 },
+        byDay: {}, byPlatform: {}, byKind: {}, authors: [],
+      }),
+    }),
     updater: {
       snapshot: () => UPDATE_SNAPSHOT,
       check: async () => UPDATE_SNAPSHOT,
@@ -220,6 +230,7 @@ const BAD_INPUT: Record<string, unknown> = {
   [IPC.historyList]: { limit: 0 },
   // 空集合不是合法请求（min(1) 拒「删 0 条」的误触），超上限说明 UI 状态坏了
   [IPC.historyRemove]: { keys: [] },
+  [IPC.statsGet]: { from: "2026-02-30", to: "2026-03-01" },
   [IPC.appShowInFolder]: 1234,
   [IPC.appCacheClear]: { keys: ["not-a-cache"] },
   // off 是「不落盘」的门槛档，不是一条可写入的日志
@@ -250,6 +261,7 @@ const GOOD_INPUT: Record<string, unknown> = {
   // 测试桩不注入 cookieLogin：出参是 { captured:false, reason:"error" }，形状必须过 out schema
   [IPC.settingsCookieLogin]: { cookieKey: "BILIBILI_COOKIE" },
   [IPC.historyRemove]: { keys: ["h-1"] },
+  [IPC.statsGet]: { from: "2026-10-01", to: "2026-10-20" },
   [IPC.appShowInFolder]: "C:/Downloads/a.mp4",
   [IPC.appCacheClear]: { keys: ["net", "logs"] },
   [IPC.appLog]: { level: "error", message: "渲染层炸了一处" },

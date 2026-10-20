@@ -5,7 +5,15 @@
  * 事件订阅只暴露三个受控 on* 且返回解绑函数，channel 名不出 preload。
  */
 import { contextBridge, ipcRenderer } from "electron";
-import { IPC, type MgBridge, type UpdateState } from "../../types/ipc";
+import {
+  IPC,
+  type InvokeResult,
+  type MgBridge,
+  type StatsDateRange,
+  type StatsQueryResult,
+  type StatsSnapshot,
+  type UpdateState,
+} from "../../types/ipc";
 
 type Invoke = <T>(channel: string, input?: unknown) => Promise<T>;
 const invoke: Invoke = (channel, input) => ipcRenderer.invoke(channel, input);
@@ -14,6 +22,12 @@ function on<T>(channel: string, cb: (payload: T) => void): () => void {
   const listener = (_e: Electron.IpcRendererEvent, payload: T) => cb(payload);
   ipcRenderer.on(channel, listener);
   return () => ipcRenderer.removeListener(channel, listener);
+}
+
+function getStats(): Promise<InvokeResult<StatsSnapshot>>;
+function getStats(range: StatsDateRange): Promise<InvokeResult<StatsQueryResult>>;
+function getStats(range?: StatsDateRange): Promise<InvokeResult<StatsSnapshot | StatsQueryResult>> {
+  return invoke(IPC.statsGet, range);
 }
 
 const mg: MgBridge = {
@@ -44,7 +58,7 @@ const mg: MgBridge = {
     engines: () => invoke(IPC.probeEngines),
   },
   stats: {
-    get: () => invoke(IPC.statsGet),
+    get: getStats,
   },
   app: {
     pickDownloadDir: () => invoke(IPC.appPickDownloadDir),

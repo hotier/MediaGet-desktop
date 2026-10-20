@@ -86,6 +86,10 @@ const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 2,
+    sql: "ALTER TABLE stats_events ADD COLUMN via TEXT;",
+  },
 ];
 
 function migrate(db: BetterSqlite3.Database): number {
