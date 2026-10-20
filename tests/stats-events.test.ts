@@ -93,13 +93,32 @@ describe("queryable statistical events", () => {
     expect(() => stats.query({ from: "2026-10-21", to: "2026-10-20" })).toThrow();
   });
 
+  it("normalizes platform aliases on the history row written with an event", () => {
+    const { database, stats } = setup();
+    const at = new Date(2026, 9, 20, 9).getTime();
+    stats.recordEvent(
+      { type: "parse", at, platform: "xhs", via: "local", ok: true, durationMs: 5, workKey: "work-alias" },
+      {
+        id: "work-alias",
+        groupId: "work-alias",
+        platform: "xhs",
+        title: "Alias work",
+        files: [],
+        createdAt: at,
+      }
+    );
+
+    const row = database.get<{ platform: string; payload_json: string }>(
+      "SELECT platform, payload_json FROM history_entries WHERE id = 'work-alias'"
+    );
+    expect(row?.platform).toBe("redbook");
+    expect(JSON.parse(row?.payload_json ?? "{}").platform).toBe("redbook");
+  });
+
   it("records lifecycle events and their associated history row atomically", () => {
     const { database, stats: repository } = setup();
     const at = new Date(2026, 9, 20, 10).getTime();
     const recorder = createStats({
-      load: () => null,
-      save: () => {},
-      now: () => at,
       recordEvent: (event, entry) => repository.recordEvent(event, entry),
       query: (range) => repository.query(range),
     });

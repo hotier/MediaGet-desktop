@@ -18,15 +18,19 @@ import type {
   EnqueueInput,
   EnqueueOutcome,
   EngineHealth,
-  HistoryEntry,
   HistoryFilter,
+  HistoryPage,
+  HistoryKeysFilter,
+  HistoryKeysPage,
+  HistoryRemoveResult,
   IdentifyOutcome,
   InvokeResult,
   LogSeverity,
   MgBridge,
   ParseInput,
   ParseRunOutcome,
-  StatsSnapshot,
+  QueueFilter,
+  QueuePage,
   StatsDateRange,
   StatsQueryResult,
   UpdateState,
@@ -59,12 +63,8 @@ async function unwrap<T>(p: Promise<InvokeResult<T>>): Promise<T> {
   throw new BridgeError(r.error.code, r.error.message, r.error.failType);
 }
 
-function getStats(): Promise<StatsSnapshot>;
-function getStats(range: StatsDateRange): Promise<StatsQueryResult>;
-function getStats(range?: StatsDateRange): Promise<StatsSnapshot | StatsQueryResult> {
-  return range
-    ? unwrap<StatsQueryResult>(bridge().stats.get(range))
-    : unwrap<StatsSnapshot>(bridge().stats.get());
+function getStats(range: StatsDateRange): Promise<StatsQueryResult> {
+  return unwrap<StatsQueryResult>(bridge().stats.get(range));
 }
 
 export const api = {
@@ -79,7 +79,7 @@ export const api = {
     cancel: (taskId: string) => unwrap(bridge().download.cancel(taskId)),
     pause: (taskId: string) => unwrap(bridge().download.pause(taskId)),
     resume: (taskId: string) => unwrap(bridge().download.resume(taskId)),
-    list: () => unwrap<DownloadTaskView[]>(bridge().download.list()),
+    list: (filter?: QueueFilter) => unwrap<QueuePage>(bridge().download.list(filter)),
     clear: (taskIds: string[]) => unwrap<ClearTasksResult>(bridge().download.clear(taskIds)),
     onProgress: (cb: (t: DownloadTaskView) => void) => bridge().download.onProgress(cb),
     onDone: (cb: (t: DownloadTaskView) => void) => bridge().download.onDone(cb),
@@ -95,8 +95,10 @@ export const api = {
   },
   history: {
     list: (filter?: HistoryFilter) =>
-      unwrap<HistoryEntry[]>(bridge().history.list(filter)),
-    remove: (keys: string[]) => unwrap<HistoryEntry[]>(bridge().history.remove(keys)),
+      unwrap<HistoryPage>(bridge().history.list(filter)),
+    listKeys: (filter?: HistoryKeysFilter) =>
+      unwrap<HistoryKeysPage>(bridge().history.listKeys(filter)),
+    remove: (keys: string[]) => unwrap<HistoryRemoveResult>(bridge().history.remove(keys)),
   },
   probe: {
     engines: () => unwrap<EngineHealth[]>(bridge().probe.engines()),

@@ -17,9 +17,11 @@
  * 右键菜单（业主指令 2026-10-15）：不显示文件名（行里就是它）；「查看作品信息」跳历史页定位该作品行。
  * 「完成时间」取档内 `finishedAt`（契约 v13：进过队列的行全部留档，重启后照样回来）；
  * 要看这个作品本身去历史页，这里只是下载台账。
- * 筛选（UIUX-DESIGN §2.2）：状态分段 + 搜索 + 平台，全部是**渲染层过滤**（`download:list` 返回的就是全量，零契约变更）。
- * 筛选的单位是**作品（组）**：组里任一文件命中就出现在列表里，展开时只画命中的子行；组行的数值仍是整组的真实聚合
- * ——进度与 `完成/总数` 说的是这个作品，不是筛选结果。分段计数按「含 N 个此类文件的组」数，所以各段之和可以大于「全部」。
+ * 筛选（UIUX-DESIGN §2.2）：状态分段 + 搜索 + 平台 + 时间窗。筛选与分页都在主进程做（SQLite），
+ * 本页只持当前已加载页；「加载更多」按稳定游标续页。
+ * 筛选的单位是**作品（组）**：组里任一文件命中整组入选，页边界不会切开一个作品（组行聚合要整组才算得对）；
+ * 展开时只画命中的子行，组行的数值仍是整组的真实聚合——进度与 `完成/总数` 说的是这个作品，不是筛选结果。
+ * 实时事件只更新已加载行：服务端页决定成员，事件只换同一 taskId 的那颗引用。
  * 清理（契约 v4）：表头「清理已结束」与行菜单「从队列移除」都走 `download:clear`，只收终态（完成/失败/已取消）——
  * 进行中就算被点名也由主进程二次拒绝，返回值 `removed` 少了即是拒绝掉的颗数，播报照它说，不报「清理完成」。
  * 清理按钮的颗数跟搜索/平台走、不跟状态分段走：分段是「我在看哪一类」，清理是「这批结束的都要走」，两者不该互相牵制。
@@ -30,8 +32,9 @@ import { ChevronDown, ChevronRight, Copy, DownloadCloud, FolderOpen, Info, Pause
 import { api } from "../lib/bridge";
 import { cn } from "../lib/utils";
 import { avgSpeed, fmtBytes, fmtCreated, fmtEta, fmtSpeed } from "../lib/format";
-import type { DownloadTaskView } from "../../../types/ipc";
-import { displayName } from "../../../shared/platforms";
+import type { DownloadTaskView, QueueCursor, QueueFilter } from "../../../types/ipc";
+import { canonicalKeys, displayName } from "../../../shared/platforms";
+import { QUEUE_PAGE_SIZE } from "../lib/local-limits";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { Button } from "../components/ui/button";
 import { badgeVariants } from "../components/ui/badge";
@@ -96,16 +99,12 @@ const ALL = "__all__";
 type StatusFilter = "all" | "active" | "done" | "error" | "canceled";
 type TimeRange = "all" | "today" | "7d" | "30d";
 
-/** 「今天」按自然日切；7/30 天按滚动 24h 窗口（记录量级下没人需要精确到零点） */
-const TIME_RANGES: Array<{ key: TimeRange; label: string; within: (ts: number, now: number) => boolean }> = [
-  { key: "all", label: "全部时间", within: () => true },
-  {
-    key: "today",
-    label: "今天",
-    within: (ts, now) => new Date(ts).toDateString() === new Date(now).toDateString(),
-  },
-  { key: "7d", label: "近 7 天", within: (ts, now) => now - ts <= 7 * 86_400_000 },
-  { key: "30d", label: "近 30 天", within: (ts, now) => now - ts <= 30 * 86_400_000 },
+/** 时间窗按自然日切，与历史页同口径；服务端吃 DateKey，本地只负责把子行藏到窗外 */
+const TIME_RANGES: Array<{ key: TimeRange; label: string }> = [
+  { key: "all", label: "全部时间" },
+  { key: "today", label: "今天" },
+  { key: "7d", label: "近 7 天" },
+  { key: "30d", label: "近 30 天" },
 ];
 
 /** 分段是「文件状态」的桶（`paused` 归进行中——它就是暂停在那里的一组文件）；已取消与失败分开，重试动作不同 */
@@ -157,6 +156,10 @@ const TABLE_MIN_W = "min-w-[69.7em]";
 
 export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactElement {
   const [tasks, setTasks] = useState<DownloadTaskView[]>([]);
+  const [nextCursor, setNextCursor] = useState<QueueCursor | null>(null);
+  const [loading, setLoading] = useState(true);
+  /** 行级动作后强制回读第一页：游标按改动前的组算过，不能拿旧 cursor 接着翻 */
+  const [reloadSeq, setReloadSeq] = useState(0);
   // 主线程默认收起：记住的是「谁被展开了」，而不是「谁被折叠了」——后者要给每个新组预填 id
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -165,19 +168,66 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
   const searchRef = useRef<HTMLInputElement>(null);
 
+  const dateWindow = useMemo(() => {
+    if (timeRange === "all") return null;
+    const end = new Date();
+    const start = new Date(end);
+    if (timeRange === "today") start.setHours(0, 0, 0, 0);
+    else start.setDate(start.getDate() - (timeRange === "7d" ? 6 : 29));
+    const key = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return {
+      from: key(start),
+      to: key(end),
+      firstDay: new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime(),
+      nextDay: new Date(end.getFullYear(), end.getMonth(), end.getDate() + 1).getTime(),
+    };
+  }, [timeRange]);
+
+  const serverFilter = useMemo<QueueFilter>(
+    () => ({
+      ...(statusFilter === "all" ? {} : { status: statusFilter }),
+      ...(platform ? { platform } : {}),
+      ...(dateWindow ? { from: dateWindow.from, to: dateWindow.to } : {}),
+      ...(query.trim() ? { query: query.trim() } : {}),
+      limit: QUEUE_PAGE_SIZE,
+    }),
+    [statusFilter, platform, dateWindow, query]
+  );
+
   useEffect(() => {
-    // 失败必须出声（同 HistoryPage 那条）：`tasks` 的初值就是空数组，一次 `download:list`
-    // 报错在屏幕上与「队列真没记录」完全同形。文案只挂在动作上，不进空态分支。
+    let active = true;
+    setLoading(true);
+    setTasks([]);
+    setNextCursor(null);
+    // 失败必须出声（同 HistoryPage 那条）：一次 `download:list` 报错在屏幕上与「队列真没记录」
+    // 完全同形。文案只挂在动作上，不进空态分支。
     void api.download
-      .list()
-      .then(setTasks)
-      .catch((e: unknown) =>
-        toast.error(`下载队列读取失败：${String(e instanceof Error ? e.message : e)}`)
-      );
+      .list(serverFilter)
+      .then((page) => {
+        if (!active) return;
+        setTasks(page.rows);
+        setNextCursor(page.nextCursor);
+      })
+      .catch((e: unknown) => {
+        if (active) toast.error(`下载队列读取失败：${String(e instanceof Error ? e.message : e)}`);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [serverFilter, reloadSeq]);
+
+  // 事件只更新已加载行：页面成员由服务端筛选决定，这里不做「未知行插到队首」——
+  // 那会让一次失败重试把被筛掉的作品硬塞回当前视图。
+  useEffect(() => {
+    const update = (t: DownloadTaskView): void => setTasks((prev) => mergeLive(prev, t));
     const offs = [
-      api.download.onProgress((t) => setTasks((prev) => upsert(prev, t))),
-      api.download.onDone((t) => setTasks((prev) => upsert(prev, t))),
-      api.download.onError((t) => setTasks((prev) => upsert(prev, t))),
+      api.download.onProgress(update),
+      api.download.onDone(update),
+      api.download.onError(update),
     ];
     return () => offs.forEach((off) => off());
   }, []);
@@ -194,18 +244,27 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // 显示名直接查本仓注册表（模块常量，不经 getMeta 异步到达）——
-  // 平台名不再需要参与缓存键：以前要加那一维，是因为名字表来自 getMeta、比任务晚到
-  // 选项池来自**未过滤**的队列：跟着结果走会让选过一个平台后切不回别的（历史页 §2.3 的那个 bug）
-  const platforms = useMemo(
-    () => Array.from(new Set(tasks.map((t) => t.platform).filter((p): p is string => Boolean(p)))),
-    [tasks]
-  );
+  function loadMore(): void {
+    if (!nextCursor || loading) return;
+    setLoading(true);
+    void api.download
+      .list({ ...serverFilter, cursor: nextCursor })
+      .then((page) => {
+        setTasks((current) => mergePage(current, page.rows));
+        setNextCursor(page.nextCursor);
+      })
+      .catch(() => toast.error("更多下载项读取失败"))
+      .finally(() => setLoading(false));
+  }
+
+  // 平台选项池来自注册表（不是当前已加载页）：选过一个平台也能切回别的，且不会因为
+  // 翻页把某个平台从下拉里翻没。显示名同样直接查注册表，不经 getMeta 异步到达。
+  const platforms = useMemo(() => canonicalKeys(), []);
 
   /** groupId → 上一次的视图；筛选条件与组内任务引用都没变就复用同一个对象 */
   const viewCache = useRef(new Map<string, { key: string; view: GroupView }>());
 
-  const { rows, counts } = useMemo(() => {
+  const rows = useMemo(() => {
     const byId = new Map<string, DownloadTaskView[]>();
     for (const t of tasks) {
       const g = byId.get(t.groupId);
@@ -214,35 +273,32 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
     }
     const q = query.trim().toLowerCase();
     const matchStatus = STATUS_FILTERS.find((f) => f.key === statusFilter)!.match;
-    const within = TIME_RANGES.find((f) => f.key === timeRange)!.within;
-    const now = Date.now();
+    // 服务端按组筛，返回的是整组任务；子行还要按同一条件再筛一遍——
+    // 同一作品里可能有窗外/不命中搜索的文件，它们不该在展开时露出来。
     const inScope = (t: DownloadTaskView): boolean =>
       (platform === "" || t.platform === platform) &&
       (q === "" ||
-        `${t.filename} ${t.title ?? ""} ${t.platform ?? ""} ${displayName(t.platform)} ${t.url} ${t.sourceUrl ?? ""}`
+        `${t.filename} ${t.title ?? ""} ${displayName(t.platform)} ${t.sourceUrl ?? ""}`
           .toLowerCase()
           .includes(q)) &&
-      within(t.createdAt, now);
+      (!dateWindow || (t.createdAt >= dateWindow.firstDay && t.createdAt < dateWindow.nextDay));
     const key = `${q}\u0000${statusFilter}\u0000${platform}\u0000${timeRange}`;
-    const nextCounts = Object.fromEntries(STATUS_FILTERS.map((f) => [f.key, 0])) as Record<StatusFilter, number>;
     const nextRows: GroupView[] = [];
     const cache = viewCache.current;
     for (const [groupId, groupTasks] of byId) {
       const prev = cache.get(groupId);
-      // upsert 只替换变化那一条的引用，未动的组靠引用比较就能确认「视图还是对的」
+      // 事件只替换变化那一条的引用，未动的组靠引用比较就能确认「视图还是对的」
       const view =
         prev && prev.key === key && sameTasks(prev.view.tasks, groupTasks)
           ? prev.view
           : buildView(groupId, groupTasks, inScope, matchStatus);
       cache.set(groupId, { key, view });
-      for (const f of STATUS_FILTERS)
-        if (view.hits.some((t) => f.match(t.status))) nextCounts[f.key] += 1;
       if (view.visible.length > 0) nextRows.push(view);
     }
     // 队列里已经没有的组要从缓存退出去，否则清完队列缓存只进不出
     for (const id of [...cache.keys()]) if (!byId.has(id)) cache.delete(id);
-    return { rows: nextRows, counts: nextCounts };
-  }, [tasks, statusFilter, query, platform, timeRange]);
+    return nextRows;
+  }, [tasks, statusFilter, query, platform, timeRange, dateWindow]);
 
   function clearFilters(): void {
     setStatusFilter("all");
@@ -258,7 +314,8 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
   const act = useCallback(async (fn: (id: string) => Promise<unknown>, id: string) => {
     try {
       await fn(id);
-      setTasks(await api.download.list());
+      // 状态可能把这一组筛出当前视图（例如失败筛选下点了重试），回读第一页而不是就地打补丁
+      setReloadSeq((n) => n + 1);
     } catch {
       /* 状态竞争（已完成再取消等）忽略 */
     }
@@ -273,7 +330,15 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
     });
   }, []);
 
-  if (tasks.length === 0) {
+  // 首次空（真没任务）与过滤空是两种状态：后者保留工具栏，让人改条件而不是以为队列被清空了
+  if (
+    tasks.length === 0 &&
+    !loading &&
+    statusFilter === "all" &&
+    platform === "" &&
+    timeRange === "all" &&
+    query.trim() === ""
+  ) {
     return (
       // 空态只留标题一行，说明段删掉（业主指令 2026-10-17）；剩下这一组在可用高度里垂直居中，
       // 不再顶着页头悬在半空
@@ -299,7 +364,7 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
               </SelectTrigger>
               <SelectContent>
                 {STATUS_FILTERS.map((f) => (
-                  <SelectItem key={f.key} value={f.key} disabled={counts[f.key] === 0 && statusFilter !== f.key}>
+                  <SelectItem key={f.key} value={f.key}>
                     {f.label}
                   </SelectItem>
                 ))}
@@ -344,12 +409,18 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
         {/* 只留 pb：pt 会把表头顶离工具栏底线，那 4px 又变成「表头比内容行高」 */}
         <CardContent className="pb-1">
           {rows.length === 0 ? (
-            <div className="flex items-center justify-center gap-3 py-10 text-sm text-muted-foreground">
-              <span>没有符合条件的下载项</span>
-              <Button size="sm" variant="outline" onClick={clearFilters}>
-                清除筛选
-              </Button>
-            </div>
+            loading ? (
+              <div className="flex items-center justify-center py-10 text-sm text-muted-foreground">
+                加载中…
+              </div>
+            ) : (
+              <div className="flex items-center justify-center gap-3 py-10 text-sm text-muted-foreground">
+                <span>没有符合条件的下载项</span>
+                <Button size="sm" variant="outline" onClick={clearFilters}>
+                  清除筛选
+                </Button>
+              </div>
+            )
           ) : (
             <div className="overflow-x-auto">
               <QueueTable
@@ -362,6 +433,13 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
             </div>
           )}
         </CardContent>
+        {nextCursor && (
+          <div className="flex justify-center border-t border-border py-2">
+            <Button size="sm" variant="ghost" onClick={loadMore} disabled={loading}>
+              {loading ? "加载中…" : "加载更多"}
+            </Button>
+          </div>
+        )}
       </Card>
     </section>
   );
@@ -437,7 +515,7 @@ function aggregate(tasks: DownloadTaskView[]): Aggregate {
   };
 }
 
-/** 组内任务引用逐个相同 = 这一组这一次没有任何变化（upsert 只换动过的那一条） */
+/** 组内任务引用逐个相同 = 这一组这一次没有任何变化（mergeLive 只换动过的那一条） */
 function sameTasks(a: DownloadTaskView[], b: DownloadTaskView[]): boolean {
   return a.length === b.length && a.every((t, i) => t === b[i]);
 }
@@ -617,7 +695,7 @@ function Dash(): React.ReactElement {
 }
 
 /**
- * 文件行。`t` 的引用只在**这一条**任务有事件时变化（upsert 只换动过的那一颗），
+ * 文件行。`t` 的引用只在**这一条**任务有事件时变化（mergeLive 只换动过的那一颗），
  * 加上 onAct/onNav 都是稳定引用，所以每个进度事件真正重渲染的只有它自己那一行。
  */
 const TaskRow = memo(function TaskRow({
@@ -753,12 +831,19 @@ const TaskRow = memo(function TaskRow({
   );
 });
 
-function upsert(list: DownloadTaskView[], t: DownloadTaskView): DownloadTaskView[] {
+/** 已加载行才吃事件；未知行留给服务端筛选决定它该不该出现（返回原引用，不触发重渲） */
+function mergeLive(list: DownloadTaskView[], t: DownloadTaskView): DownloadTaskView[] {
   const i = list.findIndex((x) => x.taskId === t.taskId);
-  if (i < 0) return [t, ...list];
+  if (i < 0) return list;
   const next = [...list];
   next[i] = t;
   return next;
+}
+
+/** 续页按 taskId 去重：组不跨页切开，但实时覆盖与页数据在边界上仍可能撞同一颗 */
+function mergePage(list: DownloadTaskView[], page: DownloadTaskView[]): DownloadTaskView[] {
+  const seen = new Set(list.map((t) => t.taskId));
+  return [...list, ...page.filter((t) => !seen.has(t.taskId))];
 }
 
 const STATUS: Record<DownloadTaskView["status"], [string, "secondary" | "ok" | "warn"]> = {

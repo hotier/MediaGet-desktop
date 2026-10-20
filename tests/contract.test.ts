@@ -119,36 +119,40 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
       resume: () => true,
       clear: () => 1,
       list: () => [TASK_VIEW],
+      listLive: () => [TASK_VIEW],
     },
-    store: {
+    settingsRepository: {
       loadConfig: () => ({ settings, kernel: { ...settings.cookies } }),
       saveConfig: () => {},
-      loadHistory: () => {
+      getKernelValue: () => undefined,
+    },
+    queueRepository: {
+      list: () => ({ rows: [TASK_VIEW], nextCursor: null }),
+    },
+    historyRepository: {
+      list: () => {
         if (opts.historyThrows) throw new Error("磁盘读失败");
-        return [
-          {
-            // 刻意不带 author：这条同时是「老记录（作者快照此前不落盘）必须过 out schema」的用例
-            id: "h-1",
-            groupId: "g-1",
-            platform: "douyin",
-            title: "示例视频",
-            kind: "video",
-            bytes: 4096,
-            files: ["C:/Downloads/a.mp4"],
-            sourceUrl: "https://v.douyin.com/abc/",
-            createdAt: 1700000000000,
-          },
-        ];
+        return {
+          rows: [
+            {
+              // 刻意不带 author：这条同时是「老记录（作者快照此前不落盘）必须过 out schema」的用例
+              id: "h-1",
+              groupId: "g-1",
+              platform: "douyin",
+              title: "示例视频",
+              kind: "video",
+              bytes: 4096,
+              files: ["C:/Downloads/a.mp4"],
+              sourceUrl: "https://v.douyin.com/abc/",
+              createdAt: 1700000000000,
+            },
+          ],
+          nextCursor: null,
+        };
       },
-      // parse:run 成功时写一条解析历史（files 为空）。这条链的真实语义归 history-record.test.ts，
-      // 这里只要「handler 调得到、返回值不影响出参校验」。
-      upsertHistory: () => [],
-      // history:remove 的真实 handler 会调这里；契约测试只要「返回形状对」（剩余 HistoryEntry[]），
-      // 双命中删组的落盘行为归 store.test.ts 管。回一条与 loadHistory 同构的剩余项即可。
-      removeHistory: (keys: string[]) =>
-        keys.includes("h-1") || keys.includes("g-1")
-          ? []
-          : [{ id: "h-keep", files: [], createdAt: 1 }],
+      listKeys: () => ({ keys: ["g-1"], nextCursor: null }),
+      // 删组的落库行为归 history-pagination.test.ts 管，这里只要出参形状对
+      remove: (keys: string[]) => keys.length,
     },
     getAppMeta: opts.getAppMeta ?? (() => ({ version: "0.0.0-test", electron: "44" })),
     kernelMode: () => "local" as const,
@@ -189,9 +193,7 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
     },
     /** 真计数器而不是桩：stats:get 的出参形状要靠它验，parse:run 也在这条路上记账 */
     stats: createStats({
-      load: () => null,
-      save: () => {},
-      now: () => 1700000000000,
+      recordEvent: () => {},
       query: (range) => ({
         range,
         availableFrom: null,
@@ -224,10 +226,14 @@ const BAD_INPUT: Record<string, unknown> = {
   [IPC.downloadResume]: { taskId: "" },
   // 空数组＝「清理但一颗都不给」，那是调用方没算清可清理集，不该被执行（也不该被当成全清）
   [IPC.downloadClear]: { taskIds: [] },
+  // 时间窗是成对的：只给一端等于把「从哪天起」或「到哪天止」默认成无穷，服务端会返回一个
+  // 用户没要求的范围，契约层直接拒掉
+  [IPC.downloadList]: { from: "2026-01-01" },
   [IPC.settingsSet]: { evilField: 1 },
   // 抓取通道的权限面比 settings:set 大（开窗 + 直接写档）：不在规则表里的键名一律拒
   [IPC.settingsCookieLogin]: { cookieKey: "NOT_A_COOKIE_KEY" },
   [IPC.historyList]: { limit: 0 },
+  [IPC.historyKeys]: { limit: 0 },
   // 空集合不是合法请求（min(1) 拒「删 0 条」的误触），超上限说明 UI 状态坏了
   [IPC.historyRemove]: { keys: [] },
   [IPC.statsGet]: { from: "2026-02-30", to: "2026-03-01" },
@@ -260,6 +266,7 @@ const GOOD_INPUT: Record<string, unknown> = {
   [IPC.settingsSet]: { throttleMs: 100 },
   // 测试桩不注入 cookieLogin：出参是 { captured:false, reason:"error" }，形状必须过 out schema
   [IPC.settingsCookieLogin]: { cookieKey: "BILIBILI_COOKIE" },
+  [IPC.historyKeys]: {},
   [IPC.historyRemove]: { keys: ["h-1"] },
   [IPC.statsGet]: { from: "2026-10-01", to: "2026-10-20" },
   [IPC.appShowInFolder]: "C:/Downloads/a.mp4",
@@ -402,9 +409,9 @@ describe("作者快照（历史页作者列的数据源）", () => {
       },
     };
     // 只带昵称也合法：平台各异（音乐类只有作者名），不能要求成对出现
-    expect(historyOut.safeParse([legacy]).success).toBe(true);
-    expect(historyOut.safeParse([withAuthor]).success).toBe(true);
-    expect(historyOut.safeParse([{ ...legacy, author: { name: "只知昵称" } }]).success).toBe(true);
+    expect(historyOut.safeParse({ rows: [legacy], nextCursor: null }).success).toBe(true);
+    expect(historyOut.safeParse({ rows: [withAuthor], nextCursor: null }).success).toBe(true);
+    expect(historyOut.safeParse({ rows: [{ ...legacy, author: { name: "只知昵称" } }], nextCursor: null }).success).toBe(true);
   });
 
   it("计数必须是数字：字符串粉丝数在入参侧就被拒，不进历史.json", () => {

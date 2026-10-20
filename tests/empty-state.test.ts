@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 const src = (rel: string): string =>
   readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), "utf8");
 
-/** 取 `if (cond) {` 那一支的源码（到同缩进的 `}` 为止）——只约束空态分支，不误伤正常渲染 */
+/** 取空态分支的源码（从条件起到同缩进的 `}` 为止）——只约束空态分支，不误伤正常渲染 */
 function branch(source: string, cond: string): string {
   const at = source.indexOf(cond);
   expect(at, `找不到空态分支：${cond}`).toBeGreaterThan(-1);
@@ -22,8 +22,9 @@ function branch(source: string, cond: string): string {
   return source.slice(at, end);
 }
 
-const QUEUE = branch(src("renderer/src/pages/DownloadsPage.tsx"), "if (tasks.length === 0) {");
-const HISTORY = branch(src("renderer/src/pages/HistoryPage.tsx"), "if (list.length === 0) {");
+// 分页后空态还要求「不在加载、没有筛选」，否则筛空的一页会被误判成整库为空
+const QUEUE = branch(src("renderer/src/pages/DownloadsPage.tsx"), "tasks.length === 0 &&");
+const HISTORY = branch(src("renderer/src/pages/HistoryPage.tsx"), "if (list.length === 0 &&");
 
 describe("队列页空态", () => {
   it("只有一行标题，没有说明段", () => {

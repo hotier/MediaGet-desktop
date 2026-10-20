@@ -46,9 +46,12 @@
 | `electron/main/updater.ts` | 自动更新状态机：把 electron-updater 事件收敛成单个 `UpdateState` 快照（阶段 + 进度 + 错误），守卫「无源不检查、未下载完不安装」 | 窗口操作、下载队列 |
 | `electron/main/notify.ts` | 下载通知聚合器：文件粒度的 done/error 按组收敛成一次系统通知（组内无排队/下载中任务时才播报，图集不逐张弹） | `Notification` 本体（由 index.ts 装配注入） |
 | `electron/main/clipboard.ts` | 剪贴板监听：开关开启时轮询剪贴板 → 内核 `identify` 纯本地识别 → 命中分享链接投 `app:clipboardLink`（文本不落盘、不出本机） | — |
-| `electron/main/store.ts` | `userData` 配置/历史读写（JSON 文件 + 原子写；不用 SQLite 除非历史量大）。历史窗口 `HISTORY_MAX = 5000`（2026-10-16 由 500 提档：统计页的作者榜与体积分布要够长的明细才画得出形状）。两个写入口分得很清：`appendHistory` 逐行追加（下载落地，一个文件一行），`upsertHistory` 按作品键刷新（解析，重复解析不堆行）。队列档 `queue.json` 上限 `QUEUE_MAX = 200`——v13 起完成行也留档，这个上限才第一次成为实际约束（满了丢最旧那一头，并不优先保住待办），写走 `saveQueueThrottled`（窗口内**留最后一次快照**）并由退出路径的 `flush()` 同步补写 | 敏感凭据明文（见 §6）；队列里的长期直链（见 §6 第 11 条） |
-| `electron/main/stats.ts` | 生命周期计数器（`userData/stats.json`）：解析/下载/失败/取消/字节/耗时按 `totals` + `byDay`/`byPlatform`/`byKind`/`byHour` 只加不删，落盘走 JsonStore 同一节流口；`byDay` 保留 366 天 | url、文件名、作者名、Cookie（见 §6 第 8 条：统计面不许看出任何人下过什么）；逐条明细（那是 history 的活） |
-| `renderer/src/lib/stats.ts` | 统计页的聚合出口：把计数档 + 历史明细两份原始数据换成视图模型（趋势补零、两榜、成功率、速度、解析通道、热力、体积直方、作者榜）。纯函数、除零现算（比率 `null` / 份额 `0`） | 读盘、IPC、色值、ECharts option（那在 `charts/options.ts`） |
+| `electron/main/database.ts` | `userData/mediaget.sqlite` 的打开与 schema 迁移（better-sqlite3，WAL，同步事务）：表 `app_settings`/`kernel_config`/`queue_tasks`/`history_entries`/`stats_events`/`legacy_stats`/`storage_migrations`。关库时 `checkpoint(TRUNCATE)`，不把最后一批写留在 `-wal` 里 | 业务口径（在仓储）；JSON 文件读写（运行时已不存在） |
+| `electron/main/repositories.ts` | 设置/内核、队列、历史、统计事件四个仓储——**运行时唯一的持久化入口**。历史与队列**不设条数上限**，列表一律游标分页（`history:list`/`history:keys`/`download:list`），按作品键/任务分组翻页；翻页沿 `created_at DESC` 索引走、每组只取最新一行做代表（`NOT EXISTS`），停在 `LIMIT`，不做全表 `GROUP BY`。写入口兜底隐私红线而不信任调用方：队列 `done` 行的 `url` 剥成空串、`headers`（可能带 Cookie）一并摘掉，可续行两者都留；平台键入库前 `resolveKey()`。统计事件与历史行同一事务写，不会一有一无 | 敏感凭据明文（见 §6）；队列里的长期直链（见 §6 第 11 条） |
+| `electron/main/storage-runtime.ts` | 主进程的库实例与仓储单例：启动时开库并跑一次 JSON 导入；`closeStorage(flush)` 在 `before-quit` 先 flush 队列再关库（幂等），关库后设置读取答冻结快照、写一律丢弃——退出前仍在跑的日志/传输回调不会抛「连接未打开」 | 导入规则（在 `storage-migration.ts`） |
+| `electron/main/storage-migration.ts` | 旧 `config.json`/`queue.json`/`history.json`/`stats.json` 的**一次性导入器**：每份源文件导入一次，来源与指纹登记进 `storage_migrations`，已登记就跳过——JSON 事后被改也不重导（否则会复活用户在库里删掉的历史、覆盖改过的设置）；四份同一事务、按行数校验，任一份坏档整批回滚。导入时按当前口径归一（平台键、作者快照、作品键），队列行按同一条规则只给 `done` 行剥 `url` 与 `headers`。**源文件一个字节都不动**；导入失败不阻断启动，由 `index.ts` 弹窗 + 落日志，下次启动重试。旧 `stats.json` 原样进 `legacy_stats`，只作留档，不并进任何区间统计 | 运行时读写（导入完这四个文件就不再被读） |
+| `electron/main/stats.ts` | 统计事件翻译器：下载成功/失败/取消与解析结果各翻成一行 `stats_events`（时间、平台、类型、字节、耗时、作品键），统计页按日期区间在 SQL 里聚合。写失败吞掉并经 `onEventError` 报日志，不让统计拖垮下载 | url、文件名、标题、作者名、Cookie（见 §6 第 8 条：统计面不许看出任何人下过什么）；逐条明细（那是 history 的活）；旧累计档（`legacy_stats` 不进区间结果） |
+| `renderer/src/lib/stats.ts` | 统计页的聚合出口：把区间聚合结果 + 历史明细两份原始数据换成视图模型（趋势补零、两榜、成功率、速度、解析通道、热力、体积直方、作者榜）。纯函数、除零现算（比率 `null` / 份额 `0`） | 读盘、IPC、色值、ECharts option（那在 `charts/options.ts`） |
 | `renderer/src/components/charts/` | ECharts 适配器四件：`echarts-core.ts`（唯一注册点，摇树落点）/ `palette.ts`（CSS Token 探针 → canvas 取色）/ `options.ts`（纯 option 构造，node 环境可测）/ `EChart.tsx`（哑宿主：init/setOption/resize/dispose） | 业务口径（口径在 `lib/stats.ts`）；色值字面量（一个都不许写，见 UIUX §9.3） |
 | `electron/preload/index.ts` | `contextBridge.exposeInMainWorld('mg', {...})` 白名单 | 通配转发（禁止 `ipcRenderer` 原样暴露） |
 | `renderer/src/lib/bridge.ts` | 对 `window.mg` 的类型化封装 + React hooks | 直接拼 IPC channel 名 |
@@ -61,12 +64,12 @@
 | `types/ipc-contract.ts` | 载荷形状的唯一声明处（zod）：每通道 in/out schema + `CONTRACT`/`EVENTS` 注册表 | 运行时以外的东西；被 renderer 以值 import |
 | `types/ipc.ts` | 通道常量 `IPC`、`MgBridge` 面、`DEFAULT_SETTINGS`，以及从 contract 派生的类型 | 任何运行时值（须保持只 `import type`）|
 | `shared/platforms.ts` | 平台注册表：本项目「有哪些平台、叫什么、哪枚图标、哪个引擎能解、供不供」的唯一真源（零依赖，主进程与渲染进程 import 同一份，见 §9） | 解析算法、IPC、图标文件本体（SVG 在 `renderer/public/logos/`） |
-| `shared/history.ts` | 历史记录的身份规则（零依赖，与注册表同一处置）：`workKeyOf(分享链接)` 先经 `canonicalSourceUrl` 归一（去协议 / `www`/移动前缀 / 尾部斜杠 / 片段 / 分享追踪参数，查询串排序）再算可复算的作品键，解析侧与下载侧各写自己的行却算出同一个键 → 历史页聚成一行；`normalizeHistoryKeys()` 在读侧给旧键行补算（幂等、不改档）；`parseHistoryEntry()` 造「未下载」那一行，入参表不收任何直链 | 落盘（在 `store.ts`）、聚合展示（在 `lib/history-works.ts`）、平台定义（在注册表） |
+| `shared/history.ts` | 历史记录的身份规则（零依赖，与注册表同一处置）：`workKeyOf(分享链接)` 先经 `canonicalSourceUrl` 归一（去协议 / `www`/移动前缀 / 尾部斜杠 / 片段 / 分享追踪参数，查询串排序）再算可复算的作品键，解析侧与下载侧各写自己的行却算出同一个键 → 历史页聚成一行；`normalizeHistoryKeys()` 给旧键行补算（幂等，旧 `history.json` 导入时用它）；`parseHistoryEntry()` 造「未下载」那一行，入参表不收任何直链 | 落盘（在 `repositories.ts`）、聚合展示（在 `lib/history-works.ts`）、平台定义（在注册表） |
 | `shared/source-url.ts` | 来源页的身份（零依赖，v16）：`pageUrlFromData(platform, ParseData)` 用内核已归一的作品 id 直接拼官方作品页（抖音 `awemeId` → `/video/` 或 `/note/`、小红书 `noteId` → `/explore/`、YouTube `videoId` → `watch?v=`），`isShortLink(raw)` 按注册表的 `shortDomains` 判分享短链。解析成功时主进程先取前者；认不出的短链再由 `electron/main/source-url.ts` 跟随一次重定向拿真实页，失败就原样保留——宁可留一条短链，也不编一个打不开的地址。结果写进 `ParseRunOutcome.sourceUrl`，结果卡、下载行与历史键从此锚在同一页 | 平台域名/短链清单（第二份会漂移，真源在注册表）、直链与任何媒体字段（§6 红线）、离线层对短链与长链的互认（需要真网络，归主进程） |
 | `shared/author.ts` | `buildAuthorSnapshot(ParseData)`：「哪些字段算一个作者」的一份口径，下载行由渲染层随 enqueue 带上、解析行由主进程在 parse 成功时造 | 第二份字段映射（2026-10-17 从 `renderer/src/lib/work-info.ts` 提上来，抄两份迟早漏字段） |
 | `shared/link-identity.ts` | 直链的身份规则（零依赖，v12）：`pickRenewedUrl(失败链, 候选链)` 按「host+pathname ∧ 非时效参数集合全等」认对象，签名/到期那类键（`sign`/`expires`/`x-expires`/`lk3s`/`s`…）不参与身份；判据全等还要求新链与旧链**不是同一条**，否则 403 重试会变成死循环。`collectMediaUrls(ParseData)` 按主媒体→音频→图集→清晰度→多 P 的顺序收集候选 | 再解析与合并（在 `electron/main/link-renew.ts`）、任何持久化（这些是直链，§6 红线：不落日志、不进历史与队列） |
 | `shared/work-stat.ts` | 作品计数与发布时间的归一（零依赖，主进程 / 渲染层 / dev mock 同一份，v10）：`WORK_STAT_SLOTS` 决定「哪一档叫什么、按什么顺序出现、从内核哪些字段兜底取」，结果卡徽标、txt 正文与表格三档都读它；`pickPublishedAt` 按量级判秒 / 毫秒 / ISO 三套单位并把未来时刻判为不可信；`toCount` 只收纯数字，`"1.2万"` 这种已缩水的字符串计数宁可留空 | 直链与任何媒体字段（隐私红线：这里只挑公开数字与时间）、格式化（`fmtCount` 在渲染层）、行身份（在 `shared/history.ts`） |
-| `renderer/src/store/platforms.ts` | 平台开关的渲染层视图（本仓第一个 Zustand store）：乐观置态 → `settings:set` 整表提交 → 失败回滚。消费者 = 设置「引擎」体检表的「提供」列，开关即时生效、不进脏计数（§2 的 `probe:engines` 与它同源） | 平台静态定义（在注册表）；持久化（在 `config.json` 的 `settings.platformSwitches`，主进程读这份而不是渲染层内存） |
+| `renderer/src/store/platforms.ts` | 平台开关的渲染层视图（本仓第一个 Zustand store）：乐观置态 → `settings:set` 整表提交 → 失败回滚。消费者 = 设置「引擎」体检表的「提供」列，开关即时生效、不进脏计数（§2 的 `probe:engines` 与它同源） | 平台静态定义（在注册表）；持久化（在 `app_settings` 的 `settings.platformSwitches`，主进程读这份而不是渲染层内存） |
 | `renderer/src/store/home-draft.ts` | 首页工作台的会话草稿（第二个 Zustand store）：输入文本 / 识别提示 / 结果卡批次 / 进行态。页面是条件渲染 + `key={page}`，切页即卸载重挂，这些态留在组件里会一起归零（业主指令 2026-10-17：切回来还要看到上次解析的结果） | 落盘（只在内存，重启即清；长期记忆归历史页）、解析发起与 IPC（在 `pages/HomePage.tsx`） |
 | `resources/` | 第三方二进制（git-lfs 或 CI 拉取，**不入 git**） | 源码 |
 
@@ -91,8 +94,8 @@
 | `settings:get` / `settings:set` | 部分字段 | 全量生效配置 | Cookie/下载目录/并发/回落开关/日志级别与保留天数 |
 | `app:cacheStatus` / `app:cacheClear` | — / `{ keys }` | `{ items[], totalBytes, clearableBytes }` / `{ freed, skipped, report }` | 只清具名临时文件（网络缓存/孤儿断点/残留/日志）；更新包与本机记录只报占用，活任务的 `.part` 避让 |
 | `app:openLogDir` / `app:log` | — / `{ level, message }` | `{ ok }` | 渲染层未捕获异常经 `app:log` 落进同一份文件日志（上限 50 条/次会话） |
-| `history:list` / `history:remove` | `{ filter?, limit? }`（`limit` 上限 = 窗口 `HISTORY_MAX` = 5000） / `{ keys }`（≤5000） | `HistoryEntry[]` | **解析历史**（v8）：解析成功就有一条，下不下载都在。`files` 空数组 = 只解析没下载，界面上那一列写「未下载」。只存平台/标题/作者快照/时间/落地路径，v10 起再加 `publishedAt`（作品在平台上的发布时刻，本地毫秒）与 `stat`（解析那一刻的公开互动数八档）——导出要的是完整作品信息，而这两个值只有在解析当场抓得到，事后补不回来；**不存媒体直链**（时效与隐私），内核那份 `ParseData` 是 passthrough 的活水，`data.url` / `images[]` / `qualities[].url` 连入参表都不收，进档前由 `shared/work-stat.ts` 按字段挑；作者主页与头像是公开页面，2026-10-14 业主批准入档。`history:remove` 的行键同时命中条目 `id` 与作品键 `groupId`（图集删一行 = 撤整组），出参直接给剩余列表；整表清空也走这条（界面是「表头全选 → 移除记录」），**v9 起 `history:clear` 整条已删**，不留第二条语义重复的通道 |
-| `stats:get` | — | `StatsSnapshot` | 统计页真源（契约 v5，2026-10-16）：`totals` + `parse` + `byDay`/`byPlatform`/`byKind`/`byHour`。只有计数、字节、时长，**没有 url 与文件名**；失败与取消只在这份档里（history 只有成功记录，从它算失败率永远是 100%） |
+| `history:list` / `history:keys` / `history:remove` | `{ platform?, from?, to?, query?, cursor?, limit? }`（每页 ≤100） / 同筛选取键（每页 ≤5000） / `{ keys }`（≤5000） | `{ rows, nextCursor }` / `{ keys, nextCursor }` / `{ removed }` | **解析历史**（v8）：解析成功就有一条，下不下载都在；**不设条数上限**，按作品游标分页，`history:keys` 给「全选当前筛选」逐页取键。`files` 空数组 = 只解析没下载，界面上那一列写「未下载」。只存平台/标题/作者快照/时间/落地路径，v10 起再加 `publishedAt`（作品在平台上的发布时刻，本地毫秒）与 `stat`（解析那一刻的公开互动数八档）——导出要的是完整作品信息，而这两个值只有在解析当场抓得到，事后补不回来；**不存媒体直链**（时效与隐私），内核那份 `ParseData` 是 passthrough 的活水，`data.url` / `images[]` / `qualities[].url` 连入参表都不收，进档前由 `shared/work-stat.ts` 按字段挑；作者主页与头像是公开页面，2026-10-14 业主批准入档。`history:remove` 的行键同时命中条目 `id` 与作品键 `groupId`（图集删一行 = 撤整组），同事务把对应统计事件的作品键置空（计数留着，明细断开）；**v9 起 `history:clear` 整条已删**，不留第二条语义重复的通道 |
+| `stats:get` | `{ from, to }`（本地日期，闭区间） | `StatsQueryResult` | 统计页真源（契约 v23）：`stats_events` 在区间内的 SQL 聚合——`totals` + `byDay`/`byPlatform`/`byKind` + 作者榜，外加 `availableFrom`（账本最早一天，区间早于它界面直说「从某日开始」）。只有计数、字节、时长，**没有 url 与文件名**；失败与取消只在事件账本里（history 只有成功记录，从它算失败率永远是 100%）。旧 `stats.json` 累计档只归档、**不并进任何区间** |
 | `probe:engines` | — | `EngineHealth[]` | 本地版体检 = 注册表全量 × 在场引擎能力位 × 用户开关（`engine.health()`），不发抓取、不打平台风控；与解析路由同源，所以界面说「不可解」的平台真的不会被解 |
 | `update:state` | — | `UpdateState` | 当前更新快照（renderer 挂载时先取一次，补上窗口未建期间丢掉的事件） |
 | `update:check` / `update:download` | — | `UpdateState` | 主动检查 / 显式下载；失败不外抛，收敛进快照的 `phase=error` |
@@ -118,7 +121,7 @@
 两级求值，与内核改造点一致：
 
 ```
-读某项 = 注入的本机配置（userData/config.json，用户可见可编辑）
+读某项 = 注入的本机配置（userData/mediaget.sqlite 的 kernel_config，设置页可见可编辑）
        ?? process.env.<KEY>（仅 dev 便利，prod 不依赖）
        ?? 代码内默认值
 ```
@@ -133,11 +136,11 @@
 4. `webSecurity` 不关闭；`nodeIntegration: false`；`contextIsolation: true`；renderer 不加载远程内容。
 5. 不解析 `blockedPlatforms.ts` 黑名单里的平台（微信视频号、付费/DRM 内容），沿用内核判定。
 6. 不做反检测加码：UA/请求头治理以内核既有实现为限。
-7. 文件日志（`userData/logs/app.log`）与 config 同处 userData，受同一红线约束：**不写 Cookie 值、不写媒体直链**，下载失败只投「文件名 + 原因」；渲染层转发的异常文本截到 2000 字符、单会话上限 50 条，避免堆栈把盘刷满。
-8. `userData/stats.json`（统计页计数档）只落**计数、字节、时长**：没有 url、文件名、作者名、Cookie。逐条明细归 history，统计面看不出任何人下过什么 —— 这条同时也决定了页面的算法：失败与取消只在计数档里，所以任何比率都不从历史明细算。
-9. `userData/history.json` 从 v8 起每条**成功解析**都落一行（不下下载也有），但字段口径没有放宽：只有平台、标题、作者快照、落地路径与用户自己粘的那条分享链接，v10 再加**发布时间与公开互动计数**（导出要完整作品信息）。内核给的 `data.url` / `images[]` / `qualities[].url` 一律不入档 —— 记录变多不等于直链变多，写入口 `shared/history.ts` 的入参表根本不收它们；v10 那两档也不是「把整份 `ParseData` 搬进档」，`shared/work-stat.ts` 逐字段挑，挑出来的只有数字与时间。`via=mock` 的演示结果不落盘。
+7. 文件日志（`userData/logs/app.log`）与本机数据库同处 userData，受同一红线约束：**不写 Cookie 值、不写媒体直链**，下载失败只投「文件名 + 原因」；渲染层转发的异常文本截到 2000 字符、单会话上限 50 条，避免堆栈把盘刷满。
+8. `stats_events`（统计事件账本）只落**时间、平台、类型、计数、字节、时长与作品键**：没有 url、文件名、标题、作者名、Cookie。逐条明细归 history，统计面看不出任何人下过什么 —— 这条同时也决定了页面的算法：失败与取消只在事件账本里，所以任何比率都不从历史明细算。作品键只用来关联历史行，删历史时同事务置空。
+9. `history_entries` 从 v8 起每条**成功解析**都落一行（不下下载也有），但字段口径没有放宽：只有平台、标题、作者快照、落地路径与用户自己粘的那条分享链接，v10 再加**发布时间与公开互动计数**（导出要完整作品信息）。内核给的 `data.url` / `images[]` / `qualities[].url` 一律不入档 —— 记录变多不等于直链变多，写入口 `shared/history.ts` 的入参表根本不收它们；v10 那两档也不是「把整份 `ParseData` 搬进档」，`shared/work-stat.ts` 逐字段挑，挑出来的只有数字与时间。`via=mock` 的演示结果不落盘。
 10. **renderer 不碰系统能力**：`setPermissionRequestHandler` 那条 deny-all 不放宽（第 4 条的延伸）。Chromium 写剪贴板也要过这条钩子，且 Electron 把写也报成 `clipboard-read`——**做不到只放行写**，所以复制动作走 `app:copyText` 由主进程代发，与 `app:openExternal`（renderer 不自己开窗）同一条理由。代价换来自检：`tests/boundaries.test.ts` 禁止 renderer 源码出现 `navigator.clipboard`，因为旧写法在真应用里全部静默 reject，而 dev 预览（mock 桥跑在普通浏览器）照样写成功——这个差异只有源码扫描抓得到。剪贴板内容不落盘、不进日志（第 7 条同源）。
-11. **`userData/queue.json` 只给「还能续或还能重试」的行留直链**（v13 新增的边界，不是旧行为）：队列档一直存 `url`（媒体直链）——断点续传与重试必须拿它再打一次，这条没得选。旧实现靠「完成行根本不落盘」顺带满足了红线；v13 起完成行也留档，同一句「队列不保留直链 URL」就必须换个执行法：**`snapshot()` 把 `done` 行的 `url` 剥成空串**，`queued`/`downloading`/`paused`/`error`/`canceled` 照旧留（剥了等于把续传与重试两个动作废掉）。到期直链对一条已完成记录本来也没有用途，界面对应撤掉入口——队列页右键「复制下载链接」没有 url 就不渲染那一项（与 §2.3 历史页「不出现需要直链的动作」同一口径）。`error` 文本落盘截到 300 字符：写流错误会带本机路径，而契约 `PersistedQueueTask.error` 就限到那里。`note`（v12 那句「已自动重新取链」）不进快照——它是一次性说明，隔天还挂着就成了说明书。
+11. **`queue_tasks` 只给「还能续或还能重试」的行留直链**（v13 新增的边界，不是旧行为）：队列台账一直存 `url`（媒体直链）——断点续传与重试必须拿它再打一次，这条没得选。旧实现靠「完成行根本不落盘」顺带满足了红线；v13 起完成行也留档，同一句「队列不保留直链 URL」就必须换个执行法：**`done` 行的 `url` 剥成空串**（`snapshot()` 剥一次，`queueRepository` 写入口再兜一次），`queued`/`downloading`/`paused`/`error`/`canceled` 照旧留（剥了等于把续传与重试两个动作废掉）。请求头 `headers` 与直链同一条规则（2026-10-21 业主定调）：可能带 Cookie，但续传与重试要原样带上它，剥掉会让依赖站点头的任务重启后 403；所以**只在可续/可重试行上留，`done` 行与 `url` 一起摘掉**（运行时写入与旧档导入同一条规则）。它只活在主进程的 `queue_tasks.payload_json`：通道行 `DownloadTaskView` 逐字段拷贝、不含 `headers`，日志也只投「文件名 + 原因」。到期直链对一条已完成记录本来也没有用途，界面对应撤掉入口——队列页右键「复制下载链接」没有 url 就不渲染那一项（与 §2.3 历史页「不出现需要直链的动作」同一口径）。`error` 文本落盘截到 300 字符：写流错误会带本机路径，而契约 `PersistedQueueTask.error` 就限到那里。`note`（v12 那句「已自动重新取链」）不进快照——它是一次性说明，隔天还挂着就成了说明书。
 
 12. **预览取流代理不开新的隐私面**（2026-10-18 业主定调「放开 CSP + 主进程代理取流」，界面口径见 UIUX-DESIGN §11）：结果卡里每条资源的「预览」只把直链换成 `mgpreview://media/?u=<编码直链>` 写进媒体元素的 `src`——这条链活在渲染层内存里，**不落 history/queue、不进日志**（第 7、9 条同源），弹窗关闭即释放。`electron/main/preview-protocol.ts` 解链时**再过一次** `shared/preview-link.ts` 的闸，所以代理不构成「替渲染层访问任意地址」的通道，而这座闸正是第 3 条那条 SSRF 红线在此处的落地：只收 http/https、拒 userinfo、拒回环/私网/链路本地/元数据/组播/保留段（IPv4 与 IPv6 都按展开后的分组判，`[::ffff:127.0.0.1]` 这类 v4-mapped 与 `2130706433`、`0x7f.1` 这类奇形写法由 WHATWG 归一后再判），单标签名与 `.local/.internal/.test/.invalid/.example/.localhost` 一律拒。防盗链那对 `Referer` + 桌面 UA 只在主进程拼（`electron/main/hotlink.ts` 一份真源，下载侧 import 同一条），上游响应头**只白名单透传**播放器要的那几个，`set-cookie` 之类不许跟着进来。**取流用 Node `fetch` 而不是 `net.fetch`**：实测（electron 44.7.2 最小探针）在 `protocol.handle` 内部调 `net.fetch` 会撞 `net::ERR_BLOCKED_BY_CLIENT`，同一条 URL 在主进程直接调却是 200——嵌套请求的发起方是自定义 scheme，Chromium 的本机网络访问检查无从判定其网络身份；Node 侧不吃这套策略，又与解析内核、下载器同属 undici 一条栈，代理设置由 `applyProxy` 的全局 dispatcher 一并覆盖。scheme 特权 `{standard, secure, stream}` 必须在 `app.whenReady()` **之前**声明，缺 `stream` 就是把整段媒体先攒进内存、播放器拖动随之失效。
 
@@ -146,6 +149,7 @@
 - `electron-builder`：`nsis`（per-user 安装、桌面快捷方式、卸载器）+ `portable`（单文件免安装，内测分发）。产物目录 `release/`。
 - 二进制随包：`yt-dlp.exe`、`ffmpeg.exe` 放 `extraResources`，**不打进 asar**；首启校验 SHA-256 后释放到 `userData/bin/`，支持「用户自备路径」覆盖。
 - 开发期补件：`pnpm dev` 前置 `node scripts/fetch-binaries.cjs --soft`——脚本幂等（在位且校验通过即跳过，约 0.3s），新机器不必先手动跑 `fetch:binaries`；`--soft` 只对**下载失败**容错（退出 0 + 播报「随包二进制未就绪」，manifest 写成部分清单，运行时对应链路如实降级），`binaries.json` 本身残缺或哈希不符仍非零退出。CI 不传 `--soft`，严格语义不变——这条分界由 `tests/binaries-watch.test.ts` 用真子进程锁住退出码。
+- 原生依赖只有 **better-sqlite3**（主进程本地库）：它是 N-API addon、随包自带 `prebuilds/win32-x64.node`，与 Electron ABI 无关，所以 `build.npmRebuild: false`——打开它就要求本机/CI 装 Visual Studio 去 node-gyp 重编，换来的是同一份二进制。新增原生依赖若不是 N-API 预编译件，这条要重新评估。
 - 自动更新：`electron-updater` + GitHub Releases（generic provider）。无证书阶段接受 SmartScreen 提示；更新包需 `sha512` 校验（builder 自动生成）。
 - CI（GitHub Actions）：
   - `ci.yml`（push `main` / PR）：`test` = typecheck + lint + vitest（全离线）；`build-win` = 拉固定版本二进制并强校验 → `electron-builder --win --publish never` → 断言安装包内 `resources/bin` 的 `yt-dlp.exe`/`ffmpeg.exe`/`manifest.json` 齐备。

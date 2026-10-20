@@ -12,10 +12,11 @@ node scripts/fetch-binaries.cjs
 npm run dev
 ```
 
-或在设置页之外直接写 `userData/config.json`：
+或让 `YTDLP_BIN` / `FFMPEG_BIN` 指向自备的二进制：它们存在 `userData/mediaget.sqlite` 的 `kernel_config` 表
+（设置页没有这两项，退出应用后用 SQLite 工具写入）。旧版的 `userData/config.json` 只在首次启动时导入一次，之后改它不再生效：
 
-```json
-{ "kernel": { "YTDLP_BIN": "D:\\tools\\yt-dlp.exe", "FFMPEG_BIN": "D:\\tools\\ffmpeg.exe" } }
+```sql
+INSERT OR REPLACE INTO kernel_config (key, value) VALUES ('YTDLP_BIN', 'D:\tools\yt-dlp.exe'), ('FFMPEG_BIN', 'D:\tools\ffmpeg.exe');
 ```
 
 发布 CI 会生成 `resources/bin/manifest.json`（SHA-256 清单）供首启校验。

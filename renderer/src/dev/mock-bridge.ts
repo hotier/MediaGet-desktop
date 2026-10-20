@@ -26,7 +26,8 @@ import {
   type MgBridge,
   type ParseData,
   type ParseRunOutcome,
-  type StatsSnapshot,
+  type QueueFilter,
+  type QueuePage,
   type StatsDateRange,
   type StatsQueryResult,
   type UpdateState,
@@ -329,7 +330,102 @@ function stopIfIdle(): void {
   }
 }
 
+/**
+ * 与主进程 queueRepository.list 同口径：按作品组翻页（组不拆）、组内返回全部任务。
+ * 组代表 = 组内最新的 createdAt 与最大 taskId；组间按这两键倒序。
+ */
+function mockQueuePage(filter: QueueFilter = {}): QueuePage {
+  const statuses: Set<string> | null =
+    filter.status === "active"
+      ? new Set(["queued", "downloading", "paused"])
+      : filter.status
+        ? new Set([filter.status])
+        : null;
+  const needle = filter.query?.trim().toLowerCase() ?? "";
+  const from = filter.from ? localDayStart(filter.from) : null;
+  const to = filter.to
+    ? (() => {
+        const [year, month, day] = filter.to!.split("-").map(Number);
+        return new Date(year, month - 1, day + 1).getTime();
+      })()
+    : null;
+  const matches = (t: DownloadTaskView): boolean =>
+    (!statuses || statuses.has(t.status)) &&
+    (!filter.platform || t.platform === filter.platform) &&
+    (from === null || t.createdAt >= from) &&
+    (to === null || t.createdAt < to) &&
+    (needle === "" ||
+      `${t.filename} ${t.title ?? ""} ${displayName(t.platform)} ${t.sourceUrl ?? ""}`
+        .toLowerCase()
+        .includes(needle));
+
+  const hitGroups = new Set<string>();
+  for (const t of tasks) if (matches(t)) hitGroups.add(t.groupId);
+  const entries = [...hitGroups]
+    .map((groupId) => {
+      const rows = tasks.filter((t) => t.groupId === groupId);
+      const createdAt = Math.max(...rows.map((t) => t.createdAt));
+      const taskId = rows.reduce((max, t) => (t.taskId > max ? t.taskId : max), "");
+      return { groupId, rows, createdAt, taskId };
+    })
+    .filter(
+      (entry) =>
+        !filter.cursor ||
+        entry.createdAt < filter.cursor.createdAt ||
+        (entry.createdAt === filter.cursor.createdAt && entry.taskId < filter.cursor.taskId)
+    )
+    .sort((a, b) => b.createdAt - a.createdAt || b.taskId.localeCompare(a.taskId));
+  const limit = filter.limit ?? 50;
+  const selected = entries.slice(0, limit);
+  const last = selected.at(-1);
+  return {
+    rows: selected.flatMap((entry) => entry.rows).map((t) => ({ ...t })),
+    nextCursor: entries.length > limit && last ? { createdAt: last.createdAt, taskId: last.taskId } : null,
+  };
+}
+
 const history: HistoryEntry[] = [];
+
+type MockHistoryFilter = {
+  platform?: string;
+  from?: string;
+  to?: string;
+  query?: string;
+  cursor?: { createdAt: number; workKey: string };
+  limit?: number;
+};
+
+function localDayStart(key: string): number {
+  const [year, month, day] = key.split("-").map(Number);
+  return new Date(year, month - 1, day).getTime();
+}
+
+/** 与主进程 historyRepository.list 同口径：按作品键聚组、组内保留全部行、组间最新在前。 */
+function mockHistoryGroups(filter?: MockHistoryFilter): Array<{ key: string; createdAt: number; rows: HistoryEntry[] }> {
+  let rows = history.map((h) => ({ ...h }));
+  if (filter?.platform) rows = rows.filter((h) => h.platform === filter.platform);
+  if (filter?.from && filter?.to) {
+    const [year, month, day] = filter.to.split("-").map(Number);
+    const start = localDayStart(filter.from);
+    const end = new Date(year, month - 1, day + 1).getTime();
+    rows = rows.filter((h) => h.createdAt >= start && h.createdAt < end);
+  }
+  if (filter?.query?.trim()) {
+    const needle = filter.query.trim().toLowerCase();
+    rows = rows.filter((h) => JSON.stringify(h).toLowerCase().includes(needle));
+  }
+  const grouped = new Map<string, { key: string; createdAt: number; rows: HistoryEntry[] }>();
+  for (const entry of rows) {
+    const key = entry.groupId ?? entry.id;
+    const group = grouped.get(key) ?? { key, createdAt: entry.createdAt, rows: [] };
+    group.rows.push(entry);
+    group.createdAt = Math.max(group.createdAt, entry.createdAt);
+    grouped.set(key, group);
+  }
+  return [...grouped.values()].sort(
+    (a, b) => b.createdAt - a.createdAt || (a.key < b.key ? 1 : a.key > b.key ? -1 : 0)
+  );
+}
 
 /**
  * 解析成功即记一行（与主进程 ipc.ts 的 parse:run 同一动作、同一个 `parseHistoryEntry`）。
@@ -370,170 +466,205 @@ function remember(t: DownloadTaskView): void {
 }
 
 /**
- * 预览用计数档（stats:get）：本会话真正落进 history 的行如实累加，另外叠 13 天
- * **确定性**合成活动 —— 只有「今天」这一份数据时，趋势与热力的形状根本没法自检。
- * 伪随机取 day 索引的模，不用 Math.random：截图与断言要可重现。
- * 边界：renderer 不吃 electron/main 的空档工厂，所以桶结构在这里照契约造一遍。
+ * 范围查询的事件账本：与主进程 `stats_events` 同一套聚合规则（成功/失败分开、
+ * 耗时样本只取带时长的成功下载、作者按作品键去重）。保留逐事件时刻，
+ * 才能按任意日期区间过滤；合成活动是确定性的，截图与断言可重现。
  */
-function mockStats(): StatsSnapshot {
-  const DAY = 86_400_000;
+type MockStatsEvent =
+  | { type: "parse"; at: number; platform: string; ok: boolean; durationMs: number; workKey: string; author: string }
+  | {
+      type: "download";
+      at: number;
+      platform: string;
+      kind: string;
+      ok: boolean;
+      bytes: number;
+      transferMs?: number;
+      workKey: string;
+      author?: string;
+    }
+  | { type: "cancel"; at: number; platform: string; workKey: string };
+
+type MockStatsCounts = {
+  downloads: number;
+  failures: number;
+  bytes: number;
+  parses: number;
+  parseFailures: number;
+  canceled?: number;
+};
+
+const MOCK_STATS_DAY = 86_400_000;
+const MOCK_AUTHORS = ["胶片修复所", "小满的衣柜", "草原观察员", "信号铺子", "Switch Lab", "晚风合唱团"] as const;
+
+function localDayOf(at: number): string {
+  const d = new Date(at);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function accumulateMockEvent(row: MockStatsCounts, event: MockStatsEvent): void {
+  if (event.type === "download") {
+    if (!event.ok) {
+      row.failures += 1;
+      return;
+    }
+    row.downloads += 1;
+    row.bytes += Math.max(0, Math.floor(event.bytes));
+    return;
+  }
+  if (event.type === "cancel") {
+    row.canceled = (row.canceled ?? 0) + 1;
+    return;
+  }
+  row.parses += 1;
+  if (!event.ok) row.parseFailures += 1;
+}
+
+/** 13 天确定性合成活动 + 本会话真实落地行；伪随机取模，截图与断言可重现。 */
+function mockStatsEvents(): MockStatsEvent[] {
   const dayStart = new Date();
   dayStart.setHours(0, 0, 0, 0);
   const keys = canonicalKeys();
   const kinds = ["video", "image", "audio", "file"] as const;
-  const pad = (n: number): string => String(n).padStart(2, "0");
-  const keyOf = (at: number): string => {
-    const d = new Date(at);
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-  };
-
-  const snap: StatsSnapshot = {
-    schema: 1,
-    since: dayStart.getTime() - 13 * DAY,
-    updatedAt: Date.now(),
-    totals: {
-      downloads: 0,
-      failures: 0,
-      canceled: 2,
-      bytes: 0,
-      elapsedMs: 0,
-      elapsedCount: 0,
-      elapsedBytes: 0,
-    },
-    parse: { total: 0, failures: 0, local: 0, online: 0, mock: 0, durationMs: 0 },
-    byDay: {},
-    byPlatform: {},
-    byKind: {},
-    byHour: new Array<number>(168).fill(0),
-  };
-
-  const platformRow = (platform: string): StatsSnapshot["byPlatform"][string] =>
-    (snap.byPlatform[platform] ??= { downloads: 0, failures: 0, bytes: 0, parses: 0, parseFailures: 0 });
-  const dayRow = (at: number): StatsSnapshot["byDay"][string] =>
-    (snap.byDay[keyOf(at)] ??= { downloads: 0, failures: 0, bytes: 0, parses: 0 });
-
-  const addDownload = (
-    at: number,
-    platform: string,
-    kind: string,
-    bytes: number,
-    elapsedMs: number
-  ): void => {
-    const size = Math.max(0, Math.floor(bytes));
-    snap.totals.downloads += 1;
-    snap.totals.bytes += size;
-    if (elapsedMs > 0) {
-      snap.totals.elapsedMs += Math.floor(elapsedMs);
-      snap.totals.elapsedCount += 1;
-      snap.totals.elapsedBytes += size; // 与主进程同一条总线：平均速度只算有耗时样本的那部分
-    }
-    const kb = (snap.byKind[kind || "unknown"] ??= { downloads: 0, bytes: 0 });
-    kb.downloads += 1;
-    kb.bytes += size;
-    const pb = platformRow(platform);
-    pb.downloads += 1;
-    pb.bytes += size;
-    const db = dayRow(at);
-    db.downloads += 1;
-    db.bytes += size;
-    const d = new Date(at);
-    snap.byHour[d.getDay() * 24 + d.getHours()] += 1;
-  };
-
-  const addFailure = (at: number, platform: string): void => {
-    snap.totals.failures += 1;
-    platformRow(platform).failures += 1;
-    dayRow(at).failures += 1;
-  };
-
-  const addParse = (
-    at: number,
-    platform: string,
-    via: "local" | "mock",
-    okParse: boolean,
-    ms: number
-  ): void => {
-    snap.parse.total += 1;
-    snap.parse[via] += 1;
-    snap.parse.durationMs += Math.floor(ms);
-    if (!okParse) snap.parse.failures += 1;
-    const pb = platformRow(platform);
-    pb.parses += 1;
-    if (!okParse) pb.parseFailures += 1;
-    dayRow(at).parses += 1;
-  };
+  const out: MockStatsEvent[] = [];
 
   for (let back = 13; back >= 1; back--) {
     const count = 2 + ((back * 5) % 9);
     for (let i = 0; i < count; i++) {
-      const at = dayStart.getTime() - back * DAY + (7 + ((back + i) % 15)) * 3_600_000 + i * 900_000;
+      const at =
+        dayStart.getTime() - back * MOCK_STATS_DAY + (7 + ((back + i) % 15)) * 3_600_000 + i * 900_000;
       const platform = keys[(back + i) % keys.length];
-      addDownload(
+      const workKey = `mock-${back}-${i}`;
+      const author = MOCK_AUTHORS[(back + i) % MOCK_AUTHORS.length];
+      const parsed = i % 7 !== 3;
+      out.push({
+        type: "parse",
+        at: at + 60_000,
+        platform,
+        ok: parsed,
+        durationMs: 90 + ((back + i) % 12) * 55,
+        workKey,
+        author,
+      });
+      if (!parsed) continue;
+      out.push({
+        type: "download",
         at,
         platform,
-        kinds[(back * 2 + i) % kinds.length],
-        8_000_000 + ((back * 3 + i) % 40) * 4_500_000,
-        1_200 + ((back + i) % 20) * 900
-      );
-      addParse(at, platform, "local", i % 7 !== 3, 90 + ((back + i) % 12) * 55);
+        kind: kinds[(back * 2 + i) % kinds.length],
+        ok: true,
+        bytes: 8_000_000 + ((back * 3 + i) % 40) * 4_500_000,
+        transferMs: 1_200 + ((back + i) % 20) * 900,
+        workKey,
+        author,
+      });
     }
-    for (let f = 0; f < (back % 3); f++) {
-      addFailure(dayStart.getTime() - back * DAY + 21 * 3_600_000, keys[(back + f) % keys.length]);
+    for (let f = 0; f < back % 3; f++) {
+      out.push({
+        type: "download",
+        at: dayStart.getTime() - back * MOCK_STATS_DAY + 21 * 3_600_000,
+        platform: keys[(back + f) % keys.length],
+        kind: kinds[f % kinds.length],
+        ok: false,
+        bytes: 0,
+        workKey: `mock-fail-${back}-${f}`,
+      });
     }
   }
-  // 本会话的真实行：历史页里有什么，统计页就该有什么 —— 但只有落地行算一次下载，
-  // 解析行（files 为空）在主进程那边根本不进 stats.done，预览也不能把它数成文件
+  // 取消不进成功率分母，但指标卡要有一条可核对
+  out.push({ type: "cancel", at: dayStart.getTime() - 2 * MOCK_STATS_DAY + 22 * 3_600_000, platform: keys[0], workKey: "mock-cancel-1" });
+  out.push({ type: "cancel", at: dayStart.getTime() - 6 * MOCK_STATS_DAY + 22 * 3_600_000, platform: keys[2], workKey: "mock-cancel-2" });
+
+  // 与主进程同一条：只有落地行算一次下载，解析行（files 为空）不进下载账
   for (const h of history) {
     if (!isLanded(h)) continue;
-    addDownload(h.createdAt, h.platform ?? "", h.kind ?? "file", h.bytes ?? 0, 0);
+    out.push({
+      type: "download",
+      at: h.createdAt,
+      platform: h.platform ?? "",
+      kind: h.kind ?? "file",
+      ok: true,
+      bytes: h.bytes ?? 0,
+      workKey: workKeyOf(h.sourceUrl) ?? h.groupId ?? h.id,
+      author: h.author?.name,
+    });
   }
-
-  return snap;
+  return out.sort((a, b) => a.at - b.at);
 }
 
 function mockStatsQuery(range: StatsDateRange): StatsQueryResult {
-  const snapshot = mockStats();
-  const start = new Date(...range.from.split("-").map(Number).map((value, index) => index === 1 ? value - 1 : value) as [number, number, number]);
-  const end = new Date(...range.to.split("-").map(Number).map((value, index) => index === 1 ? value - 1 : value) as [number, number, number]);
-  const byDay: StatsQueryResult["byDay"] = {};
+  const events = mockStatsEvents();
+  const startAt = localDayStart(range.from);
+  const [toYear, toMonth, toDay] = range.to.split("-").map(Number);
+  const endAt = new Date(toYear, toMonth - 1, toDay + 1).getTime();
+  const inRange = events.filter((event) => event.at >= startAt && event.at < endAt);
+
   const totals: StatsQueryResult["totals"] = {
-    downloads: 0, failures: 0, canceled: 0, bytes: 0, elapsedMs: 0,
-    elapsedCount: 0, elapsedBytes: 0, parses: 0, parseFailures: 0,
+    downloads: 0,
+    failures: 0,
+    canceled: 0,
+    bytes: 0,
+    elapsedMs: 0,
+    elapsedCount: 0,
+    elapsedBytes: 0,
+    parses: 0,
+    parseFailures: 0,
   };
-  for (const day = new Date(start); day <= end; day.setDate(day.getDate() + 1)) {
-    const key = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
-    const source = snapshot.byDay[key];
-    const row = {
-      downloads: source?.downloads ?? 0,
-      failures: source?.failures ?? 0,
-      canceled: 0,
-      bytes: source?.bytes ?? 0,
-      parses: source?.parses ?? 0,
-      parseFailures: 0,
-    };
-    byDay[key] = row;
-    totals.downloads += row.downloads;
-    totals.failures += row.failures;
-    totals.bytes += row.bytes;
-    totals.parses += row.parses;
+  const byDay: StatsQueryResult["byDay"] = {};
+  const byPlatform: StatsQueryResult["byPlatform"] = {};
+  const byKind: StatsQueryResult["byKind"] = {};
+  const authorRows = new Map<string, StatsQueryResult["authors"][number]>();
+  const parsedWorks = new Set<string>();
+
+  for (const event of inRange) {
+    accumulateMockEvent(totals, event);
+    accumulateMockEvent((byDay[localDayOf(event.at)] ??= { downloads: 0, failures: 0, canceled: 0, bytes: 0, parses: 0, parseFailures: 0 }), event);
+    accumulateMockEvent(
+      (byPlatform[event.platform] ??= { downloads: 0, failures: 0, bytes: 0, parses: 0, parseFailures: 0 }),
+      event
+    );
+    if (event.type === "download" && event.ok) {
+      const kind = event.kind || "unknown";
+      const bucket = (byKind[kind] ??= { downloads: 0, bytes: 0 });
+      bucket.downloads += 1;
+      bucket.bytes += Math.max(0, Math.floor(event.bytes));
+      if ((event.transferMs ?? 0) > 0) {
+        totals.elapsedMs += Math.floor(event.transferMs!);
+        totals.elapsedCount += 1;
+        totals.elapsedBytes += Math.max(0, Math.floor(event.bytes));
+      }
+    }
+    const name = event.type === "cancel" ? undefined : event.author?.trim();
+    if (!name) continue;
+    const author = authorRows.get(name) ?? { name, parsedWorks: 0, downloadedFiles: 0, downloadedBytes: 0 };
+    const work = event.type === "cancel" ? "" : event.workKey;
+    if (event.type === "parse" && event.ok && !parsedWorks.has(`${name}\u0000${work}`)) {
+      parsedWorks.add(`${name}\u0000${work}`);
+      author.parsedWorks += 1;
+    }
+    if (event.type === "download" && event.ok) {
+      author.downloadedFiles += 1;
+      author.downloadedBytes += Math.max(0, Math.floor(event.bytes));
+    }
+    authorRows.set(name, author);
   }
+
+  const firstAt = events.length ? Math.min(...events.map((event) => event.at)) : null;
   return {
     range,
-    availableFrom: `${new Date(snapshot.since).getFullYear()}-${String(new Date(snapshot.since).getMonth() + 1).padStart(2, "0")}-${String(new Date(snapshot.since).getDate()).padStart(2, "0")}`,
+    availableFrom: firstAt === null ? null : localDayOf(firstAt),
     totals,
     byDay,
-    byPlatform: Object.fromEntries(Object.entries(snapshot.byPlatform).map(([key, row]) => [key, {
-      downloads: row.downloads, failures: row.failures, bytes: row.bytes, parses: row.parses, parseFailures: row.parseFailures,
-    }])),
-    byKind: snapshot.byKind,
-    authors: [],
+    byPlatform,
+    byKind,
+    authors: [...authorRows.values()].sort(
+      (a, b) => b.downloadedFiles - a.downloadedFiles || b.parsedWorks - a.parsedWorks || a.name.localeCompare(b.name)
+    ),
   };
 }
 
-function mockStatsGet(): Promise<InvokeResult<StatsSnapshot>>;
-function mockStatsGet(range: StatsDateRange): Promise<InvokeResult<StatsQueryResult>>;
-function mockStatsGet(range?: StatsDateRange): Promise<InvokeResult<StatsSnapshot | StatsQueryResult>> {
-  return Promise.resolve(range ? ok(mockStatsQuery(range)) : ok(mockStats()));
+function mockStatsGet(range: StatsDateRange): Promise<InvokeResult<StatsQueryResult>> {
+  return Promise.resolve(ok(mockStatsQuery(range)));
 }
 
 function tick(): void {
@@ -938,7 +1069,7 @@ const mockBridge: MgBridge = {
       }
       return ok({ ok: true });
     },
-    list: async () => ok(tasks.map((t) => ({ ...t }))),
+    list: async (filter) => ok(mockQueuePage(filter)),
     // 与主进程同语义：只移出终态行，queued/downloading 点名也不删
     clear: async (taskIds) => {
       const ids = new Set(taskIds);
@@ -988,19 +1119,40 @@ const mockBridge: MgBridge = {
 
   history: {
     list: async (filter) => {
-      let rows = history.map((h) => ({ ...h }));
-      if (filter?.platform) rows = rows.filter((h) => h.platform === filter.platform);
-      if (filter?.limit) rows = rows.slice(0, filter.limit);
-      return ok(rows);
+      const groups = mockHistoryGroups(filter);
+      const limit = filter?.limit ?? 50;
+      const start = filter?.cursor
+        ? groups.findIndex((group) => group.key === filter.cursor!.workKey) + 1
+        : 0;
+      const pageGroups = groups.slice(start, start + limit);
+      const last = pageGroups.at(-1);
+      return ok({
+        rows: pageGroups.flatMap((group) => group.rows),
+        nextCursor: groups.length > start + limit && last ? { createdAt: last.createdAt, workKey: last.key } : null,
+      });
+    },
+    listKeys: async (filter) => {
+      const groups = mockHistoryGroups(filter);
+      const limit = filter?.limit ?? 5000;
+      const start = filter?.cursor
+        ? groups.findIndex((group) => group.key === filter.cursor!.workKey) + 1
+        : 0;
+      const page = groups.slice(start, start + limit);
+      const last = page.at(-1);
+      return ok({
+        keys: page.map((group) => group.key),
+        nextCursor: groups.length > start + limit && last ? { createdAt: last.createdAt, workKey: last.key } : null,
+      });
     },
     // 与主进程 store.removeHistory 同口径：行键命中条目 id 或其 groupId 都删（选一行删整组）。
     // 界面上的「清空」也走这条（表头全选 = 可见全部行），v9 起没有独立的 clear 通道。
     remove: async (keys) => {
       const drop = new Set(keys);
+      const before = history.length;
       const kept = history.filter((h) => !(drop.has(h.id) || (h.groupId && drop.has(h.groupId))));
       history.length = 0;
       history.push(...kept);
-      return ok(kept.map((h) => ({ ...h })));
+      return ok({ removed: before - history.length });
     },
   },
 

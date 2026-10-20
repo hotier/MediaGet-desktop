@@ -33,7 +33,7 @@ MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet
 「有哪些平台、叫什么、哪枚图标、哪个引擎能解、供不供」只写在这张零依赖表里，主进程、渲染进程与落地页（`landing/`）import 同一份。加平台 = 改这一处 + 放一枚 `renderer/public/logos/*.svg`，五页自动跟上，落地页平台带也自动跟上（它按 `enabledByDefault` 生成，图标由 `scripts/build-landing.cjs` 从 `renderer/public/logos` 镜像到 `landing/public/logos`，那份是生成物、不入库）；**再抄一份平台名或图标映射就是缺陷**——`tests/platform-registry.test.ts` 把「图标文件不存在」「与内核 `PLATFORM_INFO` 逐字段漂移」「声明 `parseCore: ready` 却没有本地 parser」「renderer 里手抄平台名」都变成红叉。README 的「平台支持」表是唯一一处允许手抄的对外清单（外宣需要一张静态表），但也钉着 `tests/readme-platforms.test.ts`：平台集合必须等于 `PLATFORMS` 的显示名、Cookie 档位必须等于 `COOKIE_ROWS`、「N 个平台」必须等于注册表长度——加平台漏改 README 当天就红。
 
 - **引擎与供给解耦**（2026-10-16 业主定调）：parse-core 只是引擎之一（还有 yt-dlp、后续更多）。`engines` 记覆盖度 `ready`/`declared`/`unknown`，`enabledByDefault` 由 ready 推出；内核那份降级成引擎侧事实，不再当产品边界。
-- **契约键 vs 别名**：上游路由目录名（`xhs`）只许活在 `legacyKeys`；写进 history/stats 前一律 `resolveKey()` 归一，**盘上存量则在读侧归一**（`store.loadHistory` 逐条、`stats` 的 `byPlatform` 并键相加），未登记键原样回吐、不进界面——注册表不许改写盘上历史。
+- **契约键 vs 别名**：上游路由目录名（`xhs`）只许活在 `legacyKeys`；写进 history/stats 前一律 `resolveKey()` 归一（仓储写入口 `electron/main/repositories.ts` 兜底），**旧 JSON 存量则在一次性导入时归一**（`storage-migration.ts` 逐条，源文件原样保留），未登记键原样回吐、不进界面——注册表不许改写用户的源文件。
 - **开关**：持久化在 `settings.platformSwitches`（只存用户改过的，缺省跟 `enabledByDefault`），渲染层经 `renderer/src/store/platforms.ts` 乐观置态并整表提交；主进程读持久值，不读渲染层内存。
 - **开关必须在主进程切断路由**：`engine.ts` 的供给闸门排在结果缓存与引擎轮询之前，关掉的平台直接 400。只在 UI 上隐藏它 = 假开关（解析照跑，历史还多几条）。
 - **开关界面 = 设置「引擎」体检表的「提供」列**（2026-10-16 落地）：翻转即 `setEnabled` 落盘并复检 `probe:engines`，「通道」徽标当场跟着变；它不进脏计数、也不受「放弃」影响（与本地缓存清理同一条语义，见 UIUX-DESIGN §2.4 例外条），别再把它接回草稿模型。

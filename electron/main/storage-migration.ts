@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -5,17 +6,64 @@ import {
   AppSettingsSchema,
   HistoryEntrySchema,
   PersistedQueueTaskSchema,
-  StatsSnapshotSchema,
 } from "../../types/ipc-contract";
 import { DEFAULT_SETTINGS, type AppSettings, type HistoryEntry, type PersistedQueueTask } from "../../types/ipc";
 import { resolveKey } from "../../shared/platforms";
 import { normalizeAuthorSnapshot } from "../../shared/author";
-import { workKeyOf } from "../../shared/history";
+import { normalizeHistoryKeys, workKeyOf } from "../../shared/history";
 import type { DatabaseHandle } from "./database";
-import { LEGACY_JSON_STORE_FILES } from "./store";
+
+/** 只由本迁移器读取的旧版 JSON 档；运行时读写全部走 SQLite，源文件原样保留供恢复。 */
+const LEGACY_JSON_STORE_FILES = ["config.json", "queue.json", "history.json", "stats.json"] as const;
 
 type SourceName = "config" | "queue" | "history" | "stats";
 type SourceFile = (typeof LEGACY_JSON_STORE_FILES)[number];
+
+const COUNT = z.number().int().min(0);
+
+/**
+ * 旧 stats.json 的冻结形状。它是**迁移输入**而不是活契约：统计页现在只认事件账本，
+ * 这份聚合快照导入 `legacy_stats` 归档、不参与任何范围查询。把形状钉在迁移器里，
+ * 契约层就不必再为一份不再跨进程传输的档保留 schema。
+ */
+const LegacyStatsSnapshotSchema = z.object({
+  schema: z.literal(1),
+  since: z.number(),
+  updatedAt: z.number(),
+  totals: z.object({
+    downloads: COUNT,
+    failures: COUNT,
+    canceled: COUNT,
+    bytes: COUNT,
+    elapsedMs: COUNT,
+    elapsedCount: COUNT,
+    elapsedBytes: COUNT,
+  }),
+  parse: z.object({
+    total: COUNT,
+    failures: COUNT,
+    local: COUNT,
+    online: COUNT,
+    mock: COUNT,
+    durationMs: COUNT,
+  }),
+  byDay: z.record(
+    z.string(),
+    z.object({ downloads: COUNT, failures: COUNT, bytes: COUNT, parses: COUNT })
+  ),
+  byPlatform: z.record(
+    z.string(),
+    z.object({
+      downloads: COUNT,
+      failures: COUNT,
+      bytes: COUNT,
+      parses: COUNT,
+      parseFailures: COUNT,
+    })
+  ),
+  byKind: z.record(z.string(), z.object({ downloads: COUNT, bytes: COUNT })),
+  byHour: z.array(COUNT).length(168),
+});
 
 interface ParsedSource {
   name: SourceName;
@@ -103,13 +151,16 @@ function parseQueue(value: unknown, fingerprint: string): ParsedSource {
     apply(db) {
       db.exec("DELETE FROM queue_tasks;");
       for (const task of tasks) {
-        // Media URLs and request headers are ephemeral transport credentials. Keep the task metadata, but never import them.
-        const safeTask: PersistedQueueTask = { ...task, url: "", referer: undefined, headers: undefined };
+        // Same rule as the repository write path: nonterminal rows keep URL and headers (restart
+        // recovery and retry replay them as-is); a finished row drops both from the long-lived ledger.
+        const safeTask: PersistedQueueTask =
+          task.status === "done" ? { ...task, url: "", headers: undefined } : task;
         db.run(
           `INSERT INTO queue_tasks
-            (task_id, created_at, updated_at, status, platform, search_text, payload_json)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            (task_id, group_id, created_at, updated_at, status, platform, search_text, payload_json)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           task.taskId,
+          task.groupId,
           task.createdAt,
           task.finishedAt ?? task.createdAt,
           task.status,
@@ -145,7 +196,15 @@ function parseHistory(value: unknown, fingerprint: string): ParsedSource {
   if (!Array.isArray(value)) {
     throw new Error("Unable to migrate history.json: expected a history array; the original file was preserved");
   }
-  const entries = value.map(normalizeHistoryRow);
+  // Two old rows can normalize to one work key (different share links for the same work).
+  // Keep the newest parse row per key and drop any repeated row id, otherwise the UNIQUE(id)
+  // constraint wedges the whole first-run import.
+  const seenIds = new Set<string>();
+  const entries = normalizeHistoryKeys(value.map(normalizeHistoryRow)).filter((entry) => {
+    if (seenIds.has(entry.id)) return false;
+    seenIds.add(entry.id);
+    return true;
+  });
   return {
     name: "history",
     fingerprint,
@@ -171,20 +230,23 @@ function parseHistory(value: unknown, fingerprint: string): ParsedSource {
 }
 
 function parseStats(value: unknown, fingerprint: string): ParsedSource {
-  let snapshot: unknown;
-  try {
-    snapshot = value === null ? null : StatsSnapshotSchema.parse(value);
-  } catch {
-    throw new Error("Unable to migrate stats.json: unsupported statistics shape; the original file was preserved");
+  if (value !== null) {
+    try {
+      LegacyStatsSnapshotSchema.parse(value);
+    } catch {
+      throw new Error("Unable to migrate stats.json: unsupported statistics shape; the original file was preserved");
+    }
   }
   return {
     name: "stats",
     fingerprint,
-    rows: snapshot === null ? 0 : 1,
+    rows: value === null ? 0 : 1,
     apply(db) {
+      // Archive the source verbatim: range queries never read it, but keeping the aggregate
+      // snapshot intact leaves a recoverable record if a later migration needs it.
       db.run(
         "INSERT INTO legacy_stats (key, value) VALUES ('snapshot', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        JSON.stringify(snapshot)
+        JSON.stringify(value)
       );
     },
   };
@@ -216,7 +278,11 @@ export function migrateJsonStore(input: { userDataDir: string; db: DatabaseHandl
       "SELECT fingerprint FROM storage_migrations WHERE source = ?",
       `${source.name}.json`
     );
-    if (applied?.fingerprint === source.fingerprint) {
+    // Import is one-shot per source, not "re-import whenever the file changed": after the
+    // upgrade the JSON is a frozen legacy snapshot while users keep deleting/editing rows in
+    // SQLite. Re-importing a rewritten JSON would resurrect deleted history and overwrite
+    // settings. A fresh database has no marker and imports again.
+    if (applied) {
       report.skipped.push(source.name);
       return false;
     }

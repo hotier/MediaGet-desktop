@@ -2,9 +2,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_SETTINGS } from "../types/ipc";
+import { DEFAULT_SETTINGS, type PersistedQueueTask } from "../types/ipc";
 import { openDatabase } from "../electron/main/database";
-import { createSettingsRepository } from "../electron/main/repositories";
+import { createSettingsRepository, queueDigest } from "../electron/main/repositories";
 
 const directories: string[] = [];
 const openHandles: ReturnType<typeof openDatabase>[] = [];
@@ -43,6 +43,18 @@ describe("settings repository", () => {
     expect(repository.getKernelValue("MISSING")).toBeUndefined();
   });
 
+  it("fills missing keys from defaults when the database predates a settings field", () => {
+    const db = testDatabase();
+    const { minimizeToTray: _dropped, ...legacy } = DEFAULT_SETTINGS;
+    db.run(
+      "INSERT INTO app_settings (key, value) VALUES ('settings', ?)",
+      JSON.stringify(legacy)
+    );
+    const loaded = createSettingsRepository(db).loadConfig().settings;
+    expect(loaded.minimizeToTray).toBe(DEFAULT_SETTINGS.minimizeToTray);
+    expect(loaded.theme).toBe(DEFAULT_SETTINGS.theme);
+  });
+
   it("does not include Cookie values in database errors", () => {
     const db = testDatabase();
     const repository = createSettingsRepository(db);
@@ -56,5 +68,26 @@ describe("settings repository", () => {
     }
     expect(errorText).toBeTruthy();
     expect(errorText).not.toContain("never-log-this-cookie");
+  });
+});
+
+describe("queue digest", () => {
+  const task = (id: string, status: PersistedQueueTask["status"]): PersistedQueueTask => ({
+    taskId: id,
+    groupId: "g1",
+    url: `https://cdn.example.com/${id}.mp4`,
+    filename: `${id}.mp4`,
+    kind: "video",
+    received: 0,
+    total: 1000,
+    createdAt: 1,
+    status,
+  });
+
+  it("按固定状态序排；空档只剩一个数", () => {
+    expect(queueDigest([])).toBe("0 项");
+    expect(
+      queueDigest([task("a", "done"), task("b", "downloading"), task("c", "error")])
+    ).toBe("3 项（downloading 1 · done 1 · error 1）");
   });
 });

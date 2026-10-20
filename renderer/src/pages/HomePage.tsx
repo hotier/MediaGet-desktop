@@ -317,7 +317,7 @@ export default function HomePage({
   const settled = items.every((it) => it.status !== "pending");
   useEffect(() => {
     if (!settled) return;
-    void api.history.list({ limit: 5 }).then(setRecent).catch(() => {});
+    void api.history.list({ limit: 5 }).then((page) => setRecent(page.rows)).catch(() => {});
   }, [settled]);
 
   // 进行中任务不在首页做第二份展示：右栏队列轨已逐条实时显示，资源明细归队列页。

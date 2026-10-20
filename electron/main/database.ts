@@ -90,6 +90,16 @@ const MIGRATIONS: readonly Migration[] = [
     version: 2,
     sql: "ALTER TABLE stats_events ADD COLUMN via TEXT;",
   },
+  {
+    // Queue pages are selected per work group, not per file: a group row's totals must come
+    // from every underlying task, so the page boundary can never split one work.
+    version: 3,
+    sql: `
+      ALTER TABLE queue_tasks ADD COLUMN group_id TEXT;
+      UPDATE queue_tasks SET group_id = COALESCE(json_extract(payload_json, '$.groupId'), task_id);
+      CREATE INDEX queue_tasks_group_page ON queue_tasks(group_id, created_at DESC, task_id DESC);
+    `,
+  },
 ];
 
 function migrate(db: BetterSqlite3.Database): number {

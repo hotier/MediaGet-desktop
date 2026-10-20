@@ -34,6 +34,11 @@ import type {
   EnqueueOutcomeSchema,
   HistoryEntrySchema,
   HistoryFilterSchema,
+  HistoryKeysInputSchema,
+  HistoryKeysPageSchema,
+  HistoryPageSchema,
+  HistoryCursorSchema,
+  HistoryRemoveResultSchema,
   HistoryRemoveInputSchema,
   IdentifyInputSchema,
   IdentifyOutcomeSchema,
@@ -44,7 +49,9 @@ import type {
   ParsedVideoItemSchema,
   ParsedVideoQualitySchema,
   PersistedQueueTaskSchema,
-  StatsSnapshotSchema,
+  QueueCursorSchema,
+  QueueFilterSchema,
+  QueuePageSchema,
   StatsDateRangeSchema,
   StatsQueryResultSchema,
   UpdateStateSchema,
@@ -166,9 +173,28 @@ export type InvokeResult<T> = InvokeOk<T> | InvokeErr;
 // v19：新增 `settings:cookieLogin`（设置页打开登录页、登录后自动抓 Cookie，业主指令 2026-10-19）。
 //     入参只收四个受支持的键，出参只有 `{ captured, reason }`——**值不回渲染层**，
 //     与 settings:get 的 "***" 掩码同一条隐私契约。通道集合变了，按 v6 起同一条口径升号。
+// v20：统一 SQLite 存储（2026-10-20）。`stats:get` 新增可选日期区间入参，带区间时出参是
+//     `StatsQueryResult`（事件账本聚合），不带时仍是旧 `StatsSnapshot`（兼容旧 UI，Task 7 后移除）。
+//     通道集合没变、载荷形状新增一档，按 v6 起同一条口径升号。
+// v21：历史改为服务端分页（2026-10-21）。`history:list` 出参由 `HistoryEntry[]` 变成
+//     `HistoryPage { rows, nextCursor }`（按作品分组、组不跨页）；新增 `history:keys` 供
+//     跨页选择；`history:remove` 出参由「剩余列表」变成 `{ removed }`。通道集合增了一条，
+//     两条既有通道载荷形状不兼容，升号。
+// v22：队列改为服务端分页（2026-10-21）。`download:list` 入参新增状态/平台/搜索/日期/游标，
+//     出参由 `DownloadTaskView[]` 变成 `QueuePage { rows, nextCursor }`。分页单位是作品组：
+//     组行的聚合必须由整组算出，页边界不允许切开一个作品。通道集合没变，载荷形状不兼容，升号。
+// v23：统计只认事件账本（2026-10-21）。`stats:get` 的日期区间由可选改为**必填**，出参固定为
+//     `StatsQueryResult`；v20 的兼容分支（无区间 → `StatsSnapshot`）删除。`StatsSnapshot` 与
+//     三个桶 schema 一并下线 —— 它们描述的是 stats.json 的落盘形状，而该文件已只由迁移读取。
+//     通道集合没变，载荷形状收窄，按 v6 起同一条口径升号；旧 UI 拿不到快照会显式报 bad-input，
+//     这正是想要的失败方式（不再两条口径并存、各算一套数）。
+// v24：统计作者榜带头像（业主指令 2026-10-21「作者 · 解析与下载前加上作者的头像」）。
+//     `StatsQueryResult.authors` 行新增可选键 `avatar`——主进程聚合作者时本来就 join 了
+//     `history_entries` 的作者快照，顺带取出即可；旧档无此键（可选，缺就是首字占位）。
+//     通道集合没变，载荷形状变了，按 v6 起同一条口径升号。
 // ————————————————————————————————————————————————
 
-export const CONTRACT_VERSION = 20;
+export const CONTRACT_VERSION = 24;
 
 // ————————————————————————————————————————————————
 // channel 常量（preload/main/renderer 三方共用字面量，禁止散落拼写）
@@ -188,6 +214,7 @@ export const IPC = {
   settingsSet: "settings:set",
   settingsCookieLogin: "settings:cookieLogin",
   historyList: "history:list",
+  historyKeys: "history:keys",
   historyRemove: "history:remove",
   probeEngines: "probe:engines",
   appGetBinaryStatus: "app:getBinaryStatus",
@@ -247,11 +274,16 @@ export type WorkStat = z.infer<typeof WorkStatSchema>;
 
 export type DownloadStatus = z.infer<typeof PersistedQueueTaskSchema>["status"];
 
-/** 队列持久化条目（重启恢复；store.ts 与 downloader.ts 共用） */
+/** 队列持久化条目（重启恢复；queueRepository 与 downloader.ts 共用） */
 export type PersistedQueueTask = z.infer<typeof PersistedQueueTaskSchema>;
 
 /** download:progress 事件 / download:list 项 */
 export type DownloadTaskView = z.infer<typeof DownloadTaskViewSchema>;
+
+/** download:list —— 服务端筛选 + 按作品组游标分页 */
+export type QueueFilter = z.infer<typeof QueueFilterSchema>;
+export type QueueCursor = z.infer<typeof QueueCursorSchema>;
+export type QueuePage = z.infer<typeof QueuePageSchema>;
 
 /** download:clear —— 点名移除 + 实际移除条数 */
 export type ClearTasksInput = z.infer<typeof ClearTasksInputSchema>;
@@ -304,6 +336,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
 /** history:list */
 export type HistoryEntry = z.infer<typeof HistoryEntrySchema>;
 export type HistoryFilter = z.infer<typeof HistoryFilterSchema>;
+export type HistoryCursor = z.infer<typeof HistoryCursorSchema>;
+export type HistoryPage = z.infer<typeof HistoryPageSchema>;
+export type HistoryKeysFilter = z.infer<typeof HistoryKeysInputSchema>;
+export type HistoryKeysPage = z.infer<typeof HistoryKeysPageSchema>;
+export type HistoryRemoveResult = z.infer<typeof HistoryRemoveResultSchema>;
 /** history:remove */
 export type HistoryRemoveInput = z.infer<typeof HistoryRemoveInputSchema>;
 
@@ -351,8 +388,6 @@ export type UpdatePhase = z.infer<typeof UpdateStateSchema>["phase"];
 /** update:state / update:check / update:download 返回，亦是 app:updateState 事件载荷 */
 export type UpdateState = z.infer<typeof UpdateStateSchema>;
 
-/** stats:get 出参：生命周期计数器快照（只有计数/字节/时长，无 url、无文件名） */
-export type StatsSnapshot = z.infer<typeof StatsSnapshotSchema>;
 export type StatsDateRange = z.infer<typeof StatsDateRangeSchema>;
 export type StatsQueryResult = z.infer<typeof StatsQueryResultSchema>;
 
@@ -369,7 +404,7 @@ export interface MgBridge {
     cancel(taskId: string): Promise<InvokeResult<{ ok: boolean }>>;
     pause(taskId: string): Promise<InvokeResult<{ ok: boolean }>>;
     resume(taskId: string): Promise<InvokeResult<{ ok: boolean }>>;
-    list(): Promise<InvokeResult<DownloadTaskView[]>>;
+    list(filter?: QueueFilter): Promise<InvokeResult<QueuePage>>;
     /** 把终态行移出队列（活跃任务不会被删）：返回实际移除条数 */
     clear(taskIds: string[]): Promise<InvokeResult<ClearTasksResult>>;
     onProgress(cb: (t: DownloadTaskView) => void): () => void;
@@ -383,17 +418,16 @@ export interface MgBridge {
     cookieLogin(input: CookieLoginInput): Promise<InvokeResult<CookieLoginResult>>;
   };
   history: {
-    list(filter?: HistoryFilter): Promise<InvokeResult<HistoryEntry[]>>;
-    /** 删除选中行（行键 = 条目 id 或 groupId，主进程双命中删整组），返回剩余列表。
-     *  整表清空也走这条（keys 上限 = HISTORY_MAX），没有第二条 clear 通道 */
-    remove(keys: string[]): Promise<InvokeResult<HistoryEntry[]>>;
+    list(filter?: HistoryFilter): Promise<InvokeResult<HistoryPage>>;
+    listKeys(filter?: HistoryKeysFilter): Promise<InvokeResult<HistoryKeysPage>>;
+    /** 删除选中行键（id 或 work/group key），上限 5000 并由 UI 分批提交。 */
+    remove(keys: string[]): Promise<InvokeResult<HistoryRemoveResult>>;
   };
   probe: {
     engines(): Promise<InvokeResult<EngineHealth[]>>;
   };
-  /** 统计查询；无日期参数仅用于统计 UI 切换前的兼容快照。 */
+  /** 统计查询：事件账本按本机自然日范围聚合（首尾都含）。 */
   stats: {
-    get(): Promise<InvokeResult<StatsSnapshot>>;
     get(range: StatsDateRange): Promise<InvokeResult<StatsQueryResult>>;
   };
   app: {

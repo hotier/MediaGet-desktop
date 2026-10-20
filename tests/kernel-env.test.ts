@@ -24,15 +24,22 @@ function importsInOrder(src: string): string[] {
 }
 
 describe("kernel-env：Cookie 必须在内核求值之前铺进环境", () => {
-  it("index.ts 的第一条 import 是 ./kernel-env（排在 ./engine 之前）", () => {
+  it("index.ts 只让单实例锁排在 ./kernel-env 之前，./kernel-env 排在 ./engine 之前", () => {
     const specifiers = importsInOrder(indexSrc);
-    expect(specifiers[0]).toBe("./kernel-env");
+    // 锁要抢在 kernel-env 开库之前：第二个实例不许先碰 WAL 库与迁移标记再退出
+    expect(specifiers.slice(0, 2)).toEqual(["./single-instance", "./kernel-env"]);
     expect(specifiers).toContain("./engine");
     expect(specifiers.indexOf("./kernel-env")).toBeLessThan(specifiers.indexOf("./engine"));
   });
 
-  it("kernel-env 自己从 userData/config.json 读 SECRET_CONFIG_KEYS 并写进 process.env", () => {
-    expect(kernelEnvSrc).toMatch(/from\s+["']\.\/store["']/);
+  it("单实例锁模块不开库、不碰内核：只 import electron", () => {
+    const lockSrc = readFileSync(new URL("../electron/main/single-instance.ts", import.meta.url), "utf8");
+    expect(importsInOrder(lockSrc)).toEqual(["electron"]);
+    expect(lockSrc).toMatch(/requestSingleInstanceLock\(\)/);
+  });
+
+  it("kernel-env 自己从本机设置库读 SECRET_CONFIG_KEYS 并写进 process.env", () => {
+    expect(kernelEnvSrc).toMatch(/from\s+["']\.\/storage-runtime["']/);
     expect(kernelEnvSrc).toMatch(/SECRET_CONFIG_KEYS/);
     expect(kernelEnvSrc).toMatch(/loadConfig\(\)/);
     expect(kernelEnvSrc).toMatch(/process\.env\[key\]\s*=\s*value/);

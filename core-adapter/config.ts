@@ -2,13 +2,13 @@
  * 配置注入件（core-adapter/config）—— 两级求值（docs/ARCHITECTURE.md §5）。
  *
  * ```
- * 读某项 = 注入的本机配置（userData/config.json，用户可见可编辑）
+ * 读某项 = 注入的本机配置（userData/mediaget.sqlite 的 kernel_config，设置页可见可编辑）
  *        ?? process.env.<KEY>（仅 dev 便利，prod 不依赖）
  *        ?? 代码内默认值
  * ```
  *
  * 依赖边界（§1）：core-adapter 不得 import electron。故本模块只定义
- * 「取值器」契约，文件读写由 electron/main/store.ts 注入 `read` 回调。
+ * 「取值器」契约，读库由 electron/main 的 settingsRepository 注入 `read` 回调。
  *
  * 键位沿用 mediaGet 命名（DOUYIN_COOKIE / XHS_COOKIE / IG_COOKIE /
  * BILIBILI_COOKIE / YOUTUBE_PIPED_HOSTS / TWITTER_FIXER_SERVICES …），
@@ -16,7 +16,7 @@
  */
 
 export interface ConfigSourceOptions {
-  /** 从本机配置读一项（userData/config.json）；返回 undefined 表示未配置 */
+  /** 从本机配置读一项（kernel_config 表）；返回 undefined 表示未配置 */
   read: (key: string) => string | undefined;
   /** 是否允许回落 process.env（dev 便利；prod 传 false） */
   allowEnv: boolean;

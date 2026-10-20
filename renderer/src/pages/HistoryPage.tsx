@@ -42,9 +42,10 @@
  * （「设置→外观→界面字号」，默认 13px），列与列之间不分大小；层级只靠字重与色彩 ——
  * 主信息（作品标题、浮层「标题」值）`font-medium` + 前景色，
  * 元数据常规 + muted，数字列 tabular-nums；字体族一律 UI 栈（不混等宽）。
- * 筛选（与队列页同一套交互）：搜索 + 平台 + 时间窗，全部是**渲染层过滤**（§2.3），零契约变更。
- * 一次取满 5000 条（= 主进程 store 的 HISTORY_MAX 上限），所以渲染层过滤看到的就是全部记录 ——
- * 平台选项池来自**未过滤**的这份数据：从前按 platform 回源再拿结果去重当选项，选过一个平台就切不回别的。
+ * 筛选（与队列页同一套交互）：搜索 + 平台 + 时间窗。筛选与分组都在主进程做（SQLite 查询），
+ * 本页只持当前已加载页；「加载更多」按稳定游标续页，一组作品永远不会被页边界切开。
+ * 平台选项池来自注册表 `canonicalKeys()`（不是当前结果集）：选过一个平台也能切回别的。
+ * 「选择全部筛选结果」逐页读完全部匹配行再全选；删除按 5000 键一批提交。
  * 首次空与过滤空是两种空态：后者保留工具栏 + 「没有符合条件的记录」+ 清除筛选。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -53,7 +54,7 @@ import { toast } from "sonner";
 import { ChevronDown, ChevronUp, Clock3, Copy } from "lucide-react";
 import { api } from "../lib/bridge";
 import type { HistoryEntry } from "../../../types/ipc";
-import { displayName } from "../../../shared/platforms";
+import { canonicalKeys, displayName } from "../../../shared/platforms";
 import { AuthorAvatar } from "../components/AuthorAvatar";
 import { AuthorCard } from "../components/AuthorCard";
 import { PlatformIcon } from "../components/PlatformIcon";
@@ -79,7 +80,7 @@ import {
   type SelState,
 } from "../lib/history-selection";
 import { fmtBytes, fmtCreated, fmtFileStamp, kindLabel } from "../lib/format";
-import { HISTORY_WINDOW } from "../lib/local-limits";
+import { HISTORY_PAGE_SIZE } from "../lib/local-limits";
 import { Button } from "../components/ui/button";
 import { Card } from "../components/ui/card";
 import { Checkbox } from "../components/ui/checkbox";
@@ -120,9 +121,6 @@ import { TruncatedTooltip } from "../components/ui/tooltip";
 
 /** Radix Select 不接受空串作为 value，「全部平台」用一个不会与平台 key 撞车的哨兵 */
 const ALL = "__all__";
-
-/** 一次取满：与主进程 store 的 HISTORY_MAX 同值，渲染层过滤因而覆盖全部记录 */
-const HISTORY_LIMIT = HISTORY_WINDOW;
 
 type TimeRange = "all" | "today" | "7d" | "30d";
 
@@ -177,6 +175,12 @@ export default function HistoryPage({
   onReparse: (links: string[]) => void;
 }): React.ReactElement {
   const [list, setList] = useState<HistoryEntry[]>([]);
+  const [nextCursor, setNextCursor] = useState<{ createdAt: number; workKey: string } | null>(null);
+  const [loading, setLoading] = useState(true);
+  /** 删除成功后强制回读第一页：游标按被删组算过，不能拿旧 cursor 接着翻 */
+  const [reloadSeq, setReloadSeq] = useState(0);
+  /** 「选择全部筛选结果」正在逐页加载（按钮防重入） */
+  const [selectingAll, setSelectingAll] = useState(false);
   const [platform, setPlatform] = useState<string>("");
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
   const [query, setQuery] = useState("");
@@ -216,17 +220,68 @@ export default function HistoryPage({
   // 全局 keydown 只挂一次，但 Ctrl+A 要读**最新的可见行键** —— 用 ref 桥接，避免把 rows 塞进依赖数组反复重挂
   const visibleKeysRef = useRef<string[]>([]);
 
+  const dateFilter = useMemo(() => {
+    if (timeRange === "all") return {};
+    const end = new Date();
+    const start = new Date(end);
+    if (timeRange === "today") start.setHours(0, 0, 0, 0);
+    else start.setDate(start.getDate() - (timeRange === "7d" ? 6 : 29));
+    const key = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return { from: key(start), to: key(end) };
+  }, [timeRange]);
+  const serverFilter = useMemo(() => ({
+    ...(platform ? { platform } : {}),
+    ...dateFilter,
+    ...(query.trim() ? { query: query.trim() } : {}),
+    limit: HISTORY_PAGE_SIZE,
+  }), [platform, dateFilter, query]);
+
   useEffect(() => {
-    // 失败必须出声：这里原先是 `.catch(() => {})`，而 `list` 的初值就是空数组 ——
-    // 一次 `history:list` 报错（例：某行有个脏字段过不了出参校验）在屏幕上和「真没记录」
-    // 完全同形，满盘记录被读成空态还没人报错。文案只挂在动作上，不进空态分支。
-    void api.history
-      .list({ limit: HISTORY_LIMIT })
-      .then(setList)
-      .catch((e: unknown) =>
-        toast.error(`历史记录读取失败：${String(e instanceof Error ? e.message : e)}`)
-      );
-  }, []);
+    let active = true;
+    setLoading(true);
+    setList([]);
+    setNextCursor(null);
+    void api.history.list(serverFilter).then((page) => {
+      if (!active) return;
+      setList(page.rows);
+      setNextCursor(page.nextCursor);
+    }).catch((e: unknown) => {
+      if (active) toast.error(`历史记录读取失败：${String(e instanceof Error ? e.message : e)}`);
+    }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [serverFilter, reloadSeq]);
+
+  function loadMore(): void {
+    if (!nextCursor || loading) return;
+    setLoading(true);
+    void api.history.list({ ...serverFilter, cursor: nextCursor }).then((page) => {
+      setList((current) => [...current, ...page.rows]);
+      setNextCursor(page.nextCursor);
+    }).catch(() => toast.error("更多历史记录读取失败")).finally(() => setLoading(false));
+  }
+
+  /** 跨页全选：逐页把筛选结果读进当前列表后再全选 —— 导出/重新解析需要行内容，
+   *  只拿键的选择集会让这两个动作对未加载行静默跳过。 */
+  async function selectAllFiltered(): Promise<void> {
+    if (selectingAll) return;
+    setSelectingAll(true);
+    try {
+      let rows = list;
+      let cursor = nextCursor;
+      while (cursor) {
+        const page = await api.history.list({ ...serverFilter, cursor });
+        rows = [...rows, ...page.rows];
+        cursor = page.nextCursor;
+      }
+      setList(rows);
+      setNextCursor(null);
+      setSel({ keys: groupWorks(rows).map((row) => row.key), anchor: null });
+    } catch {
+      toast.error("读取全部筛选结果失败");
+    } finally {
+      setSelectingAll(false);
+    }
+  }
 
   // 统计页点榜 → 本页筛到那个平台。平台选项池来自全量数据，所以榜上的键一定在这页可选
   useEffect(() => {
@@ -259,27 +314,10 @@ export default function HistoryPage({
   }, []);
 
   const { rows, allRows, platforms } = useMemo(() => {
-    // 聚合（解析行 + 下载行 → 一行作品）是纯函数，见 lib/history-works.ts
+    // 服务端负责筛选和游标分页；这里仅把当前已加载页聚合成作品行。
     const all = groupWorks(list);
-    const q = query.trim().toLowerCase();
-    const within = TIME_RANGES.find((f) => f.key === timeRange)!.within;
-    const now = Date.now();
-    const hit = (r: WorkRow): boolean =>
-      (platform === "" || r.platform === platform) &&
-      within(r.createdAt, now) &&
-      (q === "" ||
-        `${r.title} ${r.authorName ?? ""} ${r.platform ?? ""} ${displayName(r.platform)} ${r.files.join(" ")} ${r.sourceUrl ?? ""}`
-          .toLowerCase()
-          .includes(q));
-    return {
-      rows: all.filter(hit),
-      // 未过滤的聚合全集：多选的选择集跨筛选保留（资源管理器口径），复制/导出/删除
-      // 都要按**全量**解析行键 —— 只拿 filtered rows 会把「选中后被筛掉的行」静默丢掉
-      allRows: all,
-      // 选项池来自**未过滤**的聚合结果：跟着 rows 走会让选过一个平台后切不回别的
-      platforms: Array.from(new Set(all.map((r) => r.platform).filter((p): p is string => Boolean(p)))),
-    };
-  }, [list, platform, timeRange, query]);
+    return { rows: all, allRows: all, platforms: canonicalKeys() };
+  }, [list]);
 
   // 每次渲染同步可见行键（全局快捷键只挂一次，读 ref 才拿得到最新值）
   const visibleKeys = rows.map((r) => r.key);
@@ -410,22 +448,22 @@ export default function HistoryPage({
     );
   }
 
-  /** 多选·移除记录（确认弹窗的「移除」按钮调）：以 removeHistory 的返回值为新列表，
-   *  不回读 history.list —— 省一次往返，也不给并发留窗口。文件不动，这是它和「删除」的区别 */
+  /** 多选·移除记录（确认弹窗的「移除」按钮调）：按 5000 键一批提交（契约上限），
+   *  提交完全部批次再回读第一页。文件不动，这是它和「删除」的区别 */
   function removeSelected(): void {
-    void api.history
-      .remove(sel.keys)
-      .then((rest) => {
-        setList(rest);
-        setSel(EMPTY_SEL);
-        setSelDelOpen(false);
-        toast.success(`已移除 ${selectedRows.length} 条记录（文件仍在磁盘）`);
-      })
-      .catch(() => toast.error("移除失败"));
+    const batches: string[][] = [];
+    for (let i = 0; i < sel.keys.length; i += 5000) batches.push(sel.keys.slice(i, i + 5000));
+    void (async () => {
+      for (const keys of batches) await api.history.remove(keys);
+      setSel(EMPTY_SEL);
+      setSelDelOpen(false);
+      setReloadSeq((n) => n + 1);
+      toast.success(`已移除 ${selectedRows.length} 条记录（文件仍在磁盘）`);
+    })().catch(() => toast.error("移除失败"));
   }
 
   // 首次空（真没记录）与过滤空是两种状态：后者保留工具栏，让人改条件而不是以为历史被清空了
-  if (list.length === 0) {
+  if (list.length === 0 && !loading && platform === "" && timeRange === "all" && query.trim() === "") {
     return (
       // 空态只留标题一行，说明段删掉（业主指令 2026-10-17），剩下这一组在可用高度里垂直居中
       <section className="flex min-h-full flex-col items-center justify-center gap-3 text-center">
@@ -628,6 +666,14 @@ export default function HistoryPage({
             </TableBody>
           </Table>
         )}
+
+        {nextCursor && (
+          <div className="flex justify-center border-t border-border py-2">
+            <Button size="sm" variant="ghost" onClick={loadMore} disabled={loading}>
+              {loading ? "加载中…" : "加载更多"}
+            </Button>
+          </div>
+        )}
       </Card>
 
       {/* 底部垫高只在浮窗出现时存在：`main` 是滚动容器，最后一行若不垫高就永久压在浮窗底下、
@@ -660,6 +706,11 @@ export default function HistoryPage({
             <Button variant="outline" size="sm" onClick={reparseSelected}>
               重新解析
             </Button>
+            {nextCursor && (
+              <Button variant="outline" size="sm" onClick={() => void selectAllFiltered()} disabled={selectingAll}>
+                {selectingAll ? "正在全选…" : "选择全部筛选结果"}
+              </Button>
+            )}
             {/* 「移除记录」不写「删除」：它只撤台账那一行，磁盘上的文件不动 —— 按钮要说它做的事 */}
             <Button variant="destructive" size="sm" onClick={() => setSelDelOpen(true)}>
               移除记录

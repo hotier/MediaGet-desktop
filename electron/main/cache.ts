@@ -110,9 +110,20 @@ function orphanPartials(dir: string, liveParts: string[]): FileEntry[] {
   );
 }
 
-/** store.ts 的原子写残留：`${file}.${pid}.tmp`；坏档：`${file}.corrupt-${ts}` */
+/** 旧 JSON 存储的原子写残留：`${file}.${pid}.tmp`；坏档：`${file}.corrupt-${ts}` */
 const isJunk = (name: string): boolean =>
   /\.corrupt-\d+$/.test(name) || (/\.tmp$/.test(name) && !name.includes(`.${process.pid}.tmp`));
+
+/** 记录 = SQLite 主库及其 WAL/SHM，加上迁移后原样保留的旧 JSON 源文件 */
+const RECORD_FILES = [
+  "mediaget.sqlite",
+  "mediaget.sqlite-wal",
+  "mediaget.sqlite-shm",
+  "config.json",
+  "history.json",
+  "queue.json",
+  "stats.json",
+];
 
 export interface CacheProbe {
   /** 扫描当下的占用快照（点开设置→通用才调，不在启动路径上） */
@@ -135,9 +146,7 @@ export function createCacheProbe(deps: CacheProbeDeps): CacheProbe {
   async function status(): Promise<CacheStatus> {
     const partialEntries = orphanPartials(deps.downloadDir(), deps.livePartPaths());
     const junkEntries = scanTop(deps.userDataDir(), isJunk);
-    const recordEntries = scanTop(deps.userDataDir(), (n) =>
-      ["config.json", "history.json", "queue.json", "stats.json"].includes(n)
-    );
+    const recordEntries = scanTop(deps.userDataDir(), (n) => RECORD_FILES.includes(n));
     const updateDir = deps.updaterCacheDir();
     const net = await netBytes();
     const items: CacheItem[] = [

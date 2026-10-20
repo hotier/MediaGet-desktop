@@ -7,7 +7,7 @@
  * 加一张新图 = 往下面数组里补一行；删一张图 = 顺手把不再用的登记撤掉。
  */
 import * as echarts from "echarts/core";
-import { BarChart, HeatmapChart, LineChart } from "echarts/charts";
+import { BarChart, HeatmapChart, LineChart, PieChart } from "echarts/charts";
 import {
   GridComponent,
   LegendComponent,
@@ -23,6 +23,7 @@ import { CanvasRenderer } from "echarts/renderers";
 echarts.use([
   BarChart,
   LineChart,
+  PieChart,
   HeatmapChart,
   GridComponent,
   TooltipComponent,

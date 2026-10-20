@@ -20,12 +20,12 @@ describe("SQLite database foundation", () => {
   it("applies each schema migration exactly once", () => {
     const path = databasePath();
     const db = openDatabase(path);
-    expect(db.schemaVersion).toBe(2);
+    expect(db.schemaVersion).toBe(3);
     db.close();
 
     const reopened = openDatabase(path);
-    expect(reopened.schemaVersion).toBe(2);
-    expect(reopened.get<{ count: number }>("SELECT COUNT(*) AS count FROM schema_migrations")?.count).toBe(2);
+    expect(reopened.schemaVersion).toBe(3);
+    expect(reopened.get<{ count: number }>("SELECT COUNT(*) AS count FROM schema_migrations")?.count).toBe(3);
     reopened.close();
   });
 

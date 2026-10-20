@@ -11,7 +11,13 @@ import { createEngine, type KernelMode } from "../electron/main/engine";
 import { Downloader } from "../electron/main/downloader";
 import { createCacheProbe } from "../electron/main/cache";
 import { createLogger } from "../electron/main/logger";
-import { JsonStore } from "../electron/main/store";
+import { openDatabase } from "../electron/main/database";
+import {
+  createHistoryRepository,
+  createQueueRepository,
+  createSettingsRepository,
+  createStatsRepository,
+} from "../electron/main/repositories";
 import { createStats } from "../electron/main/stats";
 import { createUpdater } from "../electron/main/updater";
 import type { SourceUrlResolver } from "../electron/main/source-url";
@@ -31,12 +37,16 @@ function harness(
     },
   };
   const dir = mkdtempSync(join(tmpdir(), "mg-ipc-test-"));
-  const store = new JsonStore(dir);
+  const database = openDatabase(join(dir, "mediaget.sqlite"));
+  const settingsRepository = createSettingsRepository(database);
+  const historyRepository = createHistoryRepository(database);
+  const queueRepository = createQueueRepository(database);
+  const statsRepository = createStatsRepository(database);
   const engine = createEngine({
-    readKernelConfig: (k) => store.getKernelValue(k),
-    getThrottleMs: () => store.loadConfig().settings.throttleMs,
+    readKernelConfig: (k) => settingsRepository.getKernelValue(k),
+    getThrottleMs: () => settingsRepository.loadConfig().settings.throttleMs,
     // 开关读持久值（与 index.ts 同接线）：这条链路是 P2 的验收面，下面有用例钉它
-    getPlatformSwitches: () => store.loadConfig().settings.platformSwitches,
+    getPlatformSwitches: () => settingsRepository.loadConfig().settings.platformSwitches,
     // 假内核：只声明 kuaishou 覆盖，探测/解析通道全部离线可控
     coreLoader: async () => ({
       localParserKeys: () => ["kuaishou"],
@@ -68,7 +78,7 @@ function harness(
       progress: () => {},
       done: () => {},
       error: () => {},
-      persist: () => {},
+      persist: (tasks) => queueRepository.saveMany(tasks),
       history: () => {},
     },
   });
@@ -87,8 +97,8 @@ function harness(
   };
   const logger = createLogger({
     logDir: () => join(dir, "logs"),
-    getLevel: () => store.loadConfig().settings.logLevel,
-    getRetentionDays: () => store.loadConfig().settings.logRetentionDays,
+    getLevel: () => settingsRepository.loadConfig().settings.logLevel,
+    getRetentionDays: () => settingsRepository.loadConfig().settings.logRetentionDays,
   });
   const cache = createCacheProbe({
     session: () => netCache,
@@ -98,8 +108,11 @@ function harness(
     livePartPaths: () => downloader.livePartPaths(),
     logs: logger,
   });
-  // 真计数器（内存档）：stats:get 的出参形状由 validateOutputs 顺带守住，造假桩等于放弃这条保障
-  const stats = createStats({ load: () => null, save: () => {} });
+  // 真事件账本：stats:get 的出参形状由 validateOutputs 顺带守住，造假桩等于放弃这条保障
+  const stats = createStats({
+    recordEvent: (event, historyEntry) => statsRepository.recordEvent(event, historyEntry),
+    query: (range) => statsRepository.query(range),
+  });
   // 剪贴板写入的捕获点：真实现是 Electron 的 `clipboard`（测试环境没有），这里收的就是
   // handler 真正交出去的那串字符 —— 下面的用例靠它验「文本原样到、被拒的那次没落到写入」。
   const clipboardWrites: string[] = [];
@@ -107,7 +120,9 @@ function harness(
     ipcMain: fakeIpc,
     engine,
     downloader,
-    store,
+    settingsRepository,
+    historyRepository,
+    queueRepository,
     getAppMeta: () => ({ version: "0.0.0-test", electron: "44" }),
     kernelMode: () => "local",
     // 来源链接归一：缺省离线桩（原样返回），跟跳行为归 source-url.test.ts（禁真网络）
@@ -127,7 +142,32 @@ function harness(
     if (!h) throw new Error(`no handler for ${channel}`);
     return h({}, input);
   };
-  return { call, store, dir, logger, cache, netCache, clipboardWrites, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+  /** 旧库缺键：直接改写设置行，模拟「上一版本写下的档」（读侧必须补默认值） */
+  const dropSettings = (...keys: string[]): void => {
+    const stored = database.get<{ value: string }>("SELECT value FROM app_settings WHERE key = 'settings'");
+    const raw = stored ? (JSON.parse(stored.value) as Record<string, unknown>) : {};
+    for (const key of keys) delete raw[key];
+    database.run(
+      "INSERT INTO app_settings (key, value) VALUES ('settings', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      JSON.stringify(raw)
+    );
+  };
+  return {
+    call,
+    database,
+    settingsRepository,
+    historyRepository,
+    dir,
+    logger,
+    cache,
+    netCache,
+    clipboardWrites,
+    dropSettings,
+    cleanup: () => {
+      database.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
 }
 
 describe("IPC 信封与校验", () => {
@@ -183,8 +223,8 @@ describe("IPC 信封与校验", () => {
     const listR = await call(IPC.downloadList);
     expect(listR.ok).toBe(true);
     if (listR.ok) {
-      const tasks = listR.data as { filename: string; url: string; referer?: string }[];
-      const t = tasks.find((x) => x.url === "https://cdn.example.com/a.mp4");
+      const page = listR.data as { rows: { filename: string; url: string; referer?: string }[] };
+      const t = page.rows.find((x) => x.url === "https://cdn.example.com/a.mp4");
       // Windows 非法字符被净化（内核 sanitizeFilename 规则）
       expect(t?.filename).not.toMatch(/[\\/:*?"<>|]/);
     }
@@ -192,7 +232,7 @@ describe("IPC 信封与校验", () => {
   });
 
   it("settings:set 保存后 settings:get 返回掩码 Cookie；*** 回传不改值", async () => {
-    const { call, store, cleanup } = harness();
+    const { call, settingsRepository, cleanup } = harness();
     const set = await call(IPC.settingsSet, {
       cookies: { DOUYIN_COOKIE: "real-cookie-value", maxConcurrent: undefined },
       throttleMs: 500,
@@ -208,20 +248,21 @@ describe("IPC 信封与校验", () => {
       expect(s.cookies.DOUYIN_COOKIE).toBe("***");
     }
     // 落盘的是真值，不是掩码
-    expect(store.loadConfig().kernel.DOUYIN_COOKIE).toBe("real-cookie-value");
-    expect(store.loadConfig().settings.cookies.DOUYIN_COOKIE).toBe("real-cookie-value");
+    expect(settingsRepository.loadConfig().kernel.DOUYIN_COOKIE).toBe("real-cookie-value");
+    expect(settingsRepository.loadConfig().settings.cookies.DOUYIN_COOKIE).toBe("real-cookie-value");
 
     // renderer 把掩码原样回传 → 不覆盖真值
     await call(IPC.settingsSet, { cookies: { DOUYIN_COOKIE: "***" } });
-    expect(store.loadConfig().kernel.DOUYIN_COOKIE).toBe("real-cookie-value");
+    expect(settingsRepository.loadConfig().kernel.DOUYIN_COOKIE).toBe("real-cookie-value");
 
     // 空串 = 清除
     await call(IPC.settingsSet, { cookies: { DOUYIN_COOKIE: "" } });
-    expect(store.loadConfig().kernel.DOUYIN_COOKIE).toBeUndefined();
+    expect(settingsRepository.loadConfig().kernel.DOUYIN_COOKIE).toBeUndefined();
     cleanup();
   });
 
-  it("settings:set 可写字段往返（P2 明暗主题前的可选布尔面）", async () => {    const { call, store, cleanup } = harness();
+  it("settings:set 可写字段往返（P2 明暗主题前的可选布尔面）", async () => {
+    const { call, settingsRepository, dropSettings, cleanup } = harness();
     try {
       const flag = (r: Awaited<ReturnType<typeof call>>): unknown =>
         r.ok ? (r.data as { minimizeToTray?: boolean }).minimizeToTray : undefined;
@@ -231,12 +272,11 @@ describe("IPC 信封与校验", () => {
 
       const set = await call(IPC.settingsSet, { minimizeToTray: false });
       expect(set.ok).toBe(true);
-      expect(store.loadConfig().settings.minimizeToTray).toBe(false);
+      expect(settingsRepository.loadConfig().settings.minimizeToTray).toBe(false);
       expect(flag(await call(IPC.settingsGet))).toBe(false);
 
       // 旧档缺字段（无 minimizeToTray 键）→ DEFAULT_SETTINGS 兜底
-      const raw = store.loadConfig();
-      delete (raw.settings as { minimizeToTray?: boolean }).minimizeToTray;
+      dropSettings("minimizeToTray");
       expect(flag(await call(IPC.settingsGet))).toBe(true);
     } finally {
       cleanup();
@@ -244,7 +284,7 @@ describe("IPC 信封与校验", () => {
   });
 
   it("settings:set theme 往返（P2 明暗主题小契约）", async () => {
-    const { call, store, cleanup } = harness();
+    const { call, settingsRepository, dropSettings, cleanup } = harness();
     try {
       const themeOf = (r: Awaited<ReturnType<typeof call>>): unknown =>
         r.ok ? (r.data as { theme?: string }).theme : undefined;
@@ -253,20 +293,19 @@ describe("IPC 信封与校验", () => {
 
       const set = await call(IPC.settingsSet, { theme: "light" });
       expect(set.ok).toBe(true);
-      expect(store.loadConfig().settings.theme).toBe("light");
+      expect(settingsRepository.loadConfig().settings.theme).toBe("light");
       expect(themeOf(await call(IPC.settingsGet))).toBe("light");
 
       await call(IPC.settingsSet, { theme: "dark" });
-      expect(store.loadConfig().settings.theme).toBe("dark");
+      expect(settingsRepository.loadConfig().settings.theme).toBe("dark");
 
       // 枚举外值被 strict schema 拒绝，不落盘
       const bad = await call(IPC.settingsSet, { theme: "neon" });
       expect(bad.ok).toBe(false);
-      expect(store.loadConfig().settings.theme).toBe("dark");
+      expect(settingsRepository.loadConfig().settings.theme).toBe("dark");
 
       // 旧档缺 theme 键 → DEFAULT_SETTINGS 兜底 system
-      const raw = store.loadConfig();
-      delete (raw.settings as { theme?: string }).theme;
+      dropSettings("theme");
       expect(themeOf(await call(IPC.settingsGet))).toBe("system");
     } finally {
       cleanup();
@@ -274,7 +313,7 @@ describe("IPC 信封与校验", () => {
   });
 
   it("settings:set fontSizePx 往返（界面字号可配置）", async () => {
-    const { call, store, cleanup } = harness();
+    const { call, settingsRepository, dropSettings, cleanup } = harness();
     try {
       const sizeOf = (r: Awaited<ReturnType<typeof call>>): unknown =>
         r.ok ? (r.data as { fontSizePx?: number }).fontSizePx : undefined;
@@ -283,19 +322,18 @@ describe("IPC 信封与校验", () => {
 
       const set = await call(IPC.settingsSet, { fontSizePx: 15 });
       expect(set.ok).toBe(true);
-      expect(store.loadConfig().settings.fontSizePx).toBe(15);
+      expect(settingsRepository.loadConfig().settings.fontSizePx).toBe(15);
       expect(sizeOf(await call(IPC.settingsGet))).toBe(15);
 
       // 区间外（契约 11–18）与非整数被拒，不落盘
       for (const bad of [{ fontSizePx: 20 }, { fontSizePx: 13.5 }]) {
         const r = await call(IPC.settingsSet, bad);
         expect(r.ok).toBe(false);
-        expect(store.loadConfig().settings.fontSizePx).toBe(15);
+        expect(settingsRepository.loadConfig().settings.fontSizePx).toBe(15);
       }
 
       // 旧档缺 fontSizePx 键 → DEFAULT_SETTINGS 兜底 13
-      const raw = store.loadConfig();
-      delete (raw.settings as { fontSizePx?: number }).fontSizePx;
+      dropSettings("fontSizePx");
       expect(sizeOf(await call(IPC.settingsGet))).toBe(13);
     } finally {
       cleanup();
@@ -303,7 +341,7 @@ describe("IPC 信封与校验", () => {
   });
 
   it("settings:set fontFamily 往返（本机字体族自由串）", async () => {
-    const { call, store, cleanup } = harness();
+    const { call, settingsRepository, dropSettings, cleanup } = harness();
     try {
       const famOf = (r: Awaited<ReturnType<typeof call>>): unknown =>
         r.ok ? (r.data as { fontFamily?: string }).fontFamily : undefined;
@@ -315,7 +353,7 @@ describe("IPC 信封与校验", () => {
       for (const name of ["Arial", "Segoe UI", "微软雅黑"]) {
         const set = await call(IPC.settingsSet, { fontFamily: name });
         expect(set.ok).toBe(true);
-        expect(store.loadConfig().settings.fontFamily).toBe(name);
+        expect(settingsRepository.loadConfig().settings.fontFamily).toBe(name);
         expect(famOf(await call(IPC.settingsGet))).toBe(name);
       }
 
@@ -324,11 +362,10 @@ describe("IPC 信封与校验", () => {
       expect(empty.ok).toBe(false);
       const overlong = await call(IPC.settingsSet, { fontFamily: "x".repeat(65) });
       expect(overlong.ok).toBe(false);
-      expect(store.loadConfig().settings.fontFamily).toBe("微软雅黑");
+      expect(settingsRepository.loadConfig().settings.fontFamily).toBe("微软雅黑");
 
       // 旧档缺 fontFamily 键 → DEFAULT_SETTINGS 兜底 system
-      const raw = store.loadConfig();
-      delete (raw.settings as { fontFamily?: string }).fontFamily;
+      dropSettings("fontFamily");
       expect(famOf(await call(IPC.settingsGet))).toBe("system");
     } finally {
       cleanup();
@@ -347,7 +384,7 @@ describe("IPC 信封与校验", () => {
   });
 
   it("settings:set 通知/剪贴板/自启/代理往返（默认值与旧档兜底）", async () => {
-    const { call, store, cleanup } = harness();
+    const { call, settingsRepository, dropSettings, cleanup } = harness();
     try {
       type Six = {
         notifyOnDone: boolean;
@@ -380,7 +417,7 @@ describe("IPC 信封与校验", () => {
         proxyUrl: "127.0.0.1:7897",
       });
       expect(set.ok).toBe(true);
-      expect(store.loadConfig().settings).toMatchObject({
+      expect(settingsRepository.loadConfig().settings).toMatchObject({
         notifyOnDone: false,
         notifyOnError: true,
         clipboardWatch: true,
@@ -390,12 +427,7 @@ describe("IPC 信封与校验", () => {
       });
 
       // 旧档缺字段 → DEFAULT_SETTINGS 兜底
-      const raw = store.loadConfig();
-      delete (raw.settings as { notifyOnDone?: boolean }).notifyOnDone;
-      delete (raw.settings as { clipboardWatch?: boolean }).clipboardWatch;
-      delete (raw.settings as { launchAtLogin?: boolean }).launchAtLogin;
-      delete (raw.settings as { proxyMode?: string }).proxyMode;
-      delete (raw.settings as { proxyUrl?: string }).proxyUrl;
+      dropSettings("notifyOnDone", "clipboardWatch", "launchAtLogin", "proxyMode", "proxyUrl");
       expect(await six()).toMatchObject({
         notifyOnDone: true,
         clipboardWatch: false,
@@ -409,7 +441,7 @@ describe("IPC 信封与校验", () => {
   });
 
   it("settings:set logLevel/logRetentionDays 往返 + 旧档兜底默认", async () => {
-    const { call, store, cleanup } = harness();
+    const { call, settingsRepository, dropSettings, cleanup } = harness();
     try {
       const get = async (): Promise<Record<string, unknown> | null> => {
         const r = await call(IPC.settingsGet);
@@ -421,7 +453,7 @@ describe("IPC 信封与校验", () => {
       // 写非默认值：与缺省相同的值证明不了 set 真的落盘
       const set = await call(IPC.settingsSet, { logLevel: "error", logRetentionDays: 14 });
       expect(set.ok).toBe(true);
-      expect(store.loadConfig().settings).toMatchObject({ logLevel: "error", logRetentionDays: 14 });
+      expect(settingsRepository.loadConfig().settings).toMatchObject({ logLevel: "error", logRetentionDays: 14 });
 
       // 越界/枚举外一律 bad-input（保留天数契约 1–90）
       const bad = await call(IPC.settingsSet, { logRetentionDays: 0 });
@@ -429,9 +461,7 @@ describe("IPC 信封与校验", () => {
       const badLevel = await call(IPC.settingsSet, { logLevel: "verbose" });
       expect(badLevel.ok).toBe(false);
 
-      const raw = store.loadConfig();
-      delete (raw.settings as { logLevel?: string }).logLevel;
-      delete (raw.settings as { logRetentionDays?: number }).logRetentionDays;
+      dropSettings("logLevel", "logRetentionDays");
       expect(await get()).toMatchObject({ logLevel: "info", logRetentionDays: 30 });
     } finally {
       cleanup();
@@ -568,12 +598,12 @@ describe("IPC 信封与校验", () => {
   });
 
   it("解析成功即落历史：不下载也留一行「未下载」（v8 语义，业主指令 2026-10-17）", async () => {
-    const { call, store, cleanup } = harness();
+    const { call, historyRepository, cleanup } = harness();
     const text = "https://v.kuaishou.com/abc";
     const r = await call(IPC.parseRun, { text });
     expect(r.ok).toBe(true);
 
-    const list = store.loadHistory();
+    const list = historyRepository.list().rows;
     expect(list).toHaveLength(1);
     const key = workKeyOf(text);
     expect(list[0]).toMatchObject({
@@ -590,26 +620,26 @@ describe("IPC 信封与校验", () => {
     expect(list[0].stat).toEqual({ view: 520000, like: 30, favorite: 9 });
     // 历史页/首页「最近解析」读的是同一条通道：这里必须已经是 1 行而不是 0 行
     const listed = await call(IPC.historyList, { limit: 5 });
-    expect(listed.ok && (listed.data as unknown[]).length).toBe(1);
+    expect(listed.ok && (listed.data as { rows: unknown[] }).rows.length).toBe(1);
     // 隐私红线：直链与签名参数都不许进档，档里那条链接只能是用户输入的分享链接
     expect(JSON.stringify(list)).not.toContain("cdn-direct");
     expect(JSON.stringify(list)).not.toContain("SECRET");
 
     // 同一条链接再解析一次 = 刷新那一行，历史页不许长成「重复解析的堆」
     await call(IPC.parseRun, { text });
-    expect(store.loadHistory()).toHaveLength(1);
+    expect(historyRepository.list().rows).toHaveLength(1);
     cleanup();
   });
 
   it("来源链接归一后的真实页面同时进历史与出参（v16：短链不再是历史键）", async () => {
     const resolved = "https://www.kuaishou.com/short-video/7400000000000000001";
-    const { call, store, cleanup } = harness({ resolveSourceUrl: async () => resolved });
+    const { call, historyRepository, cleanup } = harness({ resolveSourceUrl: async () => resolved });
     const text = "https://v.kuaishou.com/abc";
     const r = await call(IPC.parseRun, { text });
     if (!r.ok) throw new Error(`parse:run 应当受理，实际 ${JSON.stringify(r)}`);
 
     expect((r.data as { sourceUrl?: string }).sourceUrl).toBe(resolved);
-    const list = store.loadHistory();
+    const list = historyRepository.list().rows;
     expect(list).toHaveLength(1);
     // 历史行与作品键都从真实页面算出：解析行与后续下载行才会聚成同一行
     expect(list[0].sourceUrl).toBe(resolved);
@@ -619,23 +649,23 @@ describe("IPC 信封与校验", () => {
   });
 
   it("解析失败不落历史：400 的结果不配占一行", async () => {
-    const { call, store, cleanup } = harness();
+    const { call, historyRepository, cleanup } = harness();
     await call(IPC.settingsSet, { platformSwitches: { kuaishou: { enabled: false } } });
     const r = await call(IPC.parseRun, { text: "https://v.kuaishou.com/off" });
     if (!r.ok) throw new Error(`parse:run 应当受理，实际 ${JSON.stringify(r)}`);
     expect((r.data as { result: ParseResult }).result.code).toBe(400);
-    expect(store.loadHistory()).toEqual([]);
+    expect(historyRepository.list().rows).toEqual([]);
     cleanup();
   });
 
   it("mock 兜底的成功结果不落历史：演示数据不进用户的账", async () => {
-    const { call, store, cleanup } = harness({ forceMode: "mock" });
+    const { call, historyRepository, cleanup } = harness({ forceMode: "mock" });
     const r = await call(IPC.parseRun, { text: "https://v.kuaishou.com/abc" });
     if (!r.ok) throw new Error(`parse:run 应当受理，实际 ${JSON.stringify(r)}`);
     const outcome = r.data as { result: ParseResult; via: string };
     expect(outcome.result.code).toBe(200);
     expect(outcome.via).toBe("mock");
-    expect(store.loadHistory()).toEqual([]);
+    expect(historyRepository.list().rows).toEqual([]);
     cleanup();
   });
 });

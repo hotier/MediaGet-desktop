@@ -45,7 +45,7 @@ export function withAlpha(color: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
-const RAMP_STEPS = [0.16, 0.34, 0.54, 0.74, 1];
+const RAMP_STEPS = [0.24, 0.42, 0.62, 0.82, 1];
 
 function readPalette(): ChartPalette {
   const box = document.createElement("div");

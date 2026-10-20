@@ -127,7 +127,7 @@ export function fmtEta(remainingBytes: number, bytesPerSec: number): string {
  * 媒体类型标签。历史页、结果卡与统计页必须同词，否则同一批数据在两页显示成两种类型。
  * 键是**下载项的 kind**（video/image/audio/file）；解析结果的 `type` 是另一套枚举
  * （含 music/text，住在 ResultCard 的 TYPE_LABEL），两者别merge成一张表。
- * `unknown` 不是契约里的 kind，是计数档（stats.json）给缺类型记录的兜底桶名。
+ * `unknown` 不是契约里的 kind，是统计事件账本给缺类型记录的兜底桶名。
  */
 export const KIND_LABEL: Record<string, string> = {
   video: "视频",

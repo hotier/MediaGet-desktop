@@ -28,10 +28,12 @@ import {
   EnqueueInputSchema,
   FolderPathSchema,
   HistoryFilterSchema,
+  HistoryKeysInputSchema,
   HistoryRemoveInputSchema,
   IdentifyInputSchema,
   LogWriteInputSchema,
   ParseInputSchema,
+  QueueFilterSchema,
   SettingsPatchSchema,
   StatsDateRangeSchema,
   TaskIdInputSchema,
@@ -45,15 +47,21 @@ import {
   type AppSettings,
   type BinaryStatusReport,
   type CacheStatus,
+  type DownloadTaskView,
   type EngineHealth,
   type EnqueueOutcome,
   type HistoryEntry,
   type InvokeResult,
+  type PersistedQueueTask,
   type UpdateState,
 } from "../../types/ipc";
 import type { createEngine } from "./engine";
 import type { Downloader } from "./downloader";
-import type { JsonStore } from "./store";
+import type {
+  HistoryRepository,
+  QueueRepository,
+  SettingsRepository,
+} from "./repositories";
 import type { StatsRecorder } from "./stats";
 import type { Updater } from "./updater";
 import type { CacheProbe } from "./cache";
@@ -80,11 +88,59 @@ function fail(code: string, message: string, failType?: string): InvokeResult<ne
   return { ok: false, error: { code, message, failType } };
 }
 
+/** 库行 → 通道行：可选数值在线上形状里是必填，缺省一律补 0（与 downloader.toView 同口径） */
+function persistedView(t: PersistedQueueTask): DownloadTaskView {
+  return {
+    taskId: t.taskId,
+    groupId: t.groupId,
+    url: t.url,
+    filename: t.filename,
+    kind: t.kind,
+    status: t.status,
+    received: t.received,
+    total: t.total,
+    speed: t.speed ?? 0,
+    transferMs: t.transferMs ?? 0,
+    transferBytes: t.transferBytes ?? 0,
+    filePath: t.filePath,
+    error: t.error,
+    platform: t.platform,
+    title: t.title,
+    sourceUrl: t.sourceUrl,
+    author: t.author,
+    createdAt: t.createdAt,
+    finishedAt: t.finishedAt,
+  };
+}
+
+/**
+ * 活行覆盖库行：同 id 用内存里最新的进度；同组但库里还没有的（刚入队）补进组里。
+ * 别的组不在这里插队 —— 那是翻页的职责，按当前页的游标顺序排。
+ */
+function overlayLive(rows: DownloadTaskView[], live: DownloadTaskView[]): DownloadTaskView[] {
+  if (live.length === 0) return rows;
+  const merged = [...rows];
+  const index = new Map(merged.map((task, i) => [task.taskId, i]));
+  const groups = new Set(merged.map((task) => task.groupId));
+  for (const task of live) {
+    const at = index.get(task.taskId);
+    if (at !== undefined) {
+      merged[at] = task;
+    } else if (groups.has(task.groupId)) {
+      index.set(task.taskId, merged.length);
+      merged.push(task);
+    }
+  }
+  return merged;
+}
+
 export interface IpcRegistryDeps {
   ipcMain: IpcMainLike;
   engine: Engine;
   downloader: Downloader;
-  store: JsonStore;
+  settingsRepository: SettingsRepository;
+  historyRepository: HistoryRepository;
+  queueRepository: QueueRepository;
   getAppMeta: () => { version: string; electron: string };
   kernelMode: () => AppMeta["kernelMode"];
   /**
@@ -152,7 +208,15 @@ export interface IpcRegistryDeps {
 }
 
 export function registerIpc(deps: IpcRegistryDeps): void {
-  const { ipcMain, engine, downloader, store, updater } = deps;
+  const {
+    ipcMain,
+    engine,
+    downloader,
+    settingsRepository,
+    historyRepository,
+    queueRepository,
+    updater,
+  } = deps;
   const resolveSource = deps.resolveSourceUrl ?? defaultResolveSourceUrl;
 
   /**
@@ -250,7 +314,7 @@ export function registerIpc(deps: IpcRegistryDeps): void {
     // 解析成功即落一条历史（业主指令 2026-10-17：历史页是**解析历史**，不下载也要有记录）。
     // 写在主进程而不是首页：首页关掉、切页、dev 之外的任何入口都该有同一条记录。
     // mock 兜底不写：那是「没有引擎在场」时的演示结果，标题就写着 mock，落进用户历史只是脏数据。
-    if (historyEntry) store.upsertHistory(historyEntry);
+    // historyEntry 随 stats.parse 的同一事务落库（statsRepository.recordEvent），不再二次写历史。
     return { ...outcome, sourceUrl };
   });
 
@@ -306,7 +370,13 @@ function sanitizeWithExt(name: string, maxLen: number): string {
   wrap(IPC.downloadResume, TaskIdInputSchema, ({ taskId }) => ({
     ok: downloader.resume(taskId),
   }));
-  wrap(IPC.downloadList, null, () => downloader.list());
+  wrap(IPC.downloadList, QueueFilterSchema.optional(), (filter) => {
+    const page = queueRepository.list(filter);
+    return {
+      rows: overlayLive(page.rows.map(persistedView), downloader.listLive()),
+      nextCursor: page.nextCursor,
+    };
+  });
   // —— download:clear —— 队列卫生：终态行移出内存与落盘档（活跃任务由 downloader 拒删）
   wrap(IPC.downloadClear, ClearTasksInputSchema, ({ taskIds }) => ({
     removed: downloader.clear(taskIds),
@@ -314,7 +384,7 @@ function sanitizeWithExt(name: string, maxLen: number): string {
 
   // —— settings ——
   wrap<unknown, AppSettings>(IPC.settingsGet, null, () => {
-    const { settings } = store.loadConfig();
+    const { settings } = settingsRepository.loadConfig();
     // 返回给 renderer 的 Cookie 只给「是否已配置」的脱敏视图，值留在主进程
     const masked: AppSettings = {
       ...DEFAULT_SETTINGS,
@@ -326,7 +396,7 @@ function sanitizeWithExt(name: string, maxLen: number): string {
     return masked;
   });
   wrap(IPC.settingsSet, SettingsPatchSchema, (patch): AppSettings => {
-    const cur = store.loadConfig();
+    const cur = settingsRepository.loadConfig();
     const next: { settings: AppSettings; kernel: Record<string, string> } = {
       settings: { ...cur.settings },
       kernel: { ...cur.kernel },
@@ -371,7 +441,7 @@ function sanitizeWithExt(name: string, maxLen: number): string {
         }
       }
     }
-    store.saveConfig(next);
+    settingsRepository.saveConfig(next);
     // Cookie 变更立即铺进 process.env（内核模块作用域读 env，重启才生效太反直觉）
     deps.onSettingsChanged?.();
     return {
@@ -389,17 +459,13 @@ function sanitizeWithExt(name: string, maxLen: number): string {
   });
 
   // —— history ——
-  wrap(IPC.historyList, HistoryFilterSchema.optional(), (filter): HistoryEntry[] => {
-    let list = store.loadHistory();
-    if (filter?.platform) list = list.filter((h) => h.platform === filter.platform);
-    return list.slice(0, filter?.limit ?? 200);
-  });
-  // —— history:remove（多选删除：行键 = 条目 id 或 groupId，store 侧双命中删整组）——
-  // 返回删除后的剩余列表而非 ok 旗：UI 直接拿去刷新，省一次 history.list 回读。
-  // 「清空历史」按钮已撤（业主指令 2026-10-17），整表清空同样走这条通道（keys 上限 = HISTORY_MAX）。
-  wrap(IPC.historyRemove, HistoryRemoveInputSchema, ({ keys }): HistoryEntry[] =>
-    store.removeHistory(keys)
+  wrap(IPC.historyList, HistoryFilterSchema.optional(), (filter) => historyRepository.list(filter));
+  wrap(IPC.historyKeys, HistoryKeysInputSchema.optional(), (filter) =>
+    historyRepository.listKeys(filter ?? {}, filter?.cursor, filter?.limit ?? 5000)
   );
+  wrap(IPC.historyRemove, HistoryRemoveInputSchema, ({ keys }) => ({
+    removed: historyRepository.remove(keys),
+  }));
   // —— probe:engines（本地版体检：注册表 × 在场引擎 × 用户开关，不发抓取、不打平台风控）——
   // 三件事一次算清：这平台供不供（开关）、谁能解（引擎自报 ∧ 注册表能力位）、为什么不行（detail）。
   // 平台行集来自注册表而不是内核自述，所以关掉的/内核没登记但我们能解的平台都在表上。
@@ -471,10 +537,6 @@ function sanitizeWithExt(name: string, maxLen: number): string {
     deps.writeClipboard(text);
     return { ok: true };
   });
-  // —— stats:get（统计页数据源：recorder 的内存态直出，不让 UI 每次读盘再对不上）——
-  wrap(
-    IPC.statsGet,
-    StatsDateRangeSchema.optional(),
-    (range) => range ? deps.stats.query(range) : deps.stats.snapshot()
-  );
+  // —— stats:get（统计页数据源：事件账本按日期范围聚合，范围是必填的）——
+  wrap(IPC.statsGet, StatsDateRangeSchema, (range) => deps.stats.query(range));
 }

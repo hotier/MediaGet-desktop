@@ -11,7 +11,6 @@ import {
   type MgBridge,
   type StatsDateRange,
   type StatsQueryResult,
-  type StatsSnapshot,
   type UpdateState,
 } from "../../types/ipc";
 
@@ -24,9 +23,7 @@ function on<T>(channel: string, cb: (payload: T) => void): () => void {
   return () => ipcRenderer.removeListener(channel, listener);
 }
 
-function getStats(): Promise<InvokeResult<StatsSnapshot>>;
-function getStats(range: StatsDateRange): Promise<InvokeResult<StatsQueryResult>>;
-function getStats(range?: StatsDateRange): Promise<InvokeResult<StatsSnapshot | StatsQueryResult>> {
+function getStats(range: StatsDateRange): Promise<InvokeResult<StatsQueryResult>> {
   return invoke(IPC.statsGet, range);
 }
 
@@ -39,7 +36,7 @@ const mg: MgBridge = {
     cancel: (taskId) => invoke(IPC.downloadCancel, { taskId }),
     pause: (taskId) => invoke(IPC.downloadPause, { taskId }),
     resume: (taskId) => invoke(IPC.downloadResume, { taskId }),
-    list: () => invoke(IPC.downloadList),
+    list: (filter) => invoke(IPC.downloadList, filter),
     clear: (taskIds) => invoke(IPC.downloadClear, { taskIds }),
     onProgress: (cb) => on(IPC.evDownloadProgress, cb),
     onDone: (cb) => on(IPC.evDownloadDone, cb),
@@ -52,6 +49,7 @@ const mg: MgBridge = {
   },
   history: {
     list: (filter) => invoke(IPC.historyList, filter),
+    listKeys: (filter) => invoke(IPC.historyKeys, filter),
     remove: (keys) => invoke(IPC.historyRemove, { keys }),
   },
   probe: {

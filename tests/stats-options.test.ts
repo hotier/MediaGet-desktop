@@ -2,7 +2,7 @@
  * 图表口径层测试（renderer/src/components/charts/options.ts + palette 的取色换算）。
  *
  * 这一层是「图上那几个数从哪来」的唯一判定点，纯函数所以能在 node 环境整份测掉 ——
- * 起 canvas 只能证明「画出来了」，证明不了「失败次数落在右轴」「条长是份额不是实际数」。
+ * 起 canvas 只能证明「画出来了」，证明不了「趋势单位是否一致」「条长是份额不是实际数」。
  * 守的四条：
  * - **条长 ≠ 数值**：榜单的 data 必须是 `share`，实际数只出现在标签文本里。写成 value 的话
  *   第一名永远满格，读者会把「占 63%」看成「占 100%」。
@@ -16,6 +16,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  donutOption,
   heatOption,
   histogramOption,
   rankHeight,
@@ -126,34 +127,35 @@ describe("比率与时长格式化", () => {
 });
 
 describe("trendOption", () => {
-  it("次数档画下载柱 + 失败折线，折线钉在右轴", () => {
+  it("次数档用同轴折线区分完成与失败", () => {
     const o = trendOption(trend(), P, "downloads");
-    expect(pick(o, "series", 0, "name")).toBe("次数");
+    expect(pick(o, "series", 0, "name")).toBe("完成");
     expect(pick(o, "series", 0, "data")).toEqual([2, 4]);
-    expect(pick(o, "series", 0, "itemStyle", "color")).toBe(P.primary);
+    expect(pick(o, "series", 0, "itemStyle", "color")).toBe(P.ok);
+    expect(pick(o, "series", 0, "type")).toBe("line");
     expect(pick(o, "series", 1, "type")).toBe("line");
-    expect(pick(o, "series", 1, "yAxisIndex")).toBe(1);
     expect(pick(o, "series", 1, "data")).toEqual([1, 0]);
     expect(pick(o, "series", 1, "itemStyle", "color")).toBe(P.err);
-    expect(pick(o, "yAxis", 1, "position")).toBe("right");
-    expect(pick(o, "legend", "data")).toEqual(["次数", "失败"]);
+    expect(pick(o, "yAxis", "minInterval")).toBe(1);
+    expect(pick(o, "legend", "data")).toEqual(["完成", "失败"]);
   });
 
-  it("字节档换的是柱子的数据与标签，失败线不动", () => {
+  it("字节档只画字节，不把失败次数放到不同单位的坐标上", () => {
     const o = trendOption(trend(), P, "bytes");
     expect(pick(o, "series", 0, "name")).toBe("字节");
     expect(pick(o, "series", 0, "data")).toEqual([1024, 2048]);
-    expect(pick(o, "series", 1, "data")).toEqual([1, 0]);
+    expect(pick(o, "series")).toHaveLength(1);
+    expect(pick(o, "legend", "data")).toEqual(["字节"]);
   });
 
-  it("均值线跟柱子同量纲：次数档是 3，字节档是 1536", () => {
+  it("均值线跟当前主指标同量纲：完成资源日均 3，字节日均 1536", () => {
     expect(pick(trendOption(trend(), P, "downloads"), "series", 0, "markLine", "data", 0, "yAxis")).toBe(3);
     expect(pick(trendOption(trend(), P, "bytes"), "series", 0, "markLine", "data", 0, "yAxis")).toBe(1536);
   });
 
   it("均值标签是格式化后的文本，不是裸数字", () => {
     const label = pick(trendOption(trend(), P, "bytes"), "series", 0, "markLine", "label", "formatter");
-    expect(label).toBe("均值 1.5 KB");
+    expect(label).toBe("日均 1.5 KB");
   });
 
   it("空序列不除零：均值为 0 而不是 NaN", () => {
@@ -162,10 +164,9 @@ describe("trendOption", () => {
     expect(pick(o, "series", 0, "data")).toEqual([]);
   });
 
-  it("左轴刻度约束跟着量纲：次数档锁整数，字节档撤成自动，失败（右轴）永远整数", () => {
-    expect(pick(trendOption(trend(), P, "downloads"), "yAxis", 0, "minInterval")).toBe(1);
-    expect(pick(trendOption(trend(), P, "bytes"), "yAxis", 0, "minInterval")).toBeUndefined();
-    expect(pick(trendOption(trend(), P, "bytes"), "yAxis", 1, "minInterval")).toBe(1);
+  it("坐标轴刻度约束跟着当前单位：次数档锁整数，字节档撤成自动", () => {
+    expect(pick(trendOption(trend(), P, "downloads"), "yAxis", "minInterval")).toBe(1);
+    expect(pick(trendOption(trend(), P, "bytes"), "yAxis", "minInterval")).toBeUndefined();
   });
 
   it("axis tooltip 按 dataIndex 回自己的数组，把四项都列出来", () => {
@@ -223,6 +224,23 @@ describe("rankOption", () => {
     expect(rankHeight(0)).toBe(56);
     expect(rankHeight(2)).toBe(60);
     expect(rankHeight(10)).toBe(268);
+  });
+});
+
+describe("donutOption", () => {
+  it("用空心环表达占比，中心常显合计，tooltip 说明每类数量和份额", () => {
+    const o = donutOption(rows, P, String);
+    expect(pick(o, "series", 0, "type")).toBe("pie");
+    expect(pick(o, "series", 0, "radius")).toEqual(["62%", "82%"]);
+    expect(pick(o, "series", 0, "data")).toEqual([
+      { name: "bilibili", value: 63, itemStyle: { color: P.primary } },
+      { name: "xiaohongshu", value: 37, itemStyle: { color: P.ok } },
+    ]);
+    expect(at(pick(o, "tooltip", "formatter"), 0, false)).toBe("bilibili<br/>63 · 63.0%");
+  });
+
+  it("空数据不给出假环形段", () => {
+    expect(pick(donutOption([], P, String), "series")).toEqual([]);
   });
 });
 

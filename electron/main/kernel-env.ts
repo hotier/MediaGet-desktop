@@ -19,7 +19,7 @@ import { SECRET_CONFIG_KEYS } from "../../core-adapter/config";
 import { settingsRepository } from "./storage-runtime";
 
 /**
- * 把 userData/config.json 里的用户 Cookie 铺进 `process.env`。
+ * 把本机设置（SQLite `app_settings`）里的用户 Cookie 铺进 `process.env`。
  * 只补「当前进程还没有」的键：dev 环境变量手写的 Cookie 优先（与 `publishKernelEnv` 同一条）。
  */
 function primeKernelCookies(): void {

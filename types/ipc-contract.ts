@@ -20,6 +20,11 @@ import { IPC } from "./ipc";
 import { COOKIE_LOGIN_KEYS, type CookieLoginKey } from "../shared/cookie-login";
 
 const STR = z.string();
+export const DateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+}, "Expected a local calendar date");
 
 // ————————————————————————————————————————————————
 // 镜像自 mediaGet src/types/api.ts（上游为单一真源，此处声明客户端消费面）
@@ -328,11 +333,37 @@ export const CookieLoginResultSchema = z.object({
 /** app:listFonts 出参：本机已安装字体的 family 名数组（font-list 枚举，已去引号/去重/排序） */
 export const FontListSchema = z.array(STR.max(64));
 
-/** 窗口 5000 = `store.ts` 的 HISTORY_MAX，两处成对：上限放宽的是「一次能取多少」，不是「盘上存多少」。
- *  平台/时间/作者的筛选仍在渲染层做（HistoryPage 已有），不在这加字段——两处各筛一遍必然漂移。 */
-export const HistoryFilterSchema = z.object({
+export const HistoryCursorSchema = z.object({ createdAt: z.number().int(), workKey: STR.max(128) });
+
+const HistoryFilterBaseSchema = z.object({
   platform: STR.max(40).optional(),
+  from: DateKeySchema.optional(),
+  to: DateKeySchema.optional(),
+  query: STR.max(200).optional(),
+  cursor: HistoryCursorSchema.optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+});
+export const HistoryFilterSchema = HistoryFilterBaseSchema.refine(
+  ({ from, to }) => (from === undefined) === (to === undefined),
+  "Provide both history dates or neither"
+);
+
+export const HistoryPageSchema = z.object({
+  rows: z.array(z.lazy(() => HistoryEntrySchema)),
+  nextCursor: HistoryCursorSchema.nullable(),
+});
+
+export const HistoryKeysInputSchema = HistoryFilterBaseSchema.omit({ limit: true }).extend({
   limit: z.number().int().min(1).max(5000).optional(),
+}).refine(({ from, to }) => (from === undefined) === (to === undefined), "Provide both history dates or neither");
+
+export const HistoryKeysPageSchema = z.object({
+  keys: z.array(STR.max(128)).max(5000),
+  nextCursor: HistoryCursorSchema.nullable(),
+});
+
+export const HistoryRemoveResultSchema = z.object({
+  removed: z.number().int().min(0),
 });
 
 /**
@@ -343,12 +374,12 @@ export const HistoryFilterSchema = z.object({
  * 误触也不该走到落盘写；超上限说明 UI 状态坏了，宁可 bad-input 也不整表重写。
  */
 export const HistoryRemoveInputSchema = z.object({
-  keys: z.array(STR.max(64)).min(1).max(5000),
+  keys: z.array(STR.max(128)).min(1).max(5000),
 });
 
-/** 仅主进程持久化格式（store.ts 真源），入参侧复用 */
+/** 仅主进程持久化格式（SQLite `queue_tasks.payload_json` 的行内形状），入参侧复用 */
 /**
- * 队列快照（queue.json 的档内形状，不是任何通道的载荷）。
+ * 队列快照（队列台账的行内形状，不是任何通道的载荷）。
  *
  * v13 起「进过队列的行全部留档」：业主指令 2026-10-17——重启后队列页应当是完整台账，
  * 而不是只剩没干完的活。于是终态三件套必须跟着落盘，否则重启后的「已完成」行是坏的：
@@ -485,6 +516,42 @@ export const DownloadTaskViewSchema = z.object({
    * 所以它跨重启有效；旧档没这个键 → 重启后完成列留空，不编一个假时刻。
    */
   finishedAt: z.number().optional(),
+});
+
+/**
+ * download:list 的筛选（契约 v22，统一 SQLite 存储）。
+ *
+ * 分页单位是**作品组**而不是单条任务：一行的聚合（大小/速度/剩余/时间）必须由整组算出，
+ * 组被页边界切开就会显示一个假的半截数。游标里的 `createdAt` 是该组最新的 `createdAt`，
+ * `taskId` 是该组内最大的任务 id（稳定代表），排序与游标都按这两键：
+ * `createdAt DESC, taskId DESC`。组内全部任务随组返回，界面无需再补请求。
+ */
+export const QueueStatusFilterSchema = z.enum(["active", "done", "error", "canceled"]);
+
+export const QueueCursorSchema = z.object({
+  createdAt: z.number().int(),
+  taskId: STR.max(128),
+});
+
+const QueueFilterBaseSchema = z.object({
+  status: QueueStatusFilterSchema.optional(),
+  platform: STR.max(40).optional(),
+  query: STR.max(200).optional(),
+  /** 创建时间本地日区间（含首尾两天），与历史页同口径 */
+  from: DateKeySchema.optional(),
+  to: DateKeySchema.optional(),
+  cursor: QueueCursorSchema.optional(),
+  /** 每组最多返回的任务组数 */
+  limit: z.number().int().min(1).max(100).optional(),
+});
+export const QueueFilterSchema = QueueFilterBaseSchema.refine(
+  ({ from, to }) => (from === undefined) === (to === undefined),
+  "Provide both queue dates or neither"
+);
+
+export const QueuePageSchema = z.object({
+  rows: z.array(DownloadTaskViewSchema),
+  nextCursor: QueueCursorSchema.nullable(),
 });
 
 /**
@@ -678,88 +745,15 @@ export const LogWriteInputSchema = z.object({
 });
 
 // ————————————————————————————————————————————————
-// stats:get —— 生命周期计数器（userData/stats.json）
+// stats:get —— 事件账本按日期范围聚合（SQLite stats_events）
 //
 // 隐私红线在这一节最硬：这里**只有计数、字节与时长**，没有 url、没有文件名、
-// 没有作者名、没有 Cookie。逐条明细的真源仍是 history.json，统计页要形状不要内容。
-// 失败与解析走这里而不是塞进 history：历史是「下过的文件」，给它加 status 会让
+// 没有 Cookie。事件账本只留平台键与作品键，解析历史/下载历史各自另有真源。
+// 失败与解析走这里而不是塞进 history：历史是「解析过的作品」，给它加 status 会让
 // 历史页冒出没有文件的行、清历史连带把统计抹掉。
 // ————————————————————————————————————————————————
 
 const COUNT = z.number().int().min(0);
-
-/** 单自然日桶（键 = 本机时区 YYYY-MM-DD；跨时区不迁移，如实按记录当下的本机日历） */
-export const StatsDayBucketSchema = z.object({
-  downloads: COUNT,
-  failures: COUNT,
-  bytes: COUNT,
-  parses: COUNT,
-});
-
-/** 单平台桶 —— 失败率按平台算就靠 parseFailures 与 failures 这两条 */
-export const StatsPlatformBucketSchema = z.object({
-  downloads: COUNT,
-  failures: COUNT,
-  bytes: COUNT,
-  parses: COUNT,
-  parseFailures: COUNT,
-});
-
-/** 单媒体类型桶（video / image / audio / file） */
-export const StatsKindBucketSchema = z.object({
-  downloads: COUNT,
-  bytes: COUNT,
-});
-
-/**
- * 计数快照。`schema` 是**档内**结构版本（与 IPC 的 CONTRACT_VERSION 两回事：
- * 后者管跨进程载荷，这个管 stats.json 落盘形状，改这里要写迁移，改那这里要升号）。
- * `byDay` 只留最近 STATS_DAY_RETENTION 天，防止档无界增长；
- * `byHour` 固定 168 格（星期 0=周日 × 小时），索引 = day*24+hour。
- */
-export const StatsSnapshotSchema = z.object({
-  schema: z.literal(1),
-  since: z.number(),
-  updatedAt: z.number(),
-  totals: z.object({
-    downloads: COUNT,
-    failures: COUNT,
-    canceled: COUNT,
-    bytes: COUNT,
-    /**
-     * Σ实际传输时长（v18 起：主进程改传 `transferMs`）。速度/耗时的唯一持久线索（逐任务 speed 不落盘）。
-     * **暂停、排队、重试退避不计入** —— 旧口径 Σ(finishedAt − createdAt) 会把「挂了一晚上」算成下载时间。
-     * v18 之前落下的样本仍是旧口径，与新样本同处一个合计：这会让平均值偏低于纯新口径，但不会虚高。
-     */
-    elapsedMs: COUNT,
-    elapsedCount: COUNT,
-    /**
-     * 有耗时样本的那部分字节。平均速度必须用 `elapsedBytes / elapsedMs`，
-     * 不能用 `bytes / elapsedMs`：缺 finishedAt 的老任务只进 bytes 不进 elapsedMs，
-     * 两个不同总线的数相除会把速度虚报成一坨谁也算不清的值。
-     */
-    elapsedBytes: COUNT,
-  }),
-  parse: z.object({
-    total: COUNT,
-    failures: COUNT,
-    local: COUNT,
-    /** 已移除的线上回落通道：保留旧档计数、不再增长（不删是为了 total 与历史对得上） */
-    online: COUNT,
-    mock: COUNT,
-    durationMs: COUNT,
-  }),
-  byDay: z.record(STR.max(10), StatsDayBucketSchema),
-  byPlatform: z.record(STR.max(40), StatsPlatformBucketSchema),
-  byKind: z.record(STR.max(20), StatsKindBucketSchema),
-  byHour: z.array(COUNT).length(168),
-});
-
-const DateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
-  const [year, month, day] = value.split("-").map(Number);
-  const date = new Date(year, month - 1, day);
-  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
-}, "Expected a local calendar date");
 
 export const StatsDateRangeSchema = z.object({
   from: DateKeySchema,
@@ -800,6 +794,8 @@ export const StatsQueryResultSchema = z.object({
   byKind: z.record(STR.max(20), z.object({ downloads: COUNT, bytes: COUNT })),
   authors: z.array(z.object({
     name: STR.max(100),
+    /** 作者头像（取该作者范围内最新一条历史行的快照）；老记录与匿名行为缺省 */
+    avatar: STR.max(2000).optional(),
     parsedWorks: COUNT,
     downloadedFiles: COUNT,
     downloadedBytes: COUNT,
@@ -830,13 +826,14 @@ export const CONTRACT = {
   [IPC.downloadCancel]: invoke(TaskIdInputSchema, OkFlagSchema),
   [IPC.downloadPause]: invoke(TaskIdInputSchema, OkFlagSchema),
   [IPC.downloadResume]: invoke(TaskIdInputSchema, OkFlagSchema),
-  [IPC.downloadList]: invoke(null, z.array(DownloadTaskViewSchema)),
+  [IPC.downloadList]: invoke(QueueFilterSchema.optional(), QueuePageSchema),
   [IPC.downloadClear]: invoke(ClearTasksInputSchema, ClearTasksResultSchema),
   [IPC.settingsGet]: invoke(null, AppSettingsSchema),
   [IPC.settingsSet]: invoke(SettingsPatchSchema, AppSettingsSchema),
   [IPC.settingsCookieLogin]: invoke(CookieLoginInputSchema, CookieLoginResultSchema),
-  [IPC.historyList]: invoke(HistoryFilterSchema.optional(), z.array(HistoryEntrySchema)),
-  [IPC.historyRemove]: invoke(HistoryRemoveInputSchema, z.array(HistoryEntrySchema)),
+  [IPC.historyList]: invoke(HistoryFilterSchema.optional(), HistoryPageSchema),
+  [IPC.historyKeys]: invoke(HistoryKeysInputSchema, HistoryKeysPageSchema),
+  [IPC.historyRemove]: invoke(HistoryRemoveInputSchema, HistoryRemoveResultSchema),
   [IPC.probeEngines]: invoke(null, z.array(EngineHealthSchema)),
   [IPC.appGetBinaryStatus]: invoke(null, BinaryStatusReportSchema),
   [IPC.appPickDownloadDir]: invoke(null, PickDirResultSchema),
@@ -848,7 +845,7 @@ export const CONTRACT = {
   [IPC.appLog]: invoke(LogWriteInputSchema, OkFlagSchema),
   [IPC.appOpenExternal]: invoke(UrlInputSchema, OkFlagSchema),
   [IPC.appCopyText]: invoke(CopyTextInputSchema, OkFlagSchema),
-  [IPC.statsGet]: invoke(StatsDateRangeSchema.optional(), z.union([StatsQueryResultSchema, StatsSnapshotSchema])),
+  [IPC.statsGet]: invoke(StatsDateRangeSchema, StatsQueryResultSchema),
   [IPC.updateGetState]: invoke(null, UpdateStateSchema),
   [IPC.updateCheck]: invoke(null, UpdateStateSchema),
   [IPC.updateDownload]: invoke(null, UpdateStateSchema),

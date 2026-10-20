@@ -205,6 +205,8 @@
  * 文字保持近中性（可读性优先，不跟风格染色）；焦点主色走 --accent-color。 */
 :root,
 [data-theme="dark"] {
+  /* 原生控件跟随主题：日期选择器的日历图标、输入框与滚动条由浏览器按这一档渲染 */
+  color-scheme: dark;
   --bg: color-mix(in srgb, var(--wb-bg) 88%, var(--wc-hue));
   --panel: color-mix(in srgb, var(--wb-panel) 88%, var(--wc-hue));
   --surface: color-mix(in srgb, var(--wb-surface) 89%, var(--wc-hue));
@@ -249,6 +251,7 @@
 [data-theme="light"] {
   /* 浅色档中性面不随风格蓝染（业主 2026-10-15：蓝白主题下浅色背景就应该是白色）；
      风格只驱动 accent，色带染色仅保留在暗档。 */
+  color-scheme: light;
   --bg: var(--wb-light-bg);
   --panel: var(--wb-light-panel);
   --surface: var(--wb-light-surface);

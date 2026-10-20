@@ -1,23 +1,19 @@
 /**
- * 统计页的聚合出口：把两份原始数据（计数档 StatsSnapshot + 历史明细行）
- * 变成图表能直接画的视图模型。纯函数、无副作用、不读盘不发 IPC ——
- * 所有口径都在这一个文件里定，页面只负责摆。
+ * 统计页的聚合出口：把主进程的范围查询结果（StatsQueryResult）摊成图表能直接画的视图模型。
+ * 纯函数、无副作用、不读盘不发 IPC —— 所有口径都在这一个文件里定，页面只负责摆。
  *
- * 两条数据源各有边界，页面的标题措辞跟着这里走：
- * - **计数档**（stats.json）：从 `since` 起累加、不随行数窗口截断，失败/取消/解析只在它里面有。
- *   趋势、成功率、平台榜、热力图、解析统计都是它的口径。
- * - **历史明细**（history.json 最近 HISTORY_MAX 行）：逐文件粒度，作者榜与单文件大小分布
- *   只有它给得出。失败不在里面（只有 done 才追加），所以任何比率都不许从明细行算。
+ * 日期范围是**本机自然日、首尾都含**；未来日不可选，开始日不能晚于结束日。
+ * 范围跨过统计数据覆盖起点时，覆盖起点之前不补零：那段日期没有事件，不是「那天没人用」。
  *
  * 除零一律现算不猜：比率类返回 `null`（页面渲染「—」），份额类返回 0（条形宽度为 0）。
  * 把 0/0 显示成 0% 是最容易骗过自己眼睛的错 —— 那等于对用户说「一条都没失败过」。
  */
-import type { HistoryEntry, StatsSnapshot } from "../../../types/ipc";
+import type { HistoryEntry, StatsDateRange, StatsQueryResult } from "../../../types/ipc";
 import { kindLabel } from "./format";
 
-/** 趋势图窗口档位（页面直接铺成切换按钮，顺序即展示顺序） */
-export const TREND_WINDOWS = [7, 30, 90, 365] as const;
-export type TrendWindow = (typeof TREND_WINDOWS)[number];
+/** 统计页顶部预设档位（顺序即按钮顺序；近 N 天含今天） */
+export const STATS_RANGE_PRESETS = [7, 30, 90] as const;
+export type StatsRangePreset = (typeof STATS_RANGE_PRESETS)[number];
 
 /** 热力图的星期轴：索引与 `getDay()` 对齐（0 = 周日），与 byHour 的排布同一条约定 */
 export const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"] as const;
@@ -31,6 +27,86 @@ const pad2 = (n: number): string => String(n).padStart(2, "0");
 export function dayKey(at: number): string {
   const d = new Date(at);
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** 本机日历日序号：UTC 折叠掉时区/夏令时，只留「哪一天」（与 format.ts 的 dayNo 同一手法） */
+const calendarDayNo = (ts: number): number => {
+  const d = new Date(ts);
+  return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / DAY_MS);
+};
+
+const DATE_KEY_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * 严格解析 YYYY-MM-DD 为本机日历日。
+ * Date 构造器会把 2026-02-30 滚到 3 月，所以必须把年月日再对一遍才算合法。
+ */
+export function parseDateKey(key: string): Date | null {
+  const match = DATE_KEY_RE.exec(key);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  const date = new Date(year, month, day);
+  return date.getFullYear() === year && date.getMonth() === month && date.getDate() === day ? date : null;
+}
+
+export function todayKey(now: number = Date.now()): string {
+  return dayKey(now);
+}
+
+/**
+ * 本机日历上加减天数：交给 Date 构造器进位，不用 86_400_000 毫秒 ——
+ * 固定毫秒差在夏令时切换日会漂一小时，跨过午夜就变成前一天/后一天。
+ */
+export function addDays(key: string, days: number): string | null {
+  const date = parseDateKey(key);
+  if (!date) return null;
+  return dayKey(new Date(date.getFullYear(), date.getMonth(), date.getDate() + days).getTime());
+}
+
+/** 近 N 天（含今天）：to = 今天，from = 今天 - (N - 1) */
+export function presetRange(days: number, now: number = Date.now()): StatsDateRange {
+  const to = todayKey(now);
+  const span = Math.max(1, Math.floor(days));
+  return { from: addDays(to, 1 - span) ?? to, to };
+}
+
+/** 含首尾两天的日历天数；非法键返回 0 */
+export function rangeDays(range: StatsDateRange): number {
+  const from = parseDateKey(range.from);
+  const to = parseDateKey(range.to);
+  if (!from || !to) return 0;
+  return Math.max(0, calendarDayNo(to.getTime()) - calendarDayNo(from.getTime()) + 1);
+}
+
+/** 本机自然日的半开区间 `[startAt, endAt)`：起止日都含，跨月/闰日由 Date 进位 */
+export function localDayBounds(key: string): { startAt: number; endAt: number } | null {
+  const date = parseDateKey(key);
+  if (!date) return null;
+  return {
+    startAt: new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime(),
+    endAt: new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1).getTime(),
+  };
+}
+
+export type RangeProblem = "invalid" | "order" | "future";
+
+/** 自定义范围的拒绝理由；通过返回 null。未来日期只可能出现在 to 上（order 先被拦下） */
+export function rangeProblem(from: string, to: string, now: number = Date.now()): RangeProblem | null {
+  if (!parseDateKey(from) || !parseDateKey(to)) return "invalid";
+  if (from > to) return "order";
+  if (to > todayKey(now)) return "future";
+  return null;
+}
+
+/** 当前已应用范围命中哪个预设档；自定义范围返回 null */
+export function activePreset(range: StatsDateRange, now: number = Date.now()): StatsRangePreset | null {
+  for (const days of STATS_RANGE_PRESETS) {
+    const preset = presetRange(days, now);
+    if (preset.from === range.from && preset.to === range.to) return days;
+  }
+  return null;
 }
 
 const share = (part: number, whole: number): number => (whole > 0 ? part / whole : 0);
@@ -52,40 +128,65 @@ export interface TrendPoint {
 }
 
 /**
- * 最近 `days` 天的连续序列：没记录的日子补零而不是跳过。
- * 跳过空缺会让「周末一条没下」画成「周五紧接周一」，趋势图的横轴就此失真。
+ * 范围查询的连续日序列。起点取 `max(范围起点, 覆盖起点)`：
+ * 覆盖起点之前没有事件可查，不能补成 0；覆盖起点之后缺记录的日子才是真的 0。
+ * 范围整体早于覆盖起点、或库里还没有任何事件时返回空数组。
  */
-export function trendByDay(s: StatsSnapshot, days: number, now: number = Date.now()): TrendPoint[] {
-  const today = new Date(now);
-  today.setHours(0, 0, 0, 0);
+export function queryTrend(result: StatsQueryResult): TrendPoint[] {
+  const first = result.availableFrom;
+  if (first === null) return [];
+  let key = result.range.from < first ? first : result.range.from;
+  if (key > result.range.to) return [];
   const out: TrendPoint[] = [];
-  for (let back = days - 1; back >= 0; back--) {
-    const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() - back);
-    const key = dayKey(d.getTime());
-    const row = s.byDay[key];
+  while (key <= result.range.to) {
+    const row = result.byDay[key];
     out.push({
       key,
-      label: `${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`,
+      label: key.slice(5),
       downloads: row?.downloads ?? 0,
       failures: row?.failures ?? 0,
       bytes: row?.bytes ?? 0,
       parses: row?.parses ?? 0,
     });
+    const next = addDays(key, 1);
+    if (!next) break;
+    key = next;
   }
   return out;
 }
 
-/** 窗口内合计：卡片右上那句「近 30 天 · 下载 128 / 失败 3」 */
-export function trendTotal(points: TrendPoint[]): Omit<TrendPoint, "key" | "label"> {
-  return points.reduce(
-    (acc, p) => ({
-      downloads: acc.downloads + p.downloads,
-      failures: acc.failures + p.failures,
-      bytes: acc.bytes + p.bytes,
-      parses: acc.parses + p.parses,
-    }),
-    { downloads: 0, failures: 0, bytes: 0, parses: 0 }
-  );
+/**
+ * 年视图热力的连续日序列：**整段范围逐日出格**，不向覆盖起点收缩。
+ * 覆盖起点之前的日子标 `missing`（那里没有事件可查，画成空格而不是 0 ——
+ * 与 queryTrend 的「不补零」是同一条语义，只是格子保留在轴上撑满一年）。
+ * 库里还没有任何事件时返回空数组。
+ */
+export interface TrendCell extends TrendPoint {
+  /** true = 覆盖起点之前，无账可查：热力图画空格 */
+  missing?: boolean;
+}
+
+export function queryTrendYear(result: StatsQueryResult): TrendCell[] {
+  const first = result.availableFrom;
+  if (first === null) return [];
+  const out: TrendCell[] = [];
+  let key = result.range.from;
+  while (key <= result.range.to) {
+    const row = result.byDay[key];
+    out.push({
+      key,
+      label: key.slice(5),
+      downloads: row?.downloads ?? 0,
+      failures: row?.failures ?? 0,
+      bytes: row?.bytes ?? 0,
+      parses: row?.parses ?? 0,
+      missing: key < first,
+    });
+    const next = addDays(key, 1);
+    if (!next) break;
+    key = next;
+  }
+  return out;
 }
 
 // —— 排行 ——
@@ -127,18 +228,30 @@ function toRankRows(
   return list.sort((a, b) => b[metric] - a[metric] || a.key.localeCompare(b.key));
 }
 
-/** 平台榜：`s.byPlatform` 是唯一有 parses 维度的榜，所以带上解析失败 */
-export function platformRank(s: StatsSnapshot, metric: RankMetric = "downloads"): RankRow[] {
-  return toRankRows(s.byPlatform, s.totals.downloads, s.totals.bytes, metric);
+/** 平台榜：`byPlatform` 是唯一有 parses 维度的榜，所以带上解析失败 */
+export function platformRank(
+  data: {
+    byPlatform: Record<string, { downloads?: number; failures?: number; bytes?: number; parses?: number; parseFailures?: number }>;
+    totals: { downloads: number; bytes: number };
+  },
+  metric: RankMetric = "downloads"
+): RankRow[] {
+  return toRankRows(data.byPlatform, data.totals.downloads, data.totals.bytes, metric);
 }
 
 /** 类型榜：桶里没有 failures/parses，相应字段恒 0（不是缺数据，是这维度不成立） */
-export function kindRank(s: StatsSnapshot, metric: RankMetric = "downloads"): RankRow[] {
+export function kindRank(
+  data: {
+    byKind: Record<string, { downloads?: number; bytes?: number }>;
+    totals: { downloads: number; bytes: number };
+  },
+  metric: RankMetric = "downloads"
+): RankRow[] {
   // 桶键换成中文标签再排，页面不必每行再查一次表；键缺失时 kindLabel 原样透传
   const rows = Object.fromEntries(
-    Object.entries(s.byKind).map(([k, v]) => [kindLabel(k), v] as const)
+    Object.entries(data.byKind).map(([k, v]) => [kindLabel(k), v] as const)
   );
-  return toRankRows(rows, s.totals.downloads, s.totals.bytes, metric);
+  return toRankRows(rows, data.totals.downloads, data.totals.bytes, metric);
 }
 
 // —— 成功率 / 速度 / 解析 ——
@@ -152,8 +265,10 @@ export interface DownloadHealth {
   bytes: number;
 }
 
-export function downloadHealth(s: StatsSnapshot): DownloadHealth {
-  const { downloads, failures, canceled, bytes } = s.totals;
+export function downloadHealth(data: {
+  totals: { downloads: number; failures: number; canceled: number; bytes: number };
+}): DownloadHealth {
+  const { downloads, failures, canceled, bytes } = data.totals;
   return {
     done: downloads,
     failed: failures,
@@ -167,69 +282,19 @@ export function downloadHealth(s: StatsSnapshot): DownloadHealth {
  * 平均速度与平均耗时。分子用的是 `elapsedBytes`（有耗时样本的那部分字节），
  * 不是全部字节：把两条总线相除会造出一个偏高的假速度，且无从发现。
  */
-export function speedStats(s: StatsSnapshot): {
+export function speedStats(data: {
+  totals: { elapsedMs: number; elapsedCount: number; elapsedBytes: number };
+}): {
   avgBytesPerSec: number | null;
   avgElapsedMs: number | null;
   /** 有多少条记录带耗时样本；为 0 时上面两个都是 null，页面要说明原因 */
   sampled: number;
 } {
-  const { elapsedMs, elapsedCount, elapsedBytes } = s.totals;
+  const { elapsedMs, elapsedCount, elapsedBytes } = data.totals;
   return {
     avgBytesPerSec: elapsedMs > 0 ? elapsedBytes / (elapsedMs / 1000) : null,
     avgElapsedMs: elapsedCount > 0 ? elapsedMs / elapsedCount : null,
     sampled: elapsedCount,
-  };
-}
-
-export interface ParseStats {
-  total: number;
-  failures: number;
-  successRate: number | null;
-  /** 只列现存的通道；旧 stats.json 里的 `parse.online` 仍是 total 的一部分，但不作为通道展示 */
-  byVia: { local: number; mock: number };
-  /** 各通道占比（0..1），分母是解析总次数 */
-  viaShare: { local: number; mock: number };
-  avgDurationMs: number | null;
-}
-
-export function parseStats(s: StatsSnapshot): ParseStats {
-  const p = s.parse;
-  return {
-    total: p.total,
-    failures: p.failures,
-    successRate: rate(p.total - p.failures, p.total),
-    byVia: { local: p.local, mock: p.mock },
-    viaShare: {
-      local: share(p.local, p.total),
-      mock: share(p.mock, p.total),
-    },
-    avgDurationMs: p.total > 0 ? p.durationMs / p.total : null,
-  };
-}
-
-// —— 热力（星期 × 小时）——
-
-export interface Heat {
-  /** 168 格，索引 = 星期(0=周日)*24 + 小时 */
-  cells: number[];
-  max: number;
-  peak: { weekday: number; hour: number; value: number } | null;
-}
-
-export function heat(s: StatsSnapshot): Heat {
-  const cells = s.byHour;
-  let max = 0;
-  let at = -1;
-  for (let i = 0; i < cells.length; i++) {
-    if (cells[i] > max) {
-      max = cells[i];
-      at = i;
-    }
-  }
-  return {
-    cells,
-    max,
-    peak: at < 0 ? null : { weekday: Math.floor(at / 24), hour: at % 24, value: cells[at] },
   };
 }
 
@@ -340,25 +405,91 @@ export function authorTop(rows: HistoryEntry[], limit = 10): { list: AuthorRow[]
   return { list, anonymous };
 }
 
-/** 空态判定：计数档一条都没记过（页面据此显示引导而不是满屏 0） */
-export function isEmptyStats(s: StatsSnapshot): boolean {
-  return s.totals.downloads + s.totals.failures + s.parse.total === 0;
+export interface ParsedAuthorRow {
+  name: string;
+  /** 按作品键去重；一位作者一条作品只记一次，即使作品落地了多个文件 */
+  works: number;
 }
 
-/** 本机日历日序号：UTC 折叠掉时区/夏令时，只留「哪一天」（与 format.ts 的 dayNo 同一手法） */
-const calendarDayNo = (ts: number): number => {
-  const d = new Date(ts);
-  return Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / DAY_MS);
-};
-
-/**
- * 累计口径的起点文案：`自 2026-09-30 · 第 17 天`。
- * 天数按日历日算不是按毫秒差算 —— 昨天装的，今天看就是「第 2 天」，
- * 用时长下取整会把隔夜的两格显示成「1 天」，读起来像应用昨天才装好。
- */
-export function sinceLabel(s: StatsSnapshot, now: number = Date.now()): { date: string; days: number } {
-  return {
-    date: dayKey(s.since),
-    days: Math.max(1, calendarDayNo(now) - calendarDayNo(s.since) + 1),
-  };
+/** 解析作者榜按作品数排名，不按文件数排名；历史是解析记录，一条作品可以对应多个文件行。 */
+export function parsedAuthorTop(rows: HistoryEntry[], limit = 10): { list: ParsedAuthorRow[]; anonymous: number } {
+  const by = new Map<string, { name: string; works: Set<string> }>();
+  const seenWorks = new Map<string, string>();
+  const anonymousWorks = new Set<string>();
+  for (const row of rows) {
+    const work = row.groupId || row.id;
+    const authorKey = row.author?.id || row.author?.name;
+    if (!authorKey) {
+      if (!seenWorks.has(work)) anonymousWorks.add(work);
+      continue;
+    }
+    anonymousWorks.delete(work);
+    if (seenWorks.has(work)) continue;
+    seenWorks.set(work, authorKey);
+    const author = by.get(authorKey) ?? { name: row.author?.name || authorKey, works: new Set<string>() };
+    author.works.add(work);
+    by.set(authorKey, author);
+  }
+  const list = [...by.values()]
+    .map(({ name, works }) => ({ name, works: works.size }))
+    .sort((a, b) => b.works - a.works || a.name.localeCompare(b.name))
+    .slice(0, limit);
+  return { list, anonymous: anonymousWorks.size };
 }
+
+export interface AuthorUsageRow {
+  name: string;
+  /** 最近历史窗口中按 groupId 去重的解析作品数 */
+  parsedWorks: number;
+  /** 已落地文件数；一张图集可以包含多个文件 */
+  downloadedFiles: number;
+  downloadedBytes: number;
+}
+
+/** 作者解析与下载维度共用同一份最近历史窗口；解析按作品去重，下载按实际文件计数。 */
+export function authorUsage(rows: HistoryEntry[], limit = 10): { list: AuthorUsageRow[]; anonymous: number } {
+  const by = new Map<string, { name: string; works: Set<string>; files: number; bytes: number }>();
+  const seenAuthorByWork = new Map<string, string>();
+  const anonymousWorks = new Set<string>();
+
+  for (const row of rows) {
+    const work = row.groupId || row.id;
+    const authorKey = row.author?.id || row.author?.name;
+    if (!authorKey) {
+      if (!seenAuthorByWork.has(work)) anonymousWorks.add(work);
+      continue;
+    }
+    anonymousWorks.delete(work);
+    const owner = seenAuthorByWork.get(work);
+    if (owner && owner !== authorKey) continue;
+    seenAuthorByWork.set(work, authorKey);
+    const author = by.get(authorKey) ?? { name: row.author?.name || authorKey, works: new Set<string>(), files: 0, bytes: 0 };
+    author.works.add(work);
+    const fileCount = row.files?.length ?? 0;
+    if (fileCount > 0) {
+      author.files += fileCount;
+      if (typeof row.bytes === "number" && Number.isFinite(row.bytes) && row.bytes > 0) author.bytes += row.bytes;
+    }
+    by.set(authorKey, author);
+  }
+
+  const list = [...by.values()]
+    .map((author) => ({ name: author.name, parsedWorks: author.works.size, downloadedFiles: author.files, downloadedBytes: author.bytes }))
+    .sort((a, b) => b.parsedWorks - a.parsedWorks || b.downloadedFiles - a.downloadedFiles || a.name.localeCompare(b.name))
+    .slice(0, limit);
+  return { list, anonymous: anonymousWorks.size };
+}
+
+/** 范围查询里的作者榜：表头先列「解析作品」，同分再比落地文件数与名字 */
+export function queryAuthors(result: StatsQueryResult, limit = 10): StatsQueryResult["authors"] {
+  return result.authors
+    .filter((row) => row.parsedWorks > 0 || row.downloadedFiles > 0)
+    .sort(
+      (a, b) =>
+        b.parsedWorks - a.parsedWorks ||
+        b.downloadedFiles - a.downloadedFiles ||
+        a.name.localeCompare(b.name)
+    )
+    .slice(0, limit);
+}
+

@@ -122,8 +122,14 @@ export default function App(): React.ReactElement {
 
   // 任务流在 App 层订阅：首页的进行中任务跨页存活（事件幂等 upsert）
   useEffect(() => {
-    // 这一处静默是有意的：它只为侧栏徽标服务，同一次失败由队列页出声（避免两条同文 toast）
-    void api.download.list().then(setTasks).catch(() => {});
+    // 侧栏徽标与首页队列轨只关心未完成与失败的行：分两页取，不把整条无限队列拉进渲染层。
+    // 这一处静默是有意的：同一次失败由队列页出声（避免两条同文 toast）
+    void Promise.all([
+      api.download.list({ status: "active", limit: 100 }),
+      api.download.list({ status: "error", limit: 100 }),
+    ])
+      .then(([active, failed]) => setTasks([...active.rows, ...failed.rows]))
+      .catch(() => {});
     const offs = [
       api.download.onProgress((t) => {
         setTasks((prev) => upsert(prev, t));

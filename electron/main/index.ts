@@ -7,13 +7,16 @@
  * webSecurity 不关、renderer 只加载本地文件。结果卡要预览的媒体经主进程 `mgpreview:`
  * 代理取流（preview-protocol.ts），渲染层自己仍然一条外链都不发。
  */
-// ⚠️ 必须排第一条：内核 xhs/bilibili/instagram 在模块作用域读 Cookie，晚于 `./engine`
-// 求值就永远读不到用户配置（2026-10-18 实测 cookieLen=0）。改 import 顺序前先读 kernel-env.ts。
+// ⚠️ 锁必须排第一条：storage-runtime 在模块求值时就会开库并跑迁移，锁晚于它等于让
+// 第二个实例先写一遍库再退出。kernel-env 紧随其后：内核 xhs/bilibili/instagram 在模块作用域
+// 读 Cookie，晚于 `./engine` 求值就永远读不到用户配置（2026-10-18 实测 cookieLen=0）。
+import "./single-instance";
 import "./kernel-env";
 import {
   app,
   BrowserWindow,
   clipboard,
+  dialog,
   globalShortcut,
   ipcMain,
   Menu,
@@ -30,8 +33,17 @@ import { Agent, ProxyAgent, setGlobalDispatcher } from "undici";
 import { createEngine } from "./engine";
 import { Downloader } from "./downloader";
 import { createLinkRenewer } from "./link-renew";
-import { JsonStore, queueDigest } from "./store";
-import { settingsRepository, statsRepository } from "./storage-runtime";
+import { queueDigest } from "./repositories";
+import {
+  closeStorage,
+  historyRepository,
+  isStorageClosed,
+  migrationError,
+  migrationReport,
+  queueRepository,
+  settingsRepository,
+  statsRepository,
+} from "./storage-runtime";
 import { createStats } from "./stats";
 import { createResources, readManifest } from "./resources";
 import { createClipboardWatcher } from "./clipboard";
@@ -47,7 +59,7 @@ import { SECRET_CONFIG_KEYS } from "../../core-adapter/config";
 import { registerIpc } from "./ipc";
 import { listInstalledFonts } from "./fonts";
 import { createUpdater } from "./updater";
-import { IPC, type DownloadTaskView, type HistoryEntry, type PersistedQueueTask } from "../../types/ipc";
+import { IPC, type DownloadTaskView, type HistoryEntry } from "../../types/ipc";
 import { workKeyOf } from "../../shared/history";
 
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
@@ -61,11 +73,7 @@ const emit = (channel: string, payload: unknown) => {
   }
 };
 
-// —— 单实例锁（深链/二次启动聚焦现有窗口）——
-if (!app.requestSingleInstanceLock()) {
-  app.quit();
-  process.exit(0);
-}
+// —— 单实例锁已在 single-instance.ts（本文件第一条 import）完成 ——
 
 // Windows 通知/任务栏身份
 app.setAppUserModelId("cc.hotier.mediaget.desktop");
@@ -73,24 +81,15 @@ app.setAppUserModelId("cc.hotier.mediaget.desktop");
 // 预览取流的自定义 scheme：Chromium 在 ready 时就固化协议分类，这行必须在 whenReady 之前
 registerPreviewScheme();
 
-// —— 装配 ——
-// onError/onInfo 用后绑定箭头：logger 本身要读 store，构造期还不能互相引用
-const store = new JsonStore(
-  app.getPath("userData"),
-  (m) => logger.error(m),
-  (m) => logger.info(m),
-  settingsRepository
-);
-
 /**
  * 文件日志（设置→通用→日志）：userData/logs/app.log。
- * 级别与保留天数都从 store 实时取 ⇒ 改设置即生效，不做进程级快照。
+ * 级别与保留天数都从设置仓实时取 ⇒ 改设置即生效，不做进程级快照。
  * 启动先按保留天数清一次（比写第一行更早，避免「刚清完又留下一份旧的」）。
  */
 const logger = createLogger({
   logDir: () => join(app.getPath("userData"), "logs"),
-  getLevel: () => store.loadConfig().settings.logLevel,
-  getRetentionDays: () => store.loadConfig().settings.logRetentionDays,
+  getLevel: () => settingsRepository.loadConfig().settings.logLevel,
+  getRetentionDays: () => settingsRepository.loadConfig().settings.logRetentionDays,
   mirrorConsole: isDev,
 });
 
@@ -102,9 +101,9 @@ const logger = createLogger({
  * 用户清空输入框点保存 = 回到跟随系统，下次启动会再落一次——空串始终是合法值，不是错误态。
  */
 function materializeDownloadDir(): void {
-  const cur = store.loadConfig();
+  const cur = settingsRepository.loadConfig();
   if (cur.settings.downloadDir) return;
-  store.saveConfig({
+  settingsRepository.saveConfig({
     settings: { ...cur.settings, downloadDir: app.getPath("downloads") },
     kernel: cur.kernel,
   });
@@ -112,6 +111,19 @@ function materializeDownloadDir(): void {
   logger.info("[settings] 下载目录已落为系统默认");
 }
 logger.pruneExpired();
+
+// 迁移结果必须留痕：导入条数是「升级后历史还在不在」的唯一一行证据；
+// 失败时源 JSON 未动、下次启动会重试，但用户必须能从日志知道这次没导进来。
+if (migrationError) {
+  logger.error(`[storage] 旧数据迁移未完成，本次按空库启动（源 JSON 已保留）：${migrationError}`);
+} else {
+  const imported = Object.entries(migrationReport.imported);
+  if (imported.length > 0) {
+    logger.info(
+      `[storage] 旧数据已导入 SQLite：${imported.map(([source, rows]) => `${source} ${rows}`).join(" · ")}`
+    );
+  }
+}
 
 /**
  * 随包二进制目录（extraResources 落点）：
@@ -151,7 +163,7 @@ const expectedHashes = readManifest(packagedBinDir, (m) => logger.warn(m)) ?? un
 const resources = createResources({
   userDataDir: app.getPath("userData"),
   packagedDir: packagedBinDir,
-  readKernelConfig: (k) => store.getKernelValue(k),
+  readKernelConfig: (k) => settingsRepository.getKernelValue(k),
   expectedHashes,
   warn: (m) => logger.warn(m),
 });
@@ -173,7 +185,7 @@ if (!resources.verified) {
  * 未随包时 locate 返回 null → 不注入（TikTok 会解析失败；线上回落已于 2026-10-18 移除，没有转线上一说）。
  */
 function readKernelConfig(key: string): string | undefined {
-  const user = store.getKernelValue(key);
+  const user = settingsRepository.getKernelValue(key);
   if (user) return user;
   if (key === "YTDLP_BIN") return resources.locate("yt-dlp")?.path;
   if (key === "FFMPEG_BIN") return resources.locate("ffmpeg")?.path;
@@ -209,7 +221,7 @@ function publishKernelEnv(): void {
   // —— 用户 Cookie：设置页是产品内的配置面，以它为准 ——
   // 只处理 SECRET_CONFIG_KEYS，避免任意设置键污染进程环境；
   // 只回收「我们自己铺过」的键，dev .env 里手写的 Cookie 不会被误删。
-  const { settings } = store.loadConfig();
+  const { settings } = settingsRepository.loadConfig();
   for (const key of SECRET_CONFIG_KEYS) {
     const value = settings.cookies?.[key];
     if (value) {
@@ -225,9 +237,9 @@ publishKernelEnv();
 
 const engine = createEngine({
   readKernelConfig,
-  getThrottleMs: () => store.loadConfig().settings.throttleMs,
+  getThrottleMs: () => settingsRepository.loadConfig().settings.throttleMs,
   // 供给开关读持久值（每次解析/体检各读一次）：渲染层 store 只是视图，不是第二本账
-  getPlatformSwitches: () => store.loadConfig().settings.platformSwitches,
+  getPlatformSwitches: () => settingsRepository.loadConfig().settings.platformSwitches,
 });
 
 /**
@@ -243,7 +255,7 @@ const isActiveTask = (t: { status: DownloadTaskView["status"] }): boolean =>
  */
 const notifier = createDownloadNotifier({
   getPolicy: () => {
-    const s = store.loadConfig().settings;
+    const s = settingsRepository.loadConfig().settings;
     return { onDone: s.notifyOnDone, onError: s.notifyOnError };
   },
   hasActiveTask: (groupId) =>
@@ -265,7 +277,7 @@ const clipboardWatcher = createClipboardWatcher({
   identify: (text) => engine.identify(text),
   onLink: (link) => emit(IPC.evClipboardLink, link),
 });
-clipboardWatcher.setEnabled(store.loadConfig().settings.clipboardWatch);
+clipboardWatcher.setEnabled(settingsRepository.loadConfig().settings.clipboardWatch);
 
 /** 全局唤起快捷键：任意界面按下 → 读剪贴板 → 本地识别 → 填首页输入框并唤起窗口 */
 const CLIPBOARD_HOTKEY = "CommandOrControl+Alt+V";
@@ -286,13 +298,10 @@ function registerClipboardHotkey(): void {
 }
 
 /**
- * 生命周期计数器（userData/stats.json，统计页真源）：只累加计数/字节/时长，
- * 逐条明细仍在 history.json。落盘走 JsonStore 的节流口 —— 收尾风暴不该钉几十次写。
+ * 统计事件记录口（SQLite `stats_events`）：下载成败/取消与解析结果各落一行，
+ * 统计页按日期范围聚合查询。事件与历史行在同一事务里写，二者不会一有一无。
  */
 const stats = createStats({
-  load: () => store.loadStats(),
-  save: (s) => store.saveStatsThrottled(s),
-  onReset: (reason) => logger.warn(`[stats] ${reason}`),
   recordEvent: (event, historyEntry) => statsRepository.recordEvent(event, historyEntry),
   query: (range) => statsRepository.query(range),
   onEventError: () => logger.error("[stats] 统计事件写入失败"),
@@ -300,10 +309,15 @@ const stats = createStats({
 
 const downloader = new Downloader({
   getDownloadDir: () =>
-    store.loadConfig().settings.downloadDir || app.getPath("downloads"),
-  getMaxConcurrent: () => store.loadConfig().settings.maxConcurrent,
-  getRetryTimes: () => store.loadConfig().settings.retryTimes,
-  getKeepPartials: () => store.loadConfig().settings.keepPartials,
+    settingsRepository.loadConfig().settings.downloadDir || app.getPath("downloads"),
+  getMaxConcurrent: () => settingsRepository.loadConfig().settings.maxConcurrent,
+  getRetryTimes: () => settingsRepository.loadConfig().settings.retryTimes,
+  getKeepPartials: () => settingsRepository.loadConfig().settings.keepPartials,
+  // 终态行落盘后从内存退休；重试/清理按 taskId 从 SQLite 取回或删除
+  queue: {
+    load: (taskId) => queueRepository.get(taskId),
+    remove: (taskIds) => queueRepository.remove(taskIds),
+  },
   // UA 治理照抄内核（lib/http.ts），不私自加码；与预览代理共用同一枚常量（hotlink.ts）
   defaultUserAgent: DESKTOP_USER_AGENT,
   // 直链到期（403）就顺着这条任务的分享链接重新取一次签名；认不出同一份资源则返回 null，
@@ -318,7 +332,7 @@ const downloader = new Downloader({
       emit(IPC.evDownloadDone, t);
       notifier.onTaskEvent("done", t);
       // 完成自动定位文件：默认关，开着并发下载会连环弹资源管理器（业主知情选择）
-      if (store.loadConfig().settings.openFolderOnDone && t.filePath) {
+      if (settingsRepository.loadConfig().settings.openFolderOnDone && t.filePath) {
         shell.showItemInFolder(t.filePath);
       }
     },
@@ -329,7 +343,10 @@ const downloader = new Downloader({
       // 失败是日志里最有价值的一类：只投文件名与原因，**不投 url**（隐私红线：日志不落媒体直链）
       logger.error(`[download] ${t.filename} 失败: ${t.error ?? "未知原因"}`);
     },
-    persist: (tasks) => store.saveQueueThrottled(tasks as PersistedQueueTask[]),
+    persist: (tasks) => {
+      // 关库后传输回调仍可能触发落盘：跳过，最后一批已在 closeStorage 的 flush 里写过
+      if (!isStorageClosed()) queueRepository.saveMany(tasks);
+    },
     history: ({ groupTask, files }) => {
       const entry: HistoryEntry = {
         id: groupTask.taskId,
@@ -358,7 +375,6 @@ const downloader = new Downloader({
         workKey: entry.groupId,
         historyEntry: entry,
       });
-      store.appendHistory(entry);
     },
   },
 });
@@ -401,7 +417,7 @@ function updaterCacheDir(): string | null {
 const cache = createCacheProbe({
   session: () => session.defaultSession,
   userDataDir: () => app.getPath("userData"),
-  downloadDir: () => store.loadConfig().settings.downloadDir || app.getPath("downloads"),
+  downloadDir: () => settingsRepository.loadConfig().settings.downloadDir || app.getPath("downloads"),
   updaterCacheDir,
   livePartPaths: () => downloader.livePartPaths(),
   logs: logger,
@@ -414,7 +430,7 @@ const cache = createCacheProbe({
 // 不存在的 latest.yml 发网络请求。
 // 策略开关来自 AppSettings（设置→关于→更新策略）：启动检测 / 静默下载；安装固定走「立即重启」。
 function updatePolicy(): { autoDownload: boolean } {
-  return { autoDownload: store.loadConfig().settings.updateAutoDownload };
+  return { autoDownload: settingsRepository.loadConfig().settings.updateAutoDownload };
 }
 
 /**
@@ -439,7 +455,7 @@ function applyLoginItem(enabled: boolean): void {
  * manual 地址非法/为空时回落直连（设置页有说明）；不 destroy 旧 agent，避免误杀在途下载连接。
  */
 async function applyProxy(): Promise<void> {
-  const settings = store.loadConfig().settings;
+  const settings = settingsRepository.loadConfig().settings;
   let nodeProxy: string | null = null;
   if (settings.proxyMode === "manual") {
     nodeProxy = normalizeProxyUrl(settings.proxyUrl);
@@ -471,7 +487,7 @@ if (app.isPackaged) {
       const { autoUpdater } = await import("electron-updater");
       updater.attach(autoUpdater);
       // 启动检测开关关着就只挂源不检查；手动「检查更新」不受此开关限制
-      if (store.loadConfig().settings.updateOnStartup) {
+      if (settingsRepository.loadConfig().settings.updateOnStartup) {
         await updater.check(); // 静默检查一次，失败留在 error 由设置页重试
       }
     } catch {
@@ -488,8 +504,8 @@ if (app.isPackaged) {
 function onSettingsChanged(): void {
   publishKernelEnv();
   updater.setPolicy(updatePolicy()); // 静默下载开关保存即热更
-  clipboardWatcher.setEnabled(store.loadConfig().settings.clipboardWatch); // 通知两开关是读取时求值，无需热更
-  applyLoginItem(store.loadConfig().settings.launchAtLogin); // 开机自启保存即同步系统登录项
+  clipboardWatcher.setEnabled(settingsRepository.loadConfig().settings.clipboardWatch); // 通知两开关是读取时求值，无需热更
+  applyLoginItem(settingsRepository.loadConfig().settings.launchAtLogin); // 开机自启保存即同步系统登录项
   applyTitleBarOverlay(); // 明暗改完重贴按钮符号色（浅档配深符号，否则白符号消失在白底上）
   void applyProxy(); // 代理保存即热更（对新请求生效；在途连接不打断）
   logger.pruneExpired(); // 保留天数改完即清一次（级别是读取时求值，无需动作）
@@ -497,8 +513,8 @@ function onSettingsChanged(): void {
 
 /** 登录抓取成功后写档：与 `settings:set` 的 cookies 分支同语义（settings.cookies + kernel 双写） */
 function saveCapturedCookie(key: CookieLoginKey, header: string): void {
-  const cur = store.loadConfig();
-  store.saveConfig({
+  const cur = settingsRepository.loadConfig();
+  settingsRepository.saveConfig({
     settings: { ...cur.settings, cookies: { ...cur.settings.cookies, [key]: header } },
     kernel: { ...cur.kernel, [key]: header },
   });
@@ -509,7 +525,7 @@ const cookieLogin = createCookieLogin({
   onCaptured: onSettingsChanged,
   // 登录窗口跑在独立分区，不继承 defaultSession 的代理：按当前设置铺一次
   prepareSession: async (ses) => {
-    await ses.setProxy(sessionProxyFor(store.loadConfig().settings));
+    await ses.setProxy(sessionProxyFor(settingsRepository.loadConfig().settings));
   },
   getParent: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null),
   logger,
@@ -519,7 +535,9 @@ registerIpc({
   ipcMain,
   engine,
   downloader,
-  store,
+  settingsRepository,
+  historyRepository,
+  queueRepository,
   getAppMeta: () => ({ version: app.getVersion(), electron: process.versions.electron }),
   kernelMode,
   onSettingsChanged,
@@ -583,7 +601,7 @@ function titleBarOverlay(): Electron.TitleBarOverlay {
  * matchMedia 在 Electron 里跟随的同一个源，两处不会漂成两个答案。
  */
 function overlaySymbolColor(): string {
-  const theme = store.loadConfig().settings.theme;
+  const theme = settingsRepository.loadConfig().settings.theme;
   const dark = theme === "dark" || (theme !== "light" && nativeTheme.shouldUseDarkColors);
   return dark ? "#e4e6e8" : "#1b1e21";
 }
@@ -644,7 +662,7 @@ function createWindow(): void {
   mainWindow.on("close", (e) => {
     if (isQuitting) return;
     const busy = downloader.list().some(isActiveTask);
-    const { settings } = store.loadConfig();
+    const { settings } = settingsRepository.loadConfig();
     if (busy || (settings.minimizeToTray ?? true)) {
       e.preventDefault();
       mainWindow?.hide();
@@ -689,6 +707,15 @@ function createFallbackTrayIcon(): Electron.NativeImage {
 app.on("second-instance", showMainWindow);
 
 app.whenReady().then(() => {
+  // 迁移失败要看得见：否则用户只看到「历史/设置全没了」，而盘上的档其实还在。
+  // 按空库继续启动而不是退出 —— 源 JSON 保留、下次启动重试，用户还能进来看日志。
+  if (migrationError) {
+    dialog.showErrorBox(
+      "本地数据迁移未完成",
+      `旧版 JSON 数据未能导入本机数据库，本次以空数据启动。原始文件仍保留在用户数据目录，下次启动会重试。\n\n${migrationError}`
+    );
+  }
+
   // 下载目录先落成真实路径，设置页才有值可显示（见本函数上方说明）
   materializeDownloadDir();
 
@@ -713,15 +740,15 @@ app.whenReady().then(() => {
   nativeTheme.on("updated", applyTitleBarOverlay);
 
   // 登录项与偏好对账（注册表被外部清理时随下次启动自愈）
-  applyLoginItem(store.loadConfig().settings.launchAtLogin);
+  applyLoginItem(settingsRepository.loadConfig().settings.launchAtLogin);
 
-  // 队列恢复（P2 验收：重启后队列/历史完整）
-  const restoredQueue = store.loadQueue();
-  downloader.restore(restoredQueue as PersistedQueueTask[]);
+  // 队列恢复：只取还要跑的行（排队/下载中/暂停）；终态台账留在 SQLite 里由队列页翻页
+  const restoredQueue = queueRepository.loadRecoverable();
+  downloader.restore(restoredQueue);
 
   // 启动留痕：只有报错的日志看不出「进程什么时候起过」，一行档期信息给排查一个锚点。
   // 队列那半写的是摘要（条数 + 状态分布）而不是光一个数：「恢复了 0 项」和
-  // 「恢复了 5 项（done 5）」是两种完全不同的事故，前者才需要去追 queue.json 的写入方
+  // 「恢复了 5 项（done 5）」是两种完全不同的事故，前者才需要去追 queue_tasks 的写入方
   logger.info(
     `[app] 启动 v${app.getVersion()} ${isDev ? "dev" : "packaged"} · 内核 ${kernelMode()} · 队列恢复 ${queueDigest(restoredQueue)}`
   );
@@ -732,7 +759,6 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  store.flush();
   if (process.platform !== "darwin") app.quit();
 });
 
@@ -746,6 +772,6 @@ app.on("before-quit", () => {
   tray = null;
   notifier.dispose();
   clipboardWatcher.dispose();
-  store.saveQueueThrottled(downloader.snapshot() as PersistedQueueTask[]);
-  store.flush();
+  // 队列最后一笔先落库，再关库：WAL checkpoint(TRUNCATE) 让 -wal 不把最后一批写留在盘上。
+  closeStorage(() => queueRepository.saveMany(downloader.snapshot()));
 });

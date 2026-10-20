@@ -31,11 +31,22 @@ function makeDownloader(
   const events: DownloadTaskView[] = [];
   const history: { groupTask: DownloadTaskView; files: string[] }[] = [];
   let persisted: PersistedQueueLike[] = [];
+  // 终态行落盘后从内存退休（v22），测试用这张表模拟 SQLite 的 upsert 台账：
+  // 活行读 dl.list()，退休行读这里，两者合起来才是队列页看到的那份队列。
+  const ledger = new Map<string, PersistedQueueLike>();
   const dl = new Downloader({
     getDownloadDir: () => dir,
     getMaxConcurrent: () => maxConcurrent,
     getRetryTimes: () => 2, // 与旧内置 MAX_ATTEMPTS=3 等价的总尝试数
     getKeepPartials: () => false,
+    queue: {
+      load: (taskId) => ledger.get(taskId),
+      remove: (taskIds) => {
+        let removed = 0;
+        for (const id of taskIds) if (ledger.delete(id)) removed += 1;
+        return removed;
+      },
+    },
     defaultUserAgent: "UA-TEST",
     fetchImpl,
     ...tuning,
@@ -45,11 +56,36 @@ function makeDownloader(
       error: (t) => events.push(t),
       persist: (tasks) => {
         persisted = tasks;
+        for (const task of tasks) ledger.set(task.taskId, task);
       },
       history: (e) => history.push(e),
     },
   });
-  return { dl, events, history, getPersisted: () => persisted };
+  const memoryList = dl.list.bind(dl);
+  // 测试里的 dl.list() 取队列页口径（库 ∪ 活行，活行优先），与 download:list 的 overlay 同义；
+  // 真实内存列表经 memoryList() 取，用来钉「终态行确实退休了」
+  dl.list = () => {
+    const live = memoryList();
+    const seen = new Set(live.map((t) => t.taskId));
+    const retired = [...ledger.values()]
+      .filter((t) => !seen.has(t.taskId))
+      .map((t) => ({
+        ...t,
+        kind: t.kind as DownloadTaskView["kind"],
+        speed: t.speed ?? 0,
+        transferMs: t.transferMs ?? 0,
+        transferBytes: t.transferBytes ?? 0,
+      }));
+    return [...live, ...retired];
+  };
+  return {
+    dl,
+    events,
+    history,
+    memoryList,
+    ledger: () => [...ledger.values()],
+    getPersisted: () => persisted,
+  };
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -530,7 +566,7 @@ describe("Downloader 清理与恢复", () => {
   it("清理带走终态、拒掉在途，removed 如实计数且文件不动", async () => {
     const dir = makeTempDir();
     // 单槽 + 超长空闲超时：hang 任务在整个断言期间稳定停在下载中/排队，不会自己变终态
-    const { dl, getPersisted } = makeDownloader(dir, triFetch(), 1, {
+    const { dl, ledger } = makeDownloader(dir, triFetch(), 1, {
       stallTimeoutMs: 100_000,
       retryBaseDelayMs: 10,
     });
@@ -549,9 +585,10 @@ describe("Downloader 清理与恢复", () => {
 
     expect(dl.clear([doneId, errId, cancelId, runId, waitId])).toBe(3);
     expect(dl.list().map((t) => t.taskId).sort()).toEqual([runId, waitId].sort());
-    // 落盘快照跟着变短：清完的行不能重启后又回来
-    expect(getPersisted().map((t) => t.taskId)).not.toContain(doneId);
-    expect(getPersisted().map((t) => t.taskId)).not.toContain(errId);
+    // 台账里也清掉了：清完的行不能重启后又回来
+    expect(ledger().map((t) => t.taskId)).not.toContain(doneId);
+    expect(ledger().map((t) => t.taskId)).not.toContain(errId);
+    expect(ledger().map((t) => t.taskId)).not.toContain(cancelId);
     // 「清理」是忘记，不是删文件
     expect(existsSync(join(dir, "ok.mp4"))).toBe(true);
 
@@ -664,7 +701,8 @@ describe("Downloader 403 自动续链", () => {
 
     // 交给续链的是「失败那条 + 这个作品的链接」，不是别的任务的链
     expect(seen).toEqual([[OLD, SOURCE]]);
-    expect(dl.list().find((t) => t.taskId === taskId)?.url).toBe(NEW);
+    // done 台账按隐私红线剥掉直链，运行中的新链只能从完成事件上取
+    expect(events.find((e) => e.taskId === taskId && e.status === "done")?.url).toBe(NEW);
     expect(readFileSync(join(dir, "v.mp4"), "utf8")).toBe("FRESH-LINK");
     expect(events.at(-1)?.note).toBe("直链已过期，已自动重新取链");
     rmSync(dir, { recursive: true, force: true });

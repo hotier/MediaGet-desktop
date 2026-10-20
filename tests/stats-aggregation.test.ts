@@ -10,47 +10,32 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  TREND_WINDOWS,
   authorTop,
-  dayKey,
   downloadHealth,
-  heat,
   heatSlotLabel,
   historyScope,
-  isEmptyStats,
   kindRank,
-  parseStats,
   platformRank,
-  sinceLabel,
   sizeHistogram,
   speedStats,
-  trendByDay,
-  trendTotal,
 } from "../renderer/src/lib/stats";
-import type { HistoryEntry, StatsSnapshot } from "../types/ipc";
+import type { HistoryEntry, StatsQueryResult } from "../types/ipc";
 
 const MB = 1024 * 1024;
 
-/** 渲染层不吃主进程的空档工厂（铁律：renderer 只经 IPC 拿数据），所以这里自己造一份 */
-function snap(patch: Partial<StatsSnapshot> = {}): StatsSnapshot {
-  return {
-    schema: 1,
-    since: 0,
-    updatedAt: 0,
-    totals: { downloads: 0, failures: 0, canceled: 0, bytes: 0, elapsedMs: 0, elapsedCount: 0, elapsedBytes: 0 },
-    parse: { total: 0, failures: 0, local: 0, online: 0, mock: 0, durationMs: 0 },
-    byDay: {},
-    byPlatform: {},
-    byKind: {},
-    byHour: new Array<number>(168).fill(0),
-    ...patch,
-  };
-}
-
-/** 固定在 2026-10-16 15:00 本机时间：趋势窗口、补零位置都要可重现 */
-const NOW = new Date(2026, 9, 16, 15, 0, 0).getTime();
-const TODAY = "2026-10-16";
-const YESTERDAY = "2026-10-15";
+type Totals = StatsQueryResult["totals"];
+const ZERO: Totals = {
+  downloads: 0,
+  failures: 0,
+  canceled: 0,
+  bytes: 0,
+  elapsedMs: 0,
+  elapsedCount: 0,
+  elapsedBytes: 0,
+  parses: 0,
+  parseFailures: 0,
+};
+const totals = (patch: Partial<Totals> = {}): Totals => ({ ...ZERO, ...patch });
 
 const entry = (patch: Partial<HistoryEntry> = {}): HistoryEntry => ({
   id: patch.id ?? "t1",
@@ -59,71 +44,17 @@ const entry = (patch: Partial<HistoryEntry> = {}): HistoryEntry => ({
   ...patch,
 });
 
-describe("trendByDay", () => {
-  it("长度 = 窗口天数，末点是今天，起点在前一天之前连续排开", () => {
-    const points = trendByDay(snap(), 7, NOW);
-    expect(points).toHaveLength(7);
-    expect(points[6].key).toBe(TODAY);
-    expect(points[0].key).toBe("2026-10-10");
-    expect(points.map((p) => p.label)).toEqual([
-      "10-10",
-      "10-11",
-      "10-12",
-      "10-13",
-      "10-14",
-      "10-15",
-      "10-16",
-    ]);
-    expect(TREND_WINDOWS).toEqual([7, 30, 90, 365]);
-  });
-
-  it("没有记录的日子补零而不是跳过（否则周末的空档会把周五和周一接在一起）", () => {
-    const s = snap({
-      byDay: {
-        [TODAY]: { downloads: 2, failures: 1, bytes: 100, parses: 3 },
-        "2026-10-10": { downloads: 1, failures: 0, bytes: 50, parses: 0 },
-      },
-    });
-    const points = trendByDay(s, 7, NOW);
-    expect(points[0].downloads).toBe(1);
-    expect(points[1]).toMatchObject({ key: "2026-10-11", downloads: 0, failures: 0, bytes: 0, parses: 0 });
-    expect(points[6]).toMatchObject({ downloads: 2, failures: 1, bytes: 100, parses: 3 });
-  });
-
-  it("窗口里的桶只按本机日历命中，跨月跨年不串键", () => {
-    const s = snap({ byDay: { "2025-12-31": { downloads: 9, failures: 0, bytes: 1, parses: 0 } } });
-    const jan = trendByDay(s, 3, new Date(2026, 0, 1, 8).getTime());
-    expect(jan[jan.length - 1]).toMatchObject({ key: "2026-01-01", downloads: 0 });
-    expect(trendByDay(s, 3, NOW).some((p) => p.downloads === 9)).toBe(false);
-  });
-
-  it("trendTotal 把窗口内合计加出来（卡片右上那句）", () => {
-    const points = trendByDay(
-      snap({
-        byDay: {
-          [TODAY]: { downloads: 2, failures: 1, bytes: 100, parses: 3 },
-          [YESTERDAY]: { downloads: 5, failures: 0, bytes: 200, parses: 1 },
-          "2020-01-01": { downloads: 99, failures: 9, bytes: 999, parses: 9 },
-        },
-      }),
-      7,
-      NOW
-    );
-    expect(trendTotal(points)).toEqual({ downloads: 7, failures: 1, bytes: 300, parses: 4 });
-  });
-});
-
 describe("排行", () => {
-  const s = snap({
-    totals: { downloads: 10, failures: 2, canceled: 0, bytes: 1000, elapsedMs: 0, elapsedCount: 0, elapsedBytes: 0 },
+  const s = {
+    totals: totals({ downloads: 10, failures: 2, bytes: 1000 }),
     byPlatform: {
       douyin: { downloads: 6, failures: 1, bytes: 600, parses: 8, parseFailures: 2 },
       bilibili: { downloads: 4, failures: 1, bytes: 400, parses: 2, parseFailures: 0 },
       xhs: { downloads: 4, failures: 0, bytes: 10, parses: 0, parseFailures: 0 },
     },
-  });
+  };
 
-  it("默认按下载数降序；并列按平台键升序（切换窗口时顺序不该莫名跳动）", () => {
+  it("默认按下载数降序；并列按平台键升序（切换范围时顺序不该莫名跳动）", () => {
     const rows = platformRank(s);
     expect(rows.map((r) => r.key)).toEqual(["douyin", "bilibili", "xhs"]);
     expect(rows[0]).toMatchObject({ downloadShare: 0.6, byteShare: 0.6 });
@@ -138,10 +69,9 @@ describe("排行", () => {
   });
 
   it("空榜不炸：份额 0、失败率 null，而不是 NaN", () => {
-    const rows = platformRank(snap(), "downloads");
-    expect(rows).toEqual([]);
+    expect(platformRank({ totals: totals(), byPlatform: {} })).toEqual([]);
     const one = platformRank(
-      snap({ byPlatform: { douyin: { downloads: 0, failures: 0, bytes: 0, parses: 0, parseFailures: 0 } } }),
+      { totals: totals(), byPlatform: { douyin: { downloads: 0, failures: 0, bytes: 0, parses: 0, parseFailures: 0 } } },
       "bytes"
     );
     expect(one[0]).toMatchObject({ downloadShare: 0, byteShare: 0, failureRate: null });
@@ -149,10 +79,10 @@ describe("排行", () => {
 
   it("类型榜把契约 kind 换成中文标签，缺类型桶读作「未分类」", () => {
     const rows = kindRank(
-      snap({
-        totals: { downloads: 3, failures: 0, canceled: 0, bytes: 30, elapsedMs: 0, elapsedCount: 0, elapsedBytes: 0 },
+      {
+        totals: totals({ downloads: 3, bytes: 30 }),
         byKind: { video: { downloads: 2, bytes: 20 }, unknown: { downloads: 1, bytes: 10 } },
-      }),
+      },
       "bytes"
     );
     expect(rows.map((r) => r.key)).toEqual(["视频", "未分类"]);
@@ -160,58 +90,27 @@ describe("排行", () => {
   });
 });
 
-describe("健康度 / 速度 / 解析", () => {
+describe("健康度 / 速度", () => {
   it("成功率 = done/(done+failed)，一条都没结束过时是 null 而不是 0%", () => {
-    expect(downloadHealth(snap())).toMatchObject({ done: 0, failed: 0, successRate: null });
-    expect(
-      downloadHealth(
-        snap({ totals: { downloads: 8, failures: 2, canceled: 1, bytes: 0, elapsedMs: 0, elapsedCount: 0, elapsedBytes: 0 } })
-      )
-    ).toEqual({ done: 8, failed: 2, canceled: 1, successRate: 0.8, bytes: 0 });
+    expect(downloadHealth({ totals: totals() })).toMatchObject({ done: 0, failed: 0, successRate: null });
+    expect(downloadHealth({ totals: totals({ downloads: 8, failures: 2, canceled: 1 }) })).toEqual({
+      done: 8,
+      failed: 2,
+      canceled: 1,
+      successRate: 0.8,
+      bytes: 0,
+    });
   });
 
   it("平均速度只算有耗时样本的那部分字节", () => {
-    const s = snap({
-      totals: {
-        downloads: 10,
-        failures: 0,
-        canceled: 0,
-        bytes: 10 * MB, // 全部字节
-        elapsedMs: 2_000,
-        elapsedCount: 2,
-        elapsedBytes: MB, // 有耗时样本的只有 1 MB
-      },
-    });
-    expect(speedStats(s)).toEqual({ avgBytesPerSec: MB / 2, avgElapsedMs: 1000, sampled: 2 });
+    const t = totals({ downloads: 10, bytes: 10 * MB, elapsedMs: 2_000, elapsedCount: 2, elapsedBytes: MB });
+    expect(speedStats({ totals: t })).toEqual({ avgBytesPerSec: MB / 2, avgElapsedMs: 1000, sampled: 2 });
     // 用 bytes 去除会得 5 MB/s —— 五倍虚高且看不出来
-    expect(speedStats(snap()).avgBytesPerSec).toBeNull();
+    expect(speedStats({ totals: totals() }).avgBytesPerSec).toBeNull();
   });
 
-  it("解析：通道占比按总次数分，成功率和平均耗时各管各的分母", () => {
-    const s = snap({
-      // 旧档的 online 桶仍在 total 里，但已不是可展示的通道
-      parse: { total: 10, failures: 2, local: 7, online: 3, mock: 0, durationMs: 2_500 },
-    });
-    const p = parseStats(s);
-    expect(p.successRate).toBe(0.8);
-    expect(p.viaShare).toEqual({ local: 0.7, mock: 0 });
-    expect(p.avgDurationMs).toBe(250);
-    const empty = parseStats(snap());
-    expect(empty).toMatchObject({ total: 0, successRate: null, avgDurationMs: null });
-    expect(empty.viaShare).toEqual({ local: 0, mock: 0 }); // 占比是 0，不是「不知道」
-  });
-});
-
-describe("热力", () => {
-  it("峰值给出星期×小时；全 0 时 peak=null", () => {
-    const s = snap();
-    s.byHour[3 * 24 + 21] = 12;
-    s.byHour[3 * 24 + 20] = 5;
-    const h = heat(s);
-    expect(h.max).toBe(12);
-    expect(h.peak).toEqual({ weekday: 3, hour: 21, value: 12 });
+  it("热力格文案：星期 × 整点", () => {
     expect(heatSlotLabel(3, 21)).toBe("周三 21:00");
-    expect(heat(snap()).peak).toBeNull();
   });
 });
 
@@ -277,19 +176,3 @@ describe("历史明细口径", () => {
   });
 });
 
-describe("卡片辅助", () => {
-  it("isEmptyStats：下载、失败、解析三者都为 0 才算空", () => {
-    expect(isEmptyStats(snap())).toBe(true);
-    expect(isEmptyStats(snap({ totals: { ...snap().totals, failures: 1 } }))).toBe(false);
-    expect(isEmptyStats(snap({ parse: { ...snap().parse, total: 1 } }))).toBe(false);
-  });
-
-  it("sinceLabel：当天起算就是第 1 天，不是第 0 天", () => {
-    expect(sinceLabel(snap({ since: new Date(2026, 9, 16, 1).getTime() }), NOW)).toEqual({
-      date: TODAY,
-      days: 1,
-    });
-    expect(sinceLabel(snap({ since: new Date(2026, 9, 14, 23).getTime() }), NOW).days).toBe(3);
-    expect(dayKey(NOW)).toBe(TODAY);
-  });
-});

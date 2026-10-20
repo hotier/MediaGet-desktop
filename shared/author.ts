@@ -42,11 +42,11 @@ export function buildAuthorSnapshot(data?: ParseData | null): AuthorSnapshot | u
 }
 
 /**
- * 盘上存量 → 契约形状（读侧归一，与 `store.loadHistory` 的平台键归一同一条口径）。
+ * 盘上存量 → 契约形状（旧 `history.json` 行迁移入库时经它归一，与平台键 `resolveKey` 同一条口径）。
  *
- * 写入口归一只管得住今后：`toText` 之前的那些行还躺在 `history.json` 里，数字 `id` 一个就够
- * 让整次 `history:list` 过不了出参校验。不在读侧兜住，就等于「一条老记录永久锁死一整页」，
- * 而且症状是空态不是报错。幂等，所以不必回写文件。
+ * 写入口归一只管得住今后：`toText` 之前的那些行还躺在旧 `history.json` 里，数字 `id` 一个就够
+ * 让整次 `history:list` 过不了出参校验。导入时不兜住，就等于「一条老记录永久锁死一整页」，
+ * 而且症状是空态不是报错。幂等，源文件原样保留、不回写。
  */
 export function normalizeAuthorSnapshot(
   raw?: AuthorSnapshot | null

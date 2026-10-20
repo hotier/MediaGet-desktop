@@ -212,7 +212,7 @@ export function buildImageSrc(target: string, platform?: string): string | null 
 /**
  * 旧内核（parse-core 0.1.2）的站内图片代理路由 → 上游直链；不是该形状返回 `null`。
  *
- * 读侧归一，与 `store.loadHistory` 的平台键归同一条口径：盘上存量不许被静默改写，但要把
+ * 读侧归一：盘上存量不许被静默改写，但要把
  * 存量解释成当前认得的形态——否则 0.1.2 期间解析过的每一行，头像都永远是一张裂图。
  * 形状以上游 0.1.2 `weiboCore.js` 的 `proxifyImage3` 为准（`decodeProxiedUrl` 同款前缀）。
  */

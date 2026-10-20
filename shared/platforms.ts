@@ -26,7 +26,7 @@ export type EngineId = "parseCore" | "ytdlp" | "mock";
 export type EngineCoverage = "ready" | "declared" | "unknown";
 
 export interface PlatformDef {
-  /** 契约键：写进 history.json / stats.json、跨 IPC 传输用的唯一标识 */
+  /** 契约键：写进历史/统计事件、跨 IPC 传输用的唯一标识 */
   key: string;
   /** 界面显示名（全站只用这一个，不再出现裸 key） */
   name: string;

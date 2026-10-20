@@ -39,6 +39,7 @@ import type {
 // 续传身份与续链身份必须是同一把尺（pathname + 非时效参数）：`.part` 能不能接着写、
 // 403 之后哪条新链属于这一份资源，两处各写一套比较规则就会得出互相矛盾的答案
 import { isSameResource } from "../../shared/link-identity";
+import { resolveKey } from "../../shared/platforms";
 
 export type PersistedQueueLike = PersistedQueueTask;
 
@@ -61,6 +62,14 @@ export interface DownloaderOptions {
   getRetryTimes: () => number;
   /** 取消任务是否保留 .part 断点 */
   getKeepPartials: () => boolean;
+  /**
+   * SQLite 队列档（可选）：终态行落盘后会从内存退休，重试时按 taskId 取回；
+   * 清理由下载器判定「哪些能删」后统一交给它删库。不传则保持纯内存语义（单测）。
+   */
+  queue?: {
+    load(taskId: string): PersistedQueueTask | undefined;
+    remove(taskIds: string[]): number;
+  };
   /** 默认 UA（主进程出网统一带浏览器 UA，照抄内核 UA 治理，不私自加码） */
   defaultUserAgent: string;
   /**
@@ -183,6 +192,16 @@ export class Downloader {
       .map(toView);
   }
 
+  /**
+   * 内存里的活行（排队 / 下载中 / 暂停）。`download:list` 用它覆盖 SQLite 同 id 行：
+   * 终态行落盘后即退休，库里那份才是台账；活行的进度只在内存里刷新。
+   */
+  listLive(): DownloadTaskView[] {
+    return this.list().filter(
+      (t) => t.status === "queued" || t.status === "downloading" || t.status === "paused"
+    );
+  }
+
   /** 入队：items 共用 groupId；返回 taskId 列表 */
   enqueue(
     items: DownloadItem[],
@@ -210,7 +229,7 @@ export class Downloader {
           error: "不安全的下载地址（私网/非 http 协议被拒绝）",
           attempts: 0,
           createdAt: Date.now(),
-          platform: meta?.platform,
+          platform: meta?.platform ? resolveKey(meta.platform) : undefined,
           title: meta?.title,
           sourceUrl: meta?.sourceUrl,
           author: meta?.author,
@@ -239,7 +258,7 @@ export class Downloader {
         transferBytes: 0,
         attempts: 0,
         createdAt: Date.now(),
-        platform: meta?.platform,
+        platform: meta?.platform ? resolveKey(meta.platform) : undefined,
         title: meta?.title,
         sourceUrl: meta?.sourceUrl,
         author: meta?.author,
@@ -326,6 +345,7 @@ export class Downloader {
     }
     this.opts.events.progress(toView(t));
     this.persist();
+    this.retire(taskId);
     return true;
   }
 
@@ -342,8 +362,16 @@ export class Downloader {
   }
 
   resume(taskId: string): boolean {
-    const t = this.tasks.get(taskId);
-    if (!t || (t.status !== "paused" && t.status !== "error" && t.status !== "canceled")) return false;
+    let t = this.tasks.get(taskId);
+    if (!t) {
+      // 终态行落盘后已退休：重试/继续要先把档取回内存。
+      // paused 行本来就在内存（loadRecoverable 带回来），这里主要是 error/canceled。
+      const saved = this.opts.queue?.load(taskId);
+      if (!saved || !saved.url) return false;
+      if (saved.status !== "paused" && saved.status !== "error" && saved.status !== "canceled") return false;
+      t = this.revive(saved);
+    }
+    if (t.status !== "paused" && t.status !== "error" && t.status !== "canceled") return false;
     t.status = "queued";
     t.error = undefined;
     // 暂停快照的寿命到「继续」为止：重新连上游的那几秒报一个过期速度就是在说谎
@@ -362,39 +390,82 @@ export class Downloader {
    * 把点名的任务移出行列（队列页「清理」与逐行移除共用一条通道）。
    * 只删终态行：queued/downloading 要用户先取消，不做「点一下就掐断在途字节」的暗箱；
    * 不碰磁盘 —— done 的产物在落地目录，error/canceled 的 .part 归 keepPartials 策略管。
+   * 终态行可能早已退休、只剩库里那一行，所以「能不能删」按内存状态判，删除动作交给库。
    */
   clear(taskIds: string[]): number {
-    let removed = 0;
+    const removable: string[] = [];
     for (const id of taskIds) {
       const t = this.tasks.get(id);
-      if (!t || t.status === "queued" || t.status === "downloading") continue;
+      if (t && (t.status === "queued" || t.status === "downloading")) continue;
+      removable.push(id);
+    }
+    for (const id of removable) {
       this.tasks.delete(id);
       const at = this.order.indexOf(id);
       if (at >= 0) this.order.splice(at, 1);
-      removed += 1;
     }
-    if (removed) this.persist();
-    return removed;
+    // 返回值说「真正删掉几行」：退休行只在库里，按内存计数会少报
+    return this.opts.queue ? this.opts.queue.remove(removable) : removable.length;
+  }
+
+  /** 终态行落盘后退出内存：队列页从 SQLite 翻页读它，内存只留还要动的活 */
+  private retire(taskId: string): void {
+    const t = this.tasks.get(taskId);
+    if (!t || t.status === "queued" || t.status === "downloading" || t.status === "paused") return;
+    this.tasks.delete(taskId);
+    const at = this.order.indexOf(taskId);
+    if (at >= 0) this.order.splice(at, 1);
+  }
+
+  /** 把库里一条可重试的终态行取回内存（resume 专用）；落盘路径与 filePath 兜底同 restore */
+  private revive(saved: PersistedQueueLike): InternalTask {
+    const t = {
+      ...saved,
+      // 保留库内状态（error/canceled/paused）：resume 的资格判断在调用方，这里改成 queued
+      // 会让那次判断永远失败
+      speed: 0,
+      transferMs: Math.max(0, Math.round(saved.transferMs ?? 0)),
+      transferBytes: Math.max(0, Math.round(saved.transferBytes ?? 0)),
+      attempts: 0,
+      error: undefined,
+      renewed: undefined,
+      platform: saved.platform ? resolveKey(saved.platform) : undefined,
+    } as InternalTask;
+    if (!t.filePath) t.filePath = join(this.opts.getDownloadDir(), t.filename);
+    // 与 restore 同一条占位纪律：复活的行也是活下载，别让新入队抢走同一个落点
+    this.claimedTargets.add(t.filePath);
+    this.tasks.set(t.taskId, t);
+    this.order.push(t.taskId);
+    this.order.sort(
+      (a, b) => (this.tasks.get(b)?.createdAt ?? 0) - (this.tasks.get(a)?.createdAt ?? 0)
+    );
+    return t;
   }
 
   /**
-   * 重启恢复（v13 起：**进过队列的行全部回来**，含 done 与 canceled）。
-   * - downloading → queued（.part+meta 在则续传）；queued / paused / error / canceled / done 保持原态
-   * - 失败原因、落地路径、完成时刻都跟着档回来：旧实现把 error 无条件清成 undefined，
-   *   于是重启后的失败行是一条「不知道为什么失败」的记录
-   * - `pump()` 只挑 queued，所以终态行回来只是台账，不会被自动开跑
+   * 重启恢复：只接 `queueRepository.loadRecoverable()` 交回的未完成行
+   * （queued / downloading / paused）。done / error / canceled 留在 SQLite 里由队列页翻页，
+   * 不再进内存 —— 队列从此没有条数上限，内存只装还要动的那几条。
+   * - downloading → queued（.part+meta 在则续传）；paused 保留暂停快照
+   * - 旧版迁移可能拿不到直链（当时的隐私策略剥掉了 url）：这类行无法续传，
+   *   落成一条带原因的 error 台账，而不是一启动就对着空 URL 发请求
+   * - `pump()` 只挑 queued，所以暂停行回来不会被自动开跑
    *
    * 翻案记录（别照旧注释改回去）：v4 定过「done 跳过（落地目录才是真源）」与「canceled 不该
    * 每次启动回来占位」，业主 2026-10-17 明确推翻，原话「保留所有进过队列的数据」。
-   * 队列页因此成为跨重启的完整台账，代价是它到 QUEUE_MAX（200）会丢最旧的，
-   * 而「清理」按钮从此真的能落盘（旧实现清完一次重启又长回来）。
+   * v22 起「保留」的实现从「全部塞回内存」改成「全部留在 SQLite」，队列页照样翻得到。
    */
   restore(saved: PersistedQueueLike[]): void {
+    const unrecoverable: string[] = [];
     for (const s of saved) {
       const revived: DownloadStatus = s.status === "downloading" ? "queued" : s.status;
+      const needsUrl = revived === "queued" || revived === "paused";
+      const missingUrl = needsUrl && !s.url;
+      if (missingUrl) unrecoverable.push(s.taskId);
       const t = {
         ...s,
-        status: revived,
+        status: missingUrl ? "error" : revived,
+        error: missingUrl ? "升级前的队列记录缺少下载地址，无法续传；请重新解析下载" : s.error,
         // 只有 paused 行的 speed 是档内的暂停快照（业主指令 2026-10-18）；其余状态不承认这个数：
         // 下载中恢复成 queued 后还没采到新样本，拿旧值当实时速度就是假象
         speed: revived === "paused" ? Math.max(0, Math.round(s.speed ?? 0)) : 0,
@@ -403,6 +474,7 @@ export class Downloader {
         transferMs: Math.max(0, Math.round(s.transferMs ?? 0)),
         transferBytes: Math.max(0, Math.round(s.transferBytes ?? 0)),
         attempts: 0,
+        renewed: undefined,
       } as unknown as InternalTask;
       // filePath 以档内为准：同名冲突时落的是 `xxx(1).mp4`，按「目录 + 文件名」重算会指向
       // 一个从没落地的名字，「打开所在文件夹」跳到不存在的路径。缺这个键（v13 之前的旧档）才重算。
@@ -415,11 +487,14 @@ export class Downloader {
     this.order.sort(
       (a, b) => (this.tasks.get(b)?.createdAt ?? 0) - (this.tasks.get(a)?.createdAt ?? 0)
     );
+    // downloading→queued 与「缺直链→error」都要落盘；否则下次启动还会把它们当可恢复行捞出来
+    if (saved.length > 0) this.persist();
+    for (const id of unrecoverable) this.retire(id);
     this.pump();
   }
 
   /**
-   * 队列快照（v13：一行不落，含 done 与 canceled —— 队列页从此是跨重启的台账）。
+   * 内存里的活行快照（v22：终态行落盘即退休，台账的完整形态在 SQLite 里）。
    *
    * 直链只在「还能续或还能重试」的状态上落盘：done 行剥成空串。理由是隐私红线「队列不保留
    * 直链 URL」——旧实现靠"完成行不落盘"顺带满足了它，现在完成行要留，就得单独把链摘掉；
@@ -723,6 +798,7 @@ export class Downloader {
         files: [this.targetPath(t)],
       });
       this.persist();
+      this.retire(t.taskId);
     } catch (e) {
       clearStall();
       const live = st();
@@ -796,6 +872,8 @@ export class Downloader {
       t.error = cause instanceof Error ? cause.message : String(cause);
       this.opts.events.error(toView(t));
       this.persist();
+      // 终态已落盘：内存退休，重试时 resume 会按 taskId 从库里取回
+      this.retire(t.taskId);
     }
   }
 }
