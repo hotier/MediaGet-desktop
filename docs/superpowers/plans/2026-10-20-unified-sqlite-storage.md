@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Move all structured local business data into SQLite, preserve unlimited work history and statistical events, and make every statistics view respond to one preset/custom date range.
+**Goal:** Move all structured local business data into SQLite, preserve unlimited queue tasks, work history, and statistical events, and make every statistics view respond to one preset/custom date range.
 
 **Architecture:** The Electron main process owns one SQLite database and repository layer. `better-sqlite3` provides synchronous transactions; JSON files are imported idempotently and kept until row/count checks pass. Statistics are queried from immutable event rows, history uses cursor pagination, and renderer receives only typed bounded results through the existing IPC bridge.
 
@@ -13,7 +13,7 @@
 ## Global Constraints
 
 - `userData` SQLite is the only read/write source for settings, kernel config, queue, history, statistics events, and migration metadata after successful migration.
-- Work history and statistics events have no automatic count or age retention limit; queue retains its existing 200-task limit.
+- Queue tasks, work history, and statistics events have no automatic count or age retention limit.
 - SQLite events contain no URL, Cookie, filename, author name, or media content; history keeps its existing allowed fields and Cookie stays main-process-only.
 - All IPC payload shapes are declared once in `types/ipc-contract.ts`; changes update all six contract locations and increment `CONTRACT_VERSION`.
 - Platform identifiers are normalized through `resolveKey()`; no duplicate platform list is introduced.
@@ -38,6 +38,7 @@
 - `electron/main/index.ts`, `electron/main/ipc.ts`, `electron/main/downloader.ts`: wire repositories and record lifecycle events.
 - `types/ipc-contract.ts`, `types/ipc.ts`, `electron/preload/index.ts`, `renderer/src/lib/bridge.ts`, `renderer/src/dev/mock-bridge.ts`: typed IPC contract and dev implementation.
 - `renderer/src/pages/HistoryPage.tsx`, `renderer/src/lib/history-works.ts`, `renderer/src/lib/local-limits.ts`: query-based filtering, grouped cursor pagination, selection and page-size behavior.
+- `renderer/src/pages/DownloadsPage.tsx`: queue pagination from SQLite; active tasks remain live while terminal tasks load by page.
 - `renderer/src/pages/StatsPage.tsx`, `renderer/src/lib/stats.ts`, `renderer/src/components/ui/`: unified date selector and range query presentation.
 - `docs/ARCHITECTURE.md`, `docs/UIUX-DESIGN.md`: persisted-data source, event model, migration, and statistics behavior.
 
@@ -61,9 +62,13 @@ interface StatsQueryResult {
 }
 interface HistoryCursor { createdAt: number; workKey: string }
 interface HistoryPage { rows: HistoryEntry[]; nextCursor: HistoryCursor | null }
+interface QueueCursor { createdAt: number; taskId: string }
+interface QueuePage { rows: DownloadTask[]; nextCursor: QueueCursor | null }
 ```
 
 `stats:get(range: StatsDateRange): Promise<StatsQueryResult>` replaces the no-argument stats snapshot read. `history:list(filter): Promise<HistoryPage>` accepts optional platform, date range, query, cursor, and a bounded page size (`1..100`). Main process groups matching entries by `groupId || id`, orders groups by latest `createdAt` descending then work key, selects at most the requested number of groups, and returns every underlying entry for those groups so galleries are never split. History selection/deletion commands operate on keys, not entire database payloads.
+
+`download:list(filter): Promise<QueuePage>` accepts optional status, platform, query, cursor, and page size (`1..100`), ordered by `createdAt DESC, taskId DESC`. Active tasks stay in the downloader's live map and overlay query rows; terminal tasks can be retired from the map after final persistence and are paged from SQLite. `queueRepository.loadRecoverable()` returns only nonterminal tasks needed for restart recovery. Queue storage has no count/age limit.
 
 ---
 
@@ -98,15 +103,15 @@ interface HistoryPage { rows: HistoryEntry[]; nextCursor: HistoryCursor | null }
 - Produces `migrateJsonStore(input: { userDataDir: string; db: DatabaseHandle }): MigrationReport`.
 - Reads current `config.json`, `queue.json`, `history.json`, and `stats.json`; writes rows plus source fingerprints and completion markers in one recoverable migration.
 
-- [ ] **Step 1: Write tests for full import, repeat-run idempotency, interrupt/retry, malformed source JSON, and preservation of the old JSON until verification succeeds.** Include settings/kernel values, 200 queue rows, 5000 history rows, and legacy aggregate stats.
+- [ ] **Step 1: Write tests for full import, repeat-run idempotency, interrupt/retry, malformed source JSON, and preservation of the old JSON until verification succeeds.** Include settings/kernel values, all queue rows in the source file, 5000 history rows, and legacy aggregate stats.
 - [ ] **Step 2: Run `pnpm exec vitest run tests/storage-migration.test.ts` and confirm the tests fail before migration support exists.**
-- [ ] **Step 3: Implement source parsers and normalized row import.** Preserve all currently present history rows without a cap; normalize platform keys and author/work keys with existing shared functions; preserve queue's 200-row semantics; store legacy totals separately from event-query totals.
+- [ ] **Step 3: Implement source parsers and normalized row import.** Preserve all currently present history and queue rows without a cap; normalize platform keys and author/work keys with existing shared functions; store legacy totals separately from event-query totals.
 - [ ] **Step 4: Make migration transactional and idempotent.** Insert source fingerprint/completion metadata with imported rows; on restart, resume or safely rerun without duplicates; never delete or overwrite JSON source files.
 - [ ] **Step 5: Add validation counts and redacted error reporting.** Compare source/target row counts and key aggregate values; errors must not contain Cookie values.
 - [ ] **Step 6: Run `pnpm exec vitest run tests/storage-migration.test.ts` and confirm all recovery cases pass.**
 - [ ] **Step 7: Commit as `feat(storage): migrate json state into sqlite`.**
 
-### Task 3: Move Settings, Kernel Config, and Queue to Repositories
+### Task 3: Move Settings and Kernel Config to Repositories
 
 **Files:**
 - Modify: `electron/main/repositories.ts`
@@ -119,16 +124,13 @@ interface HistoryPage { rows: HistoryEntry[]; nextCursor: HistoryCursor | null }
 - `settingsRepository.loadConfig(): { settings: AppSettings; kernel: Record<string, string> }`
 - `settingsRepository.saveConfig(config): void`
 - `settingsRepository.getKernelValue(key: string): string | undefined`
-- `queueRepository.loadQueue(): PersistedQueueTask[]`
-- `queueRepository.saveQueue(tasks: PersistedQueueTask[]): void`
-- `queueRepository.saveQueueThrottled(tasks: PersistedQueueTask[]): void`
 
-- [ ] **Step 1: Add tests for settings round-trip, kernel config read boundary, queue ordering/cap of 200, final-state persistence, and progress-write throttling.** Assert serialized/logged errors never include a seeded Cookie sentinel.
+- [ ] **Step 1: Add tests for settings round-trip and kernel config read boundary.** Assert serialized/logged errors never include a seeded Cookie sentinel.
 - [ ] **Step 2: Run `pnpm exec vitest run tests/storage-repositories.test.ts` and confirm failure before repository implementation.**
-- [ ] **Step 3: Implement repository methods with prepared statements and transactions.** Keep existing caller semantics so main-process consumers do not read JSON directly.
-- [ ] **Step 4: Wire startup config, IPC settings reads/writes, downloader queue restore/persist, and shutdown flush to repositories.** Remove JSON config/queue writes only after migration success.
+- [ ] **Step 3: Implement settings/kernel repository methods with prepared statements and transactions.**
+- [ ] **Step 4: Wire startup config and IPC settings reads/writes to repositories.** Remove JSON config writes only after migration success; queue remains on its existing runtime source until task 6.
 - [ ] **Step 5: Run `pnpm exec vitest run tests/storage-repositories.test.ts`.**
-- [ ] **Step 6: Commit as `refactor(storage): use sqlite for config and queue`.**
+- [ ] **Step 6: Commit as `refactor(storage): use sqlite for config`.**
 
 ### Task 4: Complete Statistical Event Ledger and Range Query
 
@@ -178,7 +180,30 @@ interface HistoryPage { rows: HistoryEntry[]; nextCursor: HistoryCursor | null }
 - [ ] **Step 7: Run focused pagination tests, `pnpm typecheck`, and the contract/boundary checks required by the changed IPC.**
 - [ ] **Step 8: Commit as `feat(history): paginate unlimited sqlite history`.**
 
-### Task 6: Global Preset and Custom Date Picker for Statistics
+### Task 6: Unlimited Queue Storage and Cursor Pagination
+
+**Files:**
+- Modify: `electron/main/repositories.ts`, `electron/main/ipc.ts`, `electron/main/downloader.ts`, `electron/main/index.ts`
+- Modify: `types/ipc-contract.ts`, `types/ipc.ts`, `electron/preload/index.ts`, `renderer/src/lib/bridge.ts`, `renderer/src/dev/mock-bridge.ts`
+- Modify: `renderer/src/pages/DownloadsPage.tsx`
+- Create: `tests/queue-pagination.test.ts`
+
+**Interfaces:**
+- `queueRepository.list(filter): { rows: PersistedQueueTask[]; nextCursor: QueueCursor | null }` filters status/platform/query and returns up to 100 ordered records plus a stable cursor.
+- `download:list(filter): Promise<QueuePage>` returns the same bounded page projected to public `DownloadTask` rows.
+- `queueRepository.loadRecoverable(): PersistedQueueTask[]` returns only queued/downloading/paused tasks needed for startup recovery.
+- All queue tasks stay in SQLite indefinitely; only active/recoverable tasks stay in downloader's mutable in-memory map.
+
+- [ ] **Step 1: Add tests for more than 2000 persisted tasks, cursor ordering, all status filters, active-task overlay, and restart recovery excluding terminal tasks.**
+- [ ] **Step 2: Run `pnpm exec vitest run tests/queue-pagination.test.ts` and confirm cases fail before paginated queue support exists.**
+- [ ] **Step 3: Implement queue repository pagination and stable cursor predicates using `createdAt DESC, taskId DESC`.**
+- [ ] **Step 4: Persist final task state before retiring terminal tasks from downloader memory; continue emitting existing terminal/progress events for active rows.**
+- [ ] **Step 5: Change `download:list` to accept bounded filters and return `QueuePage`; update all six IPC locations and increment `CONTRACT_VERSION`.**
+- [ ] **Step 6: Update DownloadsPage filtering/pagination to query main, merge live events for active tasks, and never load terminal task history all at once.**
+- [ ] **Step 7: Run `pnpm exec vitest run tests/queue-pagination.test.ts tests/contract.test.ts` and the relevant IPC boundary checks.**
+- [ ] **Step 8: Commit as `feat(queue): paginate unlimited sqlite tasks`.**
+
+### Task 7: Global Preset and Custom Date Picker for Statistics
 
 **Files:**
 - Modify: `renderer/src/pages/StatsPage.tsx`
@@ -200,7 +225,7 @@ interface HistoryPage { rows: HistoryEntry[]; nextCursor: HistoryCursor | null }
 - [ ] **Step 6: Run `pnpm exec vitest run tests/stats-date-range.test.ts`; visually inspect dev server at `127.0.0.1:5433` for picker, range state, and all six sections.**
 - [ ] **Step 7: Commit as `feat(stats): add global custom date range`.**
 
-### Task 7: Remove JSON Runtime Sources and Update Architecture Docs
+### Task 8: Remove JSON Runtime Sources and Update Architecture Docs
 
 **Files:**
 - Modify: `electron/main/store.ts`, `electron/main/index.ts`, `electron/main/database.ts`
@@ -208,7 +233,7 @@ interface HistoryPage { rows: HistoryEntry[]; nextCursor: HistoryCursor | null }
 - Modify: relevant storage/statistics tests and migration fixtures
 
 - [ ] **Step 1: Search all config/history/queue/stats JSON paths and prove runtime writes/reads now go through repositories.** Keep migration-only readers and recovery backups.
-- [ ] **Step 2: Update architecture docs with SQLite tables, no history/event retention cap, existing 200 queue cap, migration behavior, and filesystem exceptions.**
+- [ ] **Step 2: Update architecture docs with SQLite tables, no queue/history/event retention cap, migration behavior, and filesystem exceptions.**
 - [ ] **Step 3: Verify app startup migration failure is surfaced and source JSON remains intact; database closes after queue flush.**
 - [ ] **Step 4: Run `pnpm typecheck`, `pnpm lint`, relevant L1 tests, then the single L3 `pnpm test` closeout.**
 - [ ] **Step 5: Run `pnpm run verify:binaries:release` and packaged Windows smoke check because the native dependency changes packaging.**
@@ -217,6 +242,6 @@ interface HistoryPage { rows: HistoryEntry[]; nextCursor: HistoryCursor | null }
 
 ## Execution Notes
 
-- Tasks are sequential because repositories and IPC interfaces are shared; do not parallelize edits to the same storage/contract files.
+- Tasks are sequential because repositories, downloader state, and IPC interfaces are shared; do not parallelize edits to the same storage/contract files.
 - Keep every commit limited to the files listed for its task. The workspace already contains unrelated modified landing/UI files; do not include or revert them.
 - Follow `docs/TESTING.md` to choose the minimum test tier per task and run full L3/L4 only at closeout.
