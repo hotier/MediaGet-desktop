@@ -85,10 +85,9 @@ const PaletteIcon = forwardRef<PaletteIconHandle, PaletteIconProps>(
       }
     }, [controls]);
 
-    // stop = 0.15s 短补间归位：不播整段回程也不瞬跳（两次业主报障的定稿）；守卫在 tests/nav-icons.test.ts
-    const stopAnimation = useCallback(() => {
+    const stopAnimation = useCallback(async () => {
       isAnimatingRef.current = false;
-      controls.start("normal", { duration: 0.15, ease: "easeOut" });
+      await controls.start("normal");
     }, [controls]);
 
     useImperativeHandle(ref, () => {

@@ -7,7 +7,9 @@
  * 样式写在 utility 里，`styles.css` 只剩 Token 与少数无法 utility 化的规则（拖拽区、滚动条）。
  */
 import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Download, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { Download } from "lucide-react";
+import { PanelLeftCloseIcon } from "./components/ui/panel-left-close";
+import { PanelLeftOpenIcon } from "./components/ui/panel-left-open";
 import { useReducedMotion } from "motion/react";
 import { NAV_ITEMS, SETTINGS_GLYPHS, type AnimGlyphHandle, type NavKey } from "./lib/nav-icons";
 import { SIDEBAR_COLLAPSED_KEY, parseSidebarCollapsed, serializeSidebarCollapsed } from "./lib/sidebar-pref";
@@ -54,6 +56,9 @@ export default function App(): React.ReactElement {
   const workspaceInputRef = useRef<HTMLTextAreaElement | null>(null);
   /** 设置钮字形的受控触发（悬停驱动，AnimIcon 只管导航那种 active 布尔） */
   const settingsGlyphRef = useRef<AnimGlyphHandle>(null);
+  /** 品牌行收起/展开钮字形：同款悬停驱动（字形只占 16px，按钮 36px——不驱动的话悬停按钮边缘字形不动） */
+  const collapseGlyphRef = useRef<AnimGlyphHandle>(null);
+  const expandGlyphRef = useRef<AnimGlyphHandle>(null);
   const reducedMotion = useReducedMotion();
   /** 侧栏收起（规格 2026-10-20）：UI chrome，localStorage 自管，不入 AppSettings（不进脏计数/保存条） */
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
@@ -66,6 +71,20 @@ export default function App(): React.ReactElement {
       return next;
     });
   }, []);
+  /** 导航字形的句柄槽（手动起跑）：四枚 key 固定，useRef 存一组稳定的 ref 形对象 */
+  const navGlyphRefs = useRef<Record<NavKey, { current: AnimGlyphHandle | null }>>({
+    home: { current: null },
+    downloads: { current: null },
+    history: { current: null },
+    stats: { current: null },
+  });
+  /** 切页时同步起跑字形动画（点击/快捷键共用）：不等 React 卸旧页挂新页，事件帧就见动 */
+  const startNavGlyph = useCallback(
+    (key: NavKey) => {
+      if (!reducedMotion) navGlyphRefs.current[key].current?.startAnimation();
+    },
+    [reducedMotion],
+  );
 
   /** 队列行 → 历史页定位。稳定引用：DownloadsPage 的行是 memo 组件，内联箭头会让每行都被判「变了」 */
   const navToHistory = useCallback((target: "history", groupId: string) => {
@@ -169,6 +188,7 @@ export default function App(): React.ReactElement {
       if (e.key === "k") {
         e.preventDefault();
         // 唯一输入面在首页：不在首页先切页，等这一帧渲染完再聚焦
+        startNavGlyph("home");
         setPage("home");
         setTimeout(() => workspaceInputRef.current?.focus(), 0);
         return;
@@ -176,12 +196,13 @@ export default function App(): React.ReactElement {
       const idx = ["1", "2", "3", "4"].indexOf(e.key);
       if (idx >= 0) {
         e.preventDefault();
+        startNavGlyph(NAV_ITEMS[idx].key);
         setPage(NAV_ITEMS[idx].key);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [settingsMode]);
+  }, [settingsMode, startNavGlyph]);
 
   const running = tasks.filter((t) => t.status === "downloading" || t.status === "queued").length;
 
@@ -229,9 +250,13 @@ export default function App(): React.ReactElement {
                 onClick={toggleSidebar}
                 aria-label="展开导航栏"
                 aria-expanded={false}
+                onMouseEnter={() => {
+                  if (!reducedMotion) expandGlyphRef.current?.startAnimation();
+                }}
+                onMouseLeave={() => expandGlyphRef.current?.stopAnimation()}
                 className="no-drag mx-auto flex h-9 w-9 translate-y-2 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
               >
-                <PanelLeftOpen size={16} strokeWidth={1.5} />
+                <PanelLeftOpenIcon ref={expandGlyphRef} size={16} className="anim-icon" aria-hidden="true" />
               </button>
             ) : (
               <>
@@ -241,9 +266,13 @@ export default function App(): React.ReactElement {
                   onClick={toggleSidebar}
                   aria-label="收起导航栏"
                   aria-expanded={true}
+                  onMouseEnter={() => {
+                    if (!reducedMotion) collapseGlyphRef.current?.startAnimation();
+                  }}
+                  onMouseLeave={() => collapseGlyphRef.current?.stopAnimation()}
                   className="no-drag ms-auto flex h-9 w-9 translate-y-2 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 >
-                  <PanelLeftClose size={16} strokeWidth={1.5} />
+                  <PanelLeftCloseIcon ref={collapseGlyphRef} size={16} className="anim-icon" aria-hidden="true" />
                 </button>
               </>
             )}
@@ -253,7 +282,10 @@ export default function App(): React.ReactElement {
             const btn = (
               <button
                 type="button"
-                onClick={() => setPage(it.key)}
+                onClick={() => {
+                  startNavGlyph(it.key);
+                  setPage(it.key);
+                }}
                 aria-current={page === it.key ? "page" : undefined}
                 aria-label={it.label}
                 className={cn(
@@ -263,8 +295,14 @@ export default function App(): React.ReactElement {
                   sidebarCollapsed ? "w-9 justify-center px-0" : "px-3",
                 )}
               >
-                {/* 切换那一下的入场动效由入仓组件自带（成为当前页时 AnimIcon 唤起，见 lib/nav-icons.ts） */}
-                <AnimIcon Icon={it.Icon} active={page === it.key} />
+                {/* 切换那一下的入场动效：起跑在点击/快捷键事件里同步发生（startNavGlyph），
+                    AnimIcon 只管离场复位——提交新页再起跑会吃进整页挂载的延迟 */}
+                <AnimIcon
+                  Icon={it.Icon}
+                  active={page === it.key}
+                  manualStart
+                  glyphRef={navGlyphRefs.current[it.key]}
+                />
                 {!sidebarCollapsed && <span>{it.label}</span>}
                 {it.key === "downloads" && running > 0 && !sidebarCollapsed && (
                   <Tooltip>

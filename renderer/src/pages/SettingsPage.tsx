@@ -594,17 +594,12 @@ export default function SettingsPage({
       aria-label="设置导航"
       className="drag-region flex w-(--w-side) shrink-0 flex-col gap-1 border-r border-border bg-panel pb-3 ps-2 pe-2 max-[860px]:hidden"
     >
-      {/* 标题行 = 顶栏带（与主外壳的品牌行同款同高），mb-3 + gap-1 = 16px 让首个动作行落在 56px，与右侧内容对齐 */}
-      <div className="mb-3 flex h-(--wco-h) items-center px-2 text-[15px] font-semibold tracking-wide">设置</div>
-      <button
-        type="button"
-        onClick={requestExit}
-        className="no-drag flex h-9 items-center gap-2.5 rounded-md px-3 text-sm text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
-      >
-        <ArrowLeft size={16} strokeWidth={1.5} />
-        <span>返回</span>
-        <span className="ms-auto text-[11px] text-faint font-mono">Esc</span>
-      </button>
+      {/* 标题行 = 顶栏带（与主外壳的品牌行同款同高）：标题落点与主外壳字标一致——带中心再下移 8px
+          （translate-y-2）=「页面顶」与「导航栏顶（56px 线）」的中点，px-3 与导航项左缘对齐。
+          mb-3 + gap-1 = 16px 让首个动作行仍落在 56px，与右侧内容对齐 */}
+      <div className="mb-3 flex h-(--wco-h) items-center px-3 text-[15px] font-semibold tracking-wide">
+        <span className="translate-y-2">设置</span>
+      </div>
 
       {CATEGORIES.map((cat) => {
         const active = cat.id === sel;
@@ -629,6 +624,19 @@ export default function SettingsPage({
           </button>
         );
       })}
+
+      {/* 返回落底（与主外壳底部「设置」按钮同款落位）：mt-auto 压到侧栏左下角 */}
+      <div className="mt-auto">
+        <button
+          type="button"
+          onClick={requestExit}
+          className="no-drag flex h-9 w-full items-center gap-2.5 rounded-md px-3 text-sm text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        >
+          <ArrowLeft size={16} strokeWidth={1.5} />
+          <span>返回</span>
+          <span className="ms-auto text-[11px] text-faint font-mono">Esc</span>
+        </button>
+      </div>
     </nav>
   );
 
@@ -1174,21 +1182,21 @@ export default function SettingsPage({
             </div>
 
             <ItemCard title="更新策略" desc="打包发布态生效；开发环境无发布通道，点「检查更新」会提示「当前运行环境没有更新源」，属预期。开关保存后立即生效（启动检测自下次启动读取）。">
-              <Row label="启动时自动检测更新" hint="打开应用即静默检查一次 GitHub Releases，不弹窗、不打断；失败留在错误态，可在下方「手动检测更新」重试。" end>
+              <Row label="启动时自动检测更新" end>
                 <Switch
                   aria-label="启动时自动检测更新"
                   checked={draft.updateOnStartup}
                   onCheckedChange={(v) => setDraft({ ...draft, updateOnStartup: v })}
                 />
               </Row>
-              <Row label="静默下载" hint="开=检测到新版本后自动下载更新包；关（默认）需在下方「手动检测更新」点「下载更新」，不偷跑家庭带宽。" end>
+              <Row label="静默下载" end>
                 <Switch
                   aria-label="静默下载"
                   checked={draft.updateAutoDownload}
                   onCheckedChange={(v) => setDraft({ ...draft, updateAutoDownload: v })}
                 />
               </Row>
-              <Row label="手动检测更新" hint="应用不会自动安装：下载完成后点「立即重启」确认安装（setup 包无静默安装，不随退出进行）。" end>
+              <Row label="检查更新" end>
                 {update ? (
                   <UpdateActions state={update} onState={onUpdateState} />
                 ) : (
@@ -1266,7 +1274,7 @@ export default function SettingsPage({
                   <span>FFmpeg · LGPL-2.1+</span>
                 </div>
               </Row>
-              <Row label="数据边界" hint="设置 / 历史 / 队列 / Cookie 全部只存本机 userData；解析与下载直连平台，不经过任何第三方服务器。" end>
+              <Row label="数据边界" end>
                 <span className="pt-2 text-sm">全部本机存储</span>
               </Row>
             </ItemCard>

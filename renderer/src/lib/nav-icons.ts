@@ -16,16 +16,12 @@
  *   样式层 `.anim-icon svg` 规则把它压回全站笔重 1.5；尺寸走 `size`（缺省 28，这里传 16）；
  * - `forwardRef` 出 `{ startAnimation, stopAnimation }`；**挂上 ref 后组件自己不再响应 hover**，
  *   触发权在我方（`components/AnimIcon`：成为当前项那一下 start、离开那一下 stop）。
- *   对快照有受控修正，`tests/nav-icons.test.ts` 有守卫防重拉覆盖：
- *   ① **stop = 0.15s 短补间归位**（`controls.start("normal", { duration: 0.15, ease: "easeOut" })`）——
- *   归位契约经三稿收敛：registry 原版 `start("normal")` 是整段回放，History 时针可见回转
- *   一整圈（业主 2026-10-16 报「点其他图标时 history 仍有一段动画」）；v2 瞬停（stop + set）
- *   又生硬（同日再报「history 归位更生硬」）；v3 短补间——不播整段回程，也不瞬跳；
- *   ② History 时针是短补间的唯一例外（-360° 整圈回转 ≡ 0°，任何补间都重演整圈回转）：
- *   独立一副 controls 瞬时写回，指针与分针走短补间；
- *   ③ cpu 快照的 normal 缺 scaleY/scaleX：归位停在引脚伸缩半途会把引脚冻结在拉伸态，补键回静止；
- *   ④ 复位本身不可省：单值变体（History 的指针、Download 的箭头）落定后不回原位，
+ *   动效一律保持 registry 默认（业主指令 2026-10-20「恢复默认动画，不特别配置了」，
+ *   撤销 2026-10-16 三稿收敛的 0.15s 短补间与 History 时针例外——那两轮报障记录在
+ *   docs/UIUX-HANDOFF.md，重新拉取即默认态，`tests/nav-icons.test.ts` 守卫锁定现状）；
+ *   但复位本身不可省：单值变体（History 的指针、Download 的箭头）落定后不回原位，
  *   不复位则二次激活时 start 的目标 == 当前值，动效静默失效（本机实测坐实）。
+ *   AnimIcon 的离开复位正是干这个的。
  *
  * 两张表：`NAV_ITEMS`（侧栏四页，顺序 = ⌃1–4 映射）与 `SETTINGS_GLYPHS`（设置钮 + 分类）。
  * key、文案、组件写在同一张表里，漏一行是编译错误而不是「少一颗图标」。

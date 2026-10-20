@@ -10,12 +10,9 @@
  *    设置页时定位到的那个图标没有动画」）。
  * 2. **离开时必须 stopAnimation() 复位**——这不是可选的润色：History 的指针、Download
  *    的箭头是单值变体，落定后不回原位；不复位则二次激活时 start 的目标 == 当前值，
- *    动效静默失效（本机实测坐实）。库自身的 hover 语义同样是 leave 时复位。
- *    复位形态经三稿收敛：registry 原版的 `start("normal")` 是整段回放（History 时针
- *    可见回转一整圈，业主报「仍有一段动画」）；v2 的瞬停（stop + set）又生硬（业主再报
- *    「history 归位更生硬」）；v3 定稿 = 0.15s 短补间归位，不播整段回程也不瞬跳
- *    （History 的时针例外，独立一副 controls 瞬时写回）。tests/nav-icons.test.ts 有
- *    守卫防 registry 重新拉取把修复覆盖回原版。
+ *    动效静默失效（本机实测坐实）。归位/入场的节奏一律保持 registry 默认
+ *    （业主指令 2026-10-20「恢复默认动画，不特别配置了」，撤销 2026-10-16 的
+ *    0.15s 短补间与 History 时针例外），复位由库自身的默认归位完成。
  *
  * 系统「减弱动态效果」开着则整个跳过——动效是 JS 补间，styles.css 那条 CSS
  * reduced-motion 规则管不到它，只能在这里拦。
@@ -31,22 +28,35 @@ export function AnimIcon({
   Icon,
   active,
   animateOnMount = false,
+  manualStart = false,
+  glyphRef,
 }: {
   Icon: AnimGlyph;
   active: boolean;
   animateOnMount?: boolean;
+  /** 起跑权交给调用方（业主 2026-10-20：点击那一下就要见动画，不等 React 提交完新页的 effect 晚车）。
+   *  true 时本组件不再因 active 翻转自动起跑，只保留离场复位；调用方经 glyphRef 拿句柄在事件里同步 start。 */
+  manualStart?: boolean;
+  /** 外部句柄槽：传了就与内部 ref 共用这一格，调用方在自己的事件回调里直取直放 */
+  glyphRef?: { current: AnimGlyphHandle | null };
 }): React.ReactElement {
-  const ref = useRef<AnimGlyphHandle>(null);
+  const localRef = useRef<AnimGlyphHandle>(null);
+  const ref = glyphRef ?? localRef;
   const reduced = useReducedMotion();
   // animateOnMount 时起点置 false：挂载后首个 effect 即视作「刚切进来」，active 的那枚播一次；
   // 非当前项（active=false）不受影响，之后的切换仍走正常的差分逻辑
   const wasActive = useRef(animateOnMount ? false : active);
   useEffect(() => {
-    if (!reduced) {
-      if (active && !wasActive.current) ref.current?.startAnimation();
-      else if (!active && wasActive.current) ref.current?.stopAnimation();
+    if (reduced) {
+      wasActive.current = active;
+      return;
+    }
+    if (active && !wasActive.current) {
+      if (!manualStart) ref.current?.startAnimation();
+    } else if (!active && wasActive.current) {
+      ref.current?.stopAnimation();
     }
     wasActive.current = active;
-  }, [active, reduced]);
+  }, [active, reduced, manualStart, ref]);
   return <Icon ref={ref} size={16} className="anim-icon" aria-hidden="true" />;
 }

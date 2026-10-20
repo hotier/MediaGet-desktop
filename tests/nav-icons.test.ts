@@ -247,17 +247,14 @@ describe("设置面字形：设置钮与设置页分类", () => {
 });
 
 /**
- * 受控偏差守卫：九枚 vendored 组件的 stopAnimation 必须保持「快速平滑归位」。
- *
- * 契约经三稿收敛（业主 2026-10-16 两次真窗口报障）：
- * - 原版 `controls.start("normal")` 带动画归位 → History 时针 -360°→0° 可见回转一整圈，
- *   业主报「点其他图标时 history 仍有一段动画」；
- * - v2 瞬停（stop + set）修掉回转，但字形瞬跳，业主报「history 归位更生硬」；
- * - v3 定稿 = 0.15s 短补间归位：不播整段回程，也不瞬跳。唯一例外是 History 的时针
- *   （-360° 整圈回转 ≡ 0°，任何补间都重演整圈回转）——独立一副 controls 瞬时写回。
- * 重新 `pnpm dlx shadcn add` 拉取会把修复覆盖回原版——这组断言就是那天的红叉。
+ * 默认态守卫（业主指令 2026-10-20「恢复默认动画，不特别配置了」）：
+ * 九枚 vendored 组件保持 registry 原版动效——stop 就是 `controls.start("normal")`，
+ * 不再保留 2026-10-16 三稿收敛的 0.15s 短补间、History 时针例外与 cpu 补键。
+ * （历史：那套调校源于业主两次真窗口报障，2026-10-20 业主改判恢复默认，
+ * 当天以 `pnpm dlx shadcn add … --overwrite` 重拉九枚复原；勘误记录在 docs/UIUX-HANDOFF.md。）
+ * 反向锁定：哪天有人再想手调动效，先来这里改断言并重新登记，别悄悄改。
  */
-describe("vendored 受控停：九枚 stopAnimation 保持快速平滑归位", () => {
+describe("vendored 默认态：九枚保持 registry 原版动效", () => {
   const GLYPHS = [
     "badge-percent",
     "chart-line",
@@ -269,16 +266,15 @@ describe("vendored 受控停：九枚 stopAnimation 保持快速平滑归位", (
     "settings",
     "sliders-horizontal",
   ];
-  it.each(GLYPHS)("%s.tsx 归位为 0.15s 短补间，无整段回放 / 瞬停残留", (name) => {
+  it.each(GLYPHS)("%s.tsx 归位为 registry 默认（start(\"normal\")），无手调残留", (name) => {
     const src = readFileSync(join(ROOT, "renderer", "src", "components", "ui", `${name}.tsx`), "utf8");
-    expect(src, `${name} 缺 0.15s 短补间归位`).toMatch(/controls\.start\("normal", \{ duration: 0\.15, ease: "easeOut" \}\)/);
-    expect(src, `${name} 的 stop 退回整段回放（原版 start("normal")）`).not.toMatch(/controls\.start\("normal"\)/);
-    expect(src, `${name} 的 stop 退回瞬停（v2 的 controls.set）`).not.toMatch(/controls\.set\("normal"\)/);
+    expect(src, `${name} 缺 registry 默认归位 start("normal")`).toMatch(/controls\.start\("normal"\)/);
+    expect(src, `${name} 残留 0.15s 短补间手调`).not.toMatch(/duration: 0\.15/);
+    expect(src, `${name} 残留瞬停手调（controls.set）`).not.toMatch(/controls\.set\(/);
   });
 
-  it("history.tsx 时针例外：独立一副 controls 瞬时写回（-360°≡0°，补间 = 整圈回转）", () => {
+  it("history.tsx 无时针例外：不再有独立副 controls", () => {
     const src = readFileSync(join(ROOT, "renderer", "src", "components", "ui", "history.tsx"), "utf8");
-    expect(src, "缺 handControls.stop()").toMatch(/handControls\.stop\(\)/);
-    expect(src, "缺 handControls.set(\"normal\")").toMatch(/handControls\.set\("normal"\)/);
+    expect(src, "时针例外残留（handControls）").not.toMatch(/handControls/);
   });
 });

@@ -25,8 +25,6 @@ const TRANSITION: Transition = {
 const Y_VARIANTS: Variants = {
   normal: {
     scale: 1,
-    // 快照的 normal 缺 scaleY：归位若停在引脚伸缩半途，会把引脚冻结在拉伸态（v3 补上）
-    scaleY: 1,
     rotate: 0,
     opacity: 1,
   },
@@ -38,8 +36,6 @@ const Y_VARIANTS: Variants = {
 const X_VARIANTS: Variants = {
   normal: {
     scale: 1,
-    // 同 Y_VARIANTS：归位契约要求引脚缩回静止形态
-    scaleX: 1,
     rotate: 0,
     opacity: 1,
   },
@@ -59,9 +55,7 @@ const CpuIcon = forwardRef<CpuIconHandle, CpuIconProps>(
 
       return {
         startAnimation: () => controls.start("animate"),
-        // stop = 0.15s 短补间归位：不播整段回程也不瞬跳（两次业主报障的定稿）；守卫在 tests/nav-icons.test.ts
-        stopAnimation: () =>
-          controls.start("normal", { duration: 0.15, ease: "easeOut" }),
+        stopAnimation: () => controls.start("normal"),
       };
     });
 
@@ -81,7 +75,7 @@ const CpuIcon = forwardRef<CpuIconHandle, CpuIconProps>(
         if (isControlledRef.current) {
           onMouseLeave?.(e);
         } else {
-          controls.start("normal", { duration: 0.15, ease: "easeOut" });
+          controls.start("normal");
         }
       },
       [controls, onMouseLeave]

@@ -70,25 +70,13 @@ const MINUTE_HAND_VARIANTS: Variants = {
 const HistoryIcon = forwardRef<HistoryIconHandle, HistoryIconProps>(
   ({ onMouseEnter, onMouseLeave, className, size = 28, ...props }, ref) => {
     const controls = useAnimation();
-    // 时针单独一副：-360° 整圈回转 ≡ 0°，任何补间归位都会重演一次可见的整圈回转
-    //（业主首轮报障的东西），所以时针只许瞬时写回；指针与分针走下面 0.15s 的短补间。
-    const handControls = useAnimation();
     const isControlledRef = useRef(false);
 
     useImperativeHandle(ref, () => {
       isControlledRef.current = true;
       return {
-        startAnimation: () => {
-          controls.start("animate");
-          handControls.start("animate");
-        },
-        // stop = 快速平滑归位：不播整段回程（首轮报障「仍有一段动画」），也不瞬跳
-        //（次轮报障「更生硬」）；守卫在 tests/nav-icons.test.ts
-        stopAnimation: () => {
-          handControls.stop();
-          handControls.set("normal");
-          controls.start("normal", { duration: 0.15, ease: "easeOut" });
-        },
+        startAnimation: () => controls.start("animate"),
+        stopAnimation: () => controls.start("normal"),
       };
     });
 
@@ -98,10 +86,9 @@ const HistoryIcon = forwardRef<HistoryIconHandle, HistoryIconProps>(
           onMouseEnter?.(e);
         } else {
           controls.start("animate");
-          handControls.start("animate");
         }
       },
-      [controls, handControls, onMouseEnter]
+      [controls, onMouseEnter]
     );
 
     const handleMouseLeave = useCallback(
@@ -109,12 +96,10 @@ const HistoryIcon = forwardRef<HistoryIconHandle, HistoryIconProps>(
         if (isControlledRef.current) {
           onMouseLeave?.(e);
         } else {
-          handControls.stop();
-          handControls.set("normal");
-          controls.start("normal", { duration: 0.15, ease: "easeOut" });
+          controls.start("normal");
         }
       },
-      [controls, handControls, onMouseLeave]
+      [controls, onMouseLeave]
     );
 
     return (
@@ -144,7 +129,7 @@ const HistoryIcon = forwardRef<HistoryIconHandle, HistoryIconProps>(
             <path d="M3 3v5h5" />
           </motion.g>
           <motion.line
-            animate={handControls}
+            animate={controls}
             initial="normal"
             transition={HAND_TRANSITION}
             variants={HAND_VARIANTS}

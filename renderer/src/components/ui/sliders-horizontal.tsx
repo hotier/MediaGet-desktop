@@ -35,9 +35,7 @@ const SlidersHorizontalIcon = forwardRef<
 
     return {
       startAnimation: () => controls.start("animate"),
-      // stop = 0.15s 短补间归位：不播整段回程也不瞬跳（两次业主报障的定稿）；守卫在 tests/nav-icons.test.ts
-      stopAnimation: () =>
-        controls.start("normal", { duration: 0.15, ease: "easeOut" }),
+      stopAnimation: () => controls.start("normal"),
     };
   });
 
@@ -57,7 +55,7 @@ const SlidersHorizontalIcon = forwardRef<
       if (isControlledRef.current) {
         onMouseLeave?.(e);
       } else {
-        controls.start("normal", { duration: 0.15, ease: "easeOut" });
+        controls.start("normal");
       }
     },
     [controls, onMouseLeave]
