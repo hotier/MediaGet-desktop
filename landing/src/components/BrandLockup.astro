@@ -1,0 +1,32 @@
+---
+/**
+ * MediaGet 字标（落地页版）：一枚几何 M 符号 + 真实文本「MediaGet」。
+ *
+ * 现状：**只剩页脚在用**。导航与界面模拟窗顶带改成同一张位图锁合（./brand/logo-lockup-on-*.png），
+ * 业主 2026-10-20「导航栏使用和 mock 界面一样的 logo」——两处必须是同一个资产，不能再一枚是
+ * 重画的 SVG、一枚是母版位图。
+ *
+ * 为什么这个组件仍保留：
+ *  1. 页脚那处字号小、又在页面底色上，文本版在任意 DPI 下都是同一形状，不需要两份墨色位图。
+ *  2. 字标必须能被读屏、能被搜——文本 + viewBox 仍然是最稳的实现；导航那份位图另配了 sr-only 名字。
+ *
+ * 为什么符号与母版同构（M + 下载箭头）：favicon / 托盘 / 桌面图标用的是 `brand/` 母版那条管线，
+ * 页面上再来一枚形状不同的 M 就是两个符号。这里按母版的结构在 25×24 的网格上重画了一遍：
+ * 两条竖腿（笔画宽 4 = 高 16.7%，与母版实测的比例同档）、中间一道折、右腿下接实心箭头。
+ */
+interface Props {
+  /** foot = 页脚 15px（nav / hero 两档随导航改位图后退场） */
+  size?: "foot";
+  class?: string;
+}
+
+const { size = "nav", class: className } = Astro.props;
+---
+
+<span class:list={["lockup", className]} data-size={size}>
+  <svg class="lockup-mark" viewBox="0 0 25 24" aria-hidden="true" focusable="false">
+    <path class="lockup-stroke" d="M2 18V2l9 11 9-11v16" />
+    <path class="lockup-head" d="M15 18h10L20 24Z" />
+  </svg>
+  <span class="lockup-word"><span class="lockup-media">Media</span><span class="lockup-get">Get</span></span>
+</span>

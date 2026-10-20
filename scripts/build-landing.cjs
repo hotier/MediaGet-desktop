@@ -21,8 +21,9 @@
  *  node scripts/build-landing.cjs --online   # 追加拉取 GitHub latest release 的资产与日期
  *  node scripts/build-landing.cjs --strict   # 与 --online 搭配：拉取失败时非零退出（CI 由 CI=true 自动获得）
  *
- * 同时把 renderer/public/logos 的 SVG 镜像到 landing/public/logos：品牌图标只有一个真源
- * （注册表 + 应用资源目录），落地页拿到的那份是生成物，已进 .gitignore。
+ * 同时把 renderer/public 的两份资产镜像过来（落地页拿到的是生成物，已进 .gitignore）：
+ *   logos/ → landing/public/logos  平台图标，真源 = 注册表 + 应用资源目录
+ *   brand/ → landing/public/brand  应用字标与页签图标，真源 = brand/ 母版 + scripts/make-icons.cjs
  *
  * landing 的 `pnpm --filter mediaget-landing build` 已把本脚本串在 astro build 之前。
  *
@@ -40,6 +41,8 @@ const ROOT = path.join(__dirname, "..");
 const VERSION_FILE = path.join(ROOT, "landing", "version.json");
 const LOGO_SRC = path.join(ROOT, "renderer", "public", "logos");
 const LOGO_DEST = path.join(ROOT, "landing", "public", "logos");
+const BRAND_SRC = path.join(ROOT, "renderer", "public", "brand");
+const BRAND_DEST = path.join(ROOT, "landing", "public", "brand");
 const REPO_SLUG = "hotier/mediaGet-desktop";
 
 const online = process.argv.includes("--online");
@@ -62,18 +65,20 @@ function readPackageVersion() {
 }
 
 /**
- * 品牌图标镜像：整目录复制，不做筛选。
+ * 品牌资产镜像：整目录复制，不做筛选。
  * tests/platform-registry.test.ts 已经保证 renderer 那侧「登记的都有、有的都登记」，
  * 所以源目录干净；这里再挑一次只是把同一个判断写第二遍。
+ * 字标与 favicon 同理：`renderer/public/brand` 是唯一真源（更上游是 brand/ 母版 + make-icons.cjs），
+ * 落地页拿到的那份是生成物，已进 .gitignore。
  */
-function syncLogos() {
-  if (!fs.existsSync(LOGO_SRC)) fail(`图标源目录不存在：${path.relative(ROOT, LOGO_SRC)}`);
-  const files = fs.readdirSync(LOGO_SRC).filter((name) => name.endsWith(".svg"));
-  if (files.length === 0) fail("renderer/public/logos 里一个 SVG 都没有");
-  fs.rmSync(LOGO_DEST, { recursive: true, force: true });
-  fs.mkdirSync(LOGO_DEST, { recursive: true });
-  files.forEach((name) => fs.copyFileSync(path.join(LOGO_SRC, name), path.join(LOGO_DEST, name)));
-  log(`已镜像 ${files.length} 枚品牌图标 → landing/public/logos`);
+function syncDir(src, dest) {
+  if (!fs.existsSync(src)) fail(`资产源目录不存在：${path.relative(ROOT, src)}`);
+  const files = fs.readdirSync(src);
+  if (files.length === 0) fail(`${path.relative(ROOT, src)} 是空的（先跑 node scripts/make-icons.cjs）`);
+  fs.rmSync(dest, { recursive: true, force: true });
+  fs.mkdirSync(dest, { recursive: true });
+  files.forEach((name) => fs.copyFileSync(path.join(src, name), path.join(dest, name)));
+  log(`已镜像 ${files.length} 个资产 → ${path.relative(ROOT, dest)}`);
 }
 
 function formatSize(bytes) {
@@ -143,7 +148,8 @@ function fromLocal() {
 }
 
 async function main() {
-  syncLogos();
+  syncDir(LOGO_SRC, LOGO_DEST);
+  syncDir(BRAND_SRC, BRAND_DEST);
 
   let info = fromLocal();
   if (online) {

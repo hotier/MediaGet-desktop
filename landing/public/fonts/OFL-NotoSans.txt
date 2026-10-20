@@ -1,0 +1,136 @@
+正文两段字体的授权与来源记录（OFL 1.1）
+
+本次随包的是两份**子集**（subset），不是原始发行文件：
+
+1. noto-sans-latin-body.woff2
+   家族：Noto Sans（latin 子集，含数字与常用符号 U+2000-206F）
+   字重：可变 400-600（取自 Google Fonts 的 latin 分包）
+   版权：Copyright 2022 The Noto Project Authors
+         https://github.com/notofonts/latin-greek-cyrillic
+   来源：https://fonts.gstatic.com/s/notosans/v42/o-0bIpQlx3QUlC5A4PNB6Ryti20_6n1iPHjc5a7duw.woff2
+   改动：无（Google Fonts 的 latin 分包原样取用，只换成本地文件名）
+
+2. noto-sans-sc-body.woff2
+   家族：Noto Sans SC，即思源黑体（Source Han Sans）的 Google 版本
+   字重：可变 100-900（原为 Version 2.004 可变字重 TTF）
+   来源：https://github.com/notofonts/noto-cjk  Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf
+   改动：用 fontTools 按落地页首页实际用到的 429 个汉字与全角标点裁掉其余码位，
+         字重轴保留、字形轮廓未改。覆盖了哪些字，逐字写在同目录
+         noto-sans-sc-body.chars.txt（tests/landing-fonts.test.ts 拿它跟源码对账）。
+
+3. noto-sans-sc-doc.woff2
+   家族：同上，同一个源文件裁出的第二份子集（CSS 里另起名 "Noto Sans SC Doc"）
+   字重：可变 100-900
+   改动：按三篇文档页（用户协议 / 隐私政策 / 权利通知）与共用页脚的 502 个汉字及全角标点裁成。
+         与第 2 份分开是省钱而不是洁癖：条款用字与首页宣传语几乎不重叠，合并成一份
+         会让每个只读首页的人多下载几十 KB 永远用不到的字。清单在同目录
+         noto-sans-sc-doc.chars.txt，守卫按「这份文件属于哪一页」分别对账。
+
+三份都是 OFL 1.1。OFL 允许修改与再分发，但要求：随附本授权文本、保留版权声明、
+修改版不得使用保留字体名（Reserved Font Name）。Noto Sans 与 Noto Sans SC 均无
+保留字体名（Adobe 那份 Source Han Sans 的保留名是 "Source"，本仓未使用该名称）。
+落地页里 CSS 的 font-family 名与文件里的 family name 一致，未做重命名改动。
+
+改文案后若重新裁子集，请照上面第 2、3 条的来源重做，并同步更新本文件的字数说明与
+对应的 .chars.txt。命令形如（两份只差 --text-file 与输出名）：
+
+  python -m fontTools.subset NotoSansSC-VF.ttf --text-file=<页面用字清单> \\
+    --layout-features=kern,liga,vert,vrt2,locl --flavor=woff2 --no-hinting \\
+    --desubroutinize --output-file=noto-sans-sc-body.woff2
+
+以下是 SIL Open Font License 1.1 全文：
+
+Copyright 2018 The Noto Project Authors (github.com/googlei18n/noto-fonts)
+
+This Font Software is licensed under the SIL Open Font License,
+Version 1.1.
+
+This license is copied below, and is also available with a FAQ at:
+http://scripts.sil.org/OFL
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font
+creation efforts of academic and linguistic communities, and to
+provide a free and open framework in which fonts may be shared and
+improved in partnership with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded,
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply to
+any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software
+components as distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to,
+deleting, or substituting -- in part or in whole -- any of the
+components of the Original Version, by changing formats or by porting
+the Font Software to a new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed,
+modify, redistribute, and sell modified and unmodified copies of the
+Font Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components, in
+Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the
+corresponding Copyright Holder. This restriction only applies to the
+primary font name as presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created using
+the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.

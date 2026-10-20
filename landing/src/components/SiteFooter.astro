@@ -1,0 +1,66 @@
+---
+/**
+ * 页脚：首页与三篇文档页共用这一份。
+ *
+ * 为什么是一个组件而不是两段 markup：页脚里有 4 个入口列和一段免责，抄第二份之后
+ * 「加了条款页却只给首页加入口」这种错不会报错，只会让某一页的页脚慢慢变成旧版。
+ *
+ * 唯一的差异是锚点归属：首页的「平台支持 / 常见问题 / 回到顶部」指向本页的 #id，
+ * 文档页上这些 id 并不存在，必须回到首页去。所以调用方传 hrefBase ——
+ * 首页传空串（锚点就在本文档），文档页传 "./index.html"。
+ * 漏了这个前缀就是三列死链，而页面看起来完全正常。
+ */
+import BrandLockup from "./BrandLockup.astro";
+import release from "../../version.json";
+
+interface Props {
+  /** 站内锚点的前缀：首页 ""，文档页 "./index.html" */
+  hrefBase?: string;
+}
+
+const { hrefBase = "" } = Astro.props;
+
+const repo = release.repo || "hotier/mediaGet-desktop";
+const releasesLatest = `https://github.com/${repo}/releases/latest`;
+const kernelRepo = "https://github.com/hotier/mediaGet";
+
+const at = (hash: string) => `${hrefBase}${hash}`;
+/* 文档页上没有「顶部」这个概念（页面短、又没有吸顶导航），那一格改说「返回首页」 */
+const homeHref = hrefBase || "#top";
+const homeLabel = hrefBase ? "返回首页" : "回到顶部";
+---
+
+<!-- 导航不吸顶，所以 GitHub、发布版本、解析内核这些入口在页脚再给一遍 -->
+<footer class="footer">
+  <div class="shell">
+    <div class="footer-grid">
+      <div class="footer-brand">
+        <a class="brand" href={homeHref}><BrandLockup size="foot" /></a>
+        <p>© 2026 MediaGet · MIT License</p>
+      </div>
+      <nav aria-label="资源">
+        <h4>资源</h4>
+        <a href={`https://github.com/${repo}`} target="_blank" rel="noopener">GitHub</a>
+        <a href={releasesLatest} target="_blank" rel="noopener">发布版本</a>
+        <a href={kernelRepo} target="_blank" rel="noopener">解析内核</a>
+      </nav>
+      <nav aria-label="页面">
+        <h4>页面</h4>
+        <a href={at("#platforms")}>平台支持</a>
+        <a href={at("#faq")}>常见问题</a>
+        <a href={homeHref}>{homeLabel}</a>
+      </nav>
+      <!-- 三篇文档页的入口只在页脚出现：导航是产品门面，条款不该占一格。
+           链接写成 ./xxx.html，与 build.format="file" 的平铺产物、双击打开与 Pages 子路径都对得上。 -->
+      <nav aria-label="条款与政策">
+        <h4>条款</h4>
+        <a href="./terms.html">用户协议</a>
+        <a href="./privacy.html">隐私政策</a>
+        <a href="./notice.html">权利通知</a>
+      </nav>
+    </div>
+    <p class="footer-legal">
+      本地工具，不托管、不分发任何内容。请仅下载你有权保存的作品，并遵守各平台服务条款与当地法律。本项目与所列平台无隶属关系。
+    </p>
+  </div>
+</footer>

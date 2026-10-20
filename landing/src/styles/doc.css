@@ -1,0 +1,110 @@
+/**
+ * 文档页（用户协议 / 隐私政策 / 权利通知）的样式。
+ *
+ * 只做两件事，不重画一套设计语言：
+ *   1. 给这三篇单独挂一份思源子集——协议用字与首页宣传语几乎不重叠，混在一起会让首页
+ *      白白多下载几十 KB，所以这里用独立的 family 名（同名 face 只会有一份生效）；
+ *   2. 正文排版（标题层级、行宽、列表），只有这些是文档页独有的。
+ *
+ * 页面骨架（配色 token、页脚）全部来自 global.css：文档页没有顶栏，页脚与首页共用
+ * components/SiteFooter.astro，所以这里不再有导航胶囊那套样式。
+ *
+ * 为什么不把这份直接并进 global.css：首页不该为「一年看一次的三页」付字体与样式的钱。
+ * 代价是三页会连带下载首页那些 hero / mock 样式——实测整份 CSS 29 KB（gzip 6.9 KB），
+ * 其中文档排版本身只占 2 KB 出头，其余是 @import 进来的全局与窗体样式。反过来拆成两套
+ * tokens 会让墨色分两处维护，那才是更难还的账，所以宁可多下这 27 KB。
+ */
+@import "./global.css";
+
+@font-face {
+  font-family: "Noto Sans SC Doc";
+  src: url("../fonts/noto-sans-sc-doc.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+body.doc {
+  --font-body: "Noto Sans", "Noto Sans SC Doc", "Segoe UI Variable Text", "Segoe UI",
+    "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  color-scheme: light;
+  font: 400 16px/1.85 var(--font-body);
+}
+
+/* —— 正文：单栏、46em 行宽（中文一行约 46 字，比首页的段落更窄，读条款不串行） ——
+   列宽写成 `46em + 两侧留白`：全局是 border-box，直接写 46em 会把这 124px 留白吃进
+   量度里，实际一行只剩约 39 字。 */
+.doc-main {
+  max-width: calc(46em + 2 * var(--gutter));
+  margin-inline: auto;
+  padding-inline: var(--gutter);
+  /* 没有顶栏，第一行标题自己撑住页面顶部：上内边距比下留白少一点，避免整页看起来往下坠 */
+  padding-block: clamp(44px, 7vw, 72px) clamp(56px, 8vw, 88px);
+}
+
+/* 标题直接起页（业主 2026-10-20 去掉了那行「条款 / 隐私 / 权利」小字：
+   页面自己就叫「用户协议」，再在上面标一次分类是同义反复）。 */
+.doc-main h1 {
+  margin: 0 0 6px;
+  font-size: clamp(28px, 4vw, 36px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.doc-main .doc-meta {
+  margin: 0 0 clamp(26px, 4vw, 38px);
+  color: var(--faint);
+  font-size: 13px;
+}
+
+.doc-main h2 {
+  margin: clamp(30px, 4vw, 40px) 0 10px;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.doc-main h3 {
+  margin: 20px 0 6px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.doc-main p {
+  margin: 0 0 14px;
+  color: var(--muted);
+}
+
+/* 条款项一律写成「（一）（二）」的独立段落，页面里不再出现 ul/ol：
+   项目符号是文章体，编号项才是条款体，两者混排会在同一页里露出两套语域。
+   所以 global.css 把列表标记清零那件事与这里无关，不必再还回去。 */
+
+.doc-main strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.doc-main a {
+  color: var(--accent);
+  text-underline-offset: 3px;
+}
+
+.doc-main code {
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+/* 需要被单独看见的一句：左侧一道细线，不加底色、不加大字号。
+   `.doc-main .doc-callout` 的类名落在 <p> 上，所以这里要压过 `.doc-main p` 的下边距。 */
+.doc-main .doc-callout {
+  margin-bottom: 18px;
+  padding-left: 14px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--muted);
+}
+
+/* 页脚（.footer / .footer-grid / .footer-legal）全部来自 global.css：
+   与首页同一份 markup（components/SiteFooter.astro）、同一份样式，这里不覆盖任何一条。 */

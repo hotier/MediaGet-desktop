@@ -1,0 +1,59 @@
+---
+/**
+ * 文档页外壳（用户协议 / 隐私政策 / 权利通知）。
+ *
+ * 三页共用这一层，页面文件里只写正文；页脚与首页是同一个组件（components/SiteFooter.astro），
+ * 所以「加了第四篇只改了首页」这种错在结构上就不可能发生。
+ *
+ * 三条约定：
+ *   1. 只引 doc.css（它自己 @import global.css），所以三页与首页共用同一套 token。
+ *      文档页没有顶栏（业主 2026-10-20 定：条款不该再复制一份导航），
+ *      三篇之间的切换入口只有一个——页脚「条款」那一列。
+ *   2. 链接一律写成 `./xxx.html` 而不是 `/xxx`：产物是 build.format="file" 的平铺 HTML，
+ *      双击 dist/index.html 与塞进 Pages 子路径都要能跳。
+ *   3. 页脚传 hrefBase="./index.html"：页脚里那几列锚点属于首页，文档页上没有那些 id。
+ */
+import "../styles/doc.css";
+import SiteFooter from "../components/SiteFooter.astro";
+
+interface Props {
+  /** 本页在产物里的文件名（不含扩展名），只用于拼 canonical */
+  current: "terms" | "privacy" | "notice";
+  title: string;
+  /** 「最后更新」用的日期，YYYY-MM-DD */
+  updated: string;
+  /** meta description，不写就会在搜索结果里截正文第一句 */
+  description: string;
+}
+
+const { current, title, updated, description } = Astro.props;
+
+/* 站地址只写在 astro.config 的 site 里，页面不写死域名（换宿主改一行） */
+const site = Astro.site ?? new URL("https://hotier.github.io/mediaGet-desktop/");
+const canonical = new URL(`${current}.html`, site).href;
+---
+
+<!doctype html>
+<!-- 文档页固定浅色：它们讲的是条款，不是产品门面，没有主题开关也不跟随系统偏好。
+     固定在这里，样式里的 color-mix 与墨色才只有一档（doc.css 的 body.doc 也钉了 color-scheme）。 -->
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{title} — MediaGet</title>
+    <meta name="description" content={description} />
+    <meta name="theme-color" content="#f7f7f8" />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/png" href="./brand/favicon.png" />
+  </head>
+
+  <body class="doc">
+    <main class="doc-main" id="main">
+      <h1>{title}</h1>
+      <p class="doc-meta">最后更新日期：{updated} · 适用于 Windows 桌面客户端</p>
+      <slot />
+    </main>
+
+    <SiteFooter hrefBase="./index.html" />
+  </body>
+</html>
