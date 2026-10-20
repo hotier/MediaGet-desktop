@@ -124,8 +124,8 @@ const packagedBinDir = isDev
     : null;
 
 /**
- * 随包图标目录（scripts/make-icons.cjs 产出 → extraResources 落 `resources/icons`）。
- * dev 直接吃仓库那份 ⇒ 改图标 = 重跑脚本 + 重启，不必重新打包。
+ * 随包图标目录（scripts/make-icons.cjs 从 `brand/` 母版产出 → extraResources 落 `resources/icons`）。
+ * dev 直接吃仓库那份 ⇒ 改图标 = 重跑 `pnpm brand:assets` + 重启，不必重新打包。
  */
 const iconDir = isDev
   ? join(app.getAppPath(), "resources", "icons")

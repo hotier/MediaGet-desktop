@@ -12,6 +12,10 @@ release/
 # 图标真源只有一处，第二份入库就会变成「加了平台忘了同步落地页」那种静默缺陷。
 landing/public/logos/
 
+# 同理：应用字标与页签图标从 renderer/public/brand 镜像（更上游是 brand/ 母版 + scripts/make-icons.cjs）。
+# 注意 landing/public/og.png 不在此列 —— 分享卡只有落地页用，脚本直接产出并入库。
+landing/public/brand/
+
 # bundled binaries (fetched by CI / first-run, never in git)
 resources/bin/
 *.exe
@@ -22,6 +26,9 @@ config.local.json
 .env
 .env.*
 !.env.example
+
+# 品牌资产的检视表（`node scripts/make-icons.cjs --sheet` 出的六档对照图，人眼看用，不入库）
+build/_sheet.png
 
 # electron-builder / updater caches
 .cache/

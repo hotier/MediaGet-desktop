@@ -11,6 +11,7 @@ import { Download } from "lucide-react";
 import { useReducedMotion } from "motion/react";
 import { NAV_ITEMS, SETTINGS_GLYPHS, type AnimGlyphHandle, type NavKey } from "./lib/nav-icons";
 import { AnimIcon } from "./components/AnimIcon";
+import { BrandLogo } from "./components/BrandLogo";
 import { api, BridgeError } from "./lib/bridge";
 import { setFontSize, setTheme, setThemeStyle, setFontFamily } from "./lib/theme";
 import { hydratePlatformSwitches } from "./store/platforms";
@@ -185,9 +186,12 @@ export default function App(): React.ReactElement {
         ) : (
           <>
         <nav className="drag-region flex w-(--w-side) shrink-0 flex-col gap-1 border-r border-border bg-panel pb-3 ps-2 pe-2" aria-label="页面导航">
-          {/* 品牌行 = 顶栏带：文字垂直居中即与系统三枚按钮同轴。mb-3 + 列表 gap-1 = 16px，
-              于是首个导航项与右侧内容（带高 40 + main 的 p-4）都落在 56px 这条线上 */}
-          <div className="mb-3 flex h-(--wco-h) items-center px-2 text-[15px] font-semibold tracking-wide">MediaGet</div>
+          {/* 品牌行 = 顶栏带：字标垂直居中即与系统三枚按钮同轴。mb-3 + 列表 gap-1 = 16px，
+              于是首个导航项与右侧内容（带高 40 + main 的 p-4）都落在 56px 这条线上。
+              字标 18px 高：40px 带里比 15px 文字略重，又不至于顶满带高（品牌资产见 BrandLogo） */}
+          <div className="mb-3 flex h-(--wco-h) items-center px-2">
+            <BrandLogo className="h-[18px] w-auto" />
+          </div>
 
           {NAV_ITEMS.map((it) => (
             <button

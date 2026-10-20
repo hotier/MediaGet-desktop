@@ -2,31 +2,68 @@
 /*
  * MediaGet 落地页（Astro 静态页，不参与 renderer 构建，也不 import 应用运行时模块）。
  *
- * 风格基准：克制的技术感——全页只有一个强视觉记忆点（首屏 WebGL 奇点），
- * 其余区域用大留白与排版分割，不使用装饰性卡片、阴影与插图。
- * 唯一的例外是第 01 段的应用界面模拟：它按 renderer 的真值复刻窗口（含卡片与描边），
- * 装得越像应用，读者越不需要读文案就知道这工具能干什么。
+ * 2026-10-20 版式重做（业主给了参考稿）：首屏第一眼是「粘贴一条链接，解析、预览与下载都在你自己的
+ * 电脑上」，字标退到导航左上角；首屏下面直接压一扇按 renderer 现值复刻的窗（app-mock.css）。
+ * 上一版把字标放大成 h1，整屏只有一个品牌名——读不到产品，也读不到下一步做什么。
  *
- * 平台带不在这里抄名字：清单直接 import shared/platforms.ts（与主进程、渲染层同一张表），
- * 图标由 scripts/build-landing.cjs 从 renderer/public/logos 镜像到 landing/public/logos（生成物，不入库）。
- * 在这里手抄一份平台名或数量就是第二真源——加平台时它不会变红，只会静默少一个。
+ * 三条「不抄第二份」：
+ *   1. 平台清单与图标来自 shared/platforms.ts，图标由 scripts/build-landing.cjs 从
+ *      renderer/public/logos 镜像到 landing/public/logos（生成物，不入库）。
+ *   2. 「能在应用内登录获取 Cookie」那组由 shared/cookie-login.ts 推出（键 → 域名 → 平台），
+ *      不在这里列平台名。分组因此与主进程真正的登录窗口同源：改一张表，两组自动跟着变。
+ *   3. 版本号来自 version.json（构建时由 build-landing.cjs 写入；仓库内保留一份本地默认值，
+ *      未执行脚本也不会拿到空值白屏）。安装包体积与发布日期不抄进页面，那两个数在 Release 那页。
  *
- * 版本号来自 version.json（同一脚本在构建时产出；仓库内始终保留一份本地默认值，
- * 未执行脚本也不会拿到空值白屏）。下载入口只有首屏那一枚按钮，指向 releases/latest，
- * 所以安装包体积与发布日期不再抄进页面——那两个数是 Release 那页的真值，抄过来只会落后。
+ * 字体全部自托管在 landing/public/fonts（正文 Noto Sans + 思源黑体子集、首屏京华老宋体），
+ * 不引任何 WebFont CDN：整页零第三方请求，file:// 打开也不缺字。改文案要重裁思源那份子集，
+ * tests/landing-fonts.test.ts 会在出现新汉字时变红。
  */
 import "../styles/global.css";
+import SiteFooter from "../components/SiteFooter.astro";
 import { PLATFORMS } from "../../../shared/platforms";
 import { WORK_STAT_SLOTS } from "../../../shared/work-stat";
+import { COOKIE_LOGIN_KEYS, COOKIE_LOGIN_TARGETS } from "../../../shared/cookie-login";
 import release from "../../version.json";
 
 const REPO_FALLBACK = "hotier/mediaGet-desktop";
 const repo = release.repo || REPO_FALLBACK;
 const releasesLatest = `https://github.com/${repo}/releases/latest`;
 
+/* 分享卡是绝对链接（爬虫不解析相对路径）：相对那个文件走出去取，域名仍只写在 astro.config 的 site */
+const ogImage = new URL("og.png", Astro.site ?? "https://hotier.github.io/mediaGet-desktop/").href;
+
 // 只有默认提供的平台才上首页：登记了但引擎未验证（enabledByDefault=false）的不在这里承诺。
 const supplied = PLATFORMS.filter((platform) => platform.enabledByDefault);
 const platformCount = supplied.length;
+
+/* 首屏副文案 = 一句宣传语，由轮换打字机逐句播放（脚本在页面底部，内联、file:// 也执行）。
+   第一条完整写进 HTML：没有 JS 或读者要减少动态效果时，它就是一句安静的静态文案。
+   三条约束写在这里，改文案时一起守：
+     1. 每条 ≤ 15 个全角字（.hero-sub 是一行 nowrap，30em 宽，超了会被裁）；
+     2. 不要写半角空格（逐字播放时空格看起来像卡住），要停顿用全角标点；
+     3. 三条说的是三件不同的事——顺序即播放顺序，别把同义句排在一起。 */
+const heroLines = [
+  "粘贴链接，选清晰度，落到硬盘。",
+  "不经过任何第三方服务器。",
+  "断点续传，关掉再开接着下。",
+];
+
+/**
+ * 「可在应用内登录获取 Cookie」这一组：Cookie 键 → 登录目标域名 → 注册表里的平台。
+ * 任何一环对不上就抛错让 astro build 变红——静默少一组比多一组更难发现。
+ */
+const loginKeys = new Set(
+  COOKIE_LOGIN_KEYS.map((key) => {
+    const [domain] = COOKIE_LOGIN_TARGETS[key].domains;
+    const platform = PLATFORMS.find((item) => item.domains.includes(domain));
+    if (!platform) {
+      throw new Error(`登录目标域名 "${domain}" 在 shared/platforms.ts 里找不到对应平台`);
+    }
+    return platform.key;
+  })
+);
+const canLogin = supplied.filter((platform) => loginKeys.has(platform.key));
+const pasteOnly = supplied.filter((platform) => !loginKeys.has(platform.key));
 
 /** 图标光学尺寸分档：源文件 viewBox 比例不同，属落地页自己的视觉元数据，按契约键挂载 */
 const iconFit: Record<string, "wide" | "wordmark" | "chip"> = {
@@ -36,7 +73,7 @@ const iconFit: Record<string, "wide" | "wordmark" | "chip"> = {
 };
 
 /**
- * 界面模拟（第 01 段）里的平台图标与计数标签一律回注册表取，不在这里抄第二份：
+ * 界面模拟里的平台图标与计数标签一律回注册表取，不在这里抄第二份：
  * 查不到就当场抛错让 astro build 变红，比页面上静默少一枚图、少一个字好发现。
  */
 const logoBy = new Map(PLATFORMS.map((platform) => [platform.key, platform.iconFile]));
@@ -78,16 +115,19 @@ const version = release.version || "0.1.0";
 ---
 
 <!doctype html>
-<html lang="zh-CN" data-theme="dark">
+<!-- 默认浅色：首屏是黑带、正文是浅底（参考稿的明暗节奏）。系统偏好深色时由 head 里的内联脚本翻档，
+     翻档发生在首帧之前，不会先闪一帧浅色。 -->
+<html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MediaGet — 粘贴一条链接，剩下的交给你的电脑</title>
+    <title>MediaGet — 粘贴一条链接，解析、预览与下载都在你自己的电脑上完成</title>
     <meta
       name="description"
-      content={`MediaGet 是一款 Windows 桌面视频下载器：解析与下载都在本机完成，链接不经过第三方服务器，直链拿到就落盘。支持 ${platformCount} 个平台，含资源列表预览与断点续传，Cookie 只存本机。`}
+      content={`MediaGet 是一款 Windows 桌面下载器：解析与下载都在本机完成，链接不经过第三方服务器，直链拿到就落盘。支持 ${platformCount} 个平台，含资源列表预览与断点续传，Cookie 只存本机。`}
     />
-    <meta name="theme-color" content="#08090b" />
+    <!-- 首屏是整页最上面那一块，浏览器 UI 跟着它的底色走；切档时由 head 内联脚本改写 -->
+    <meta name="theme-color" content="#f7f7f8" />
     <meta property="og:title" content="MediaGet — 本地解析、本地下载" />
     <meta
       property="og:description"
@@ -98,33 +138,46 @@ const version = release.version || "0.1.0";
     <link rel="canonical" href={Astro.site?.href} />
     <meta property="og:url" content={Astro.site?.href} />
     <meta property="og:site_name" content="MediaGet" />
-    <meta name="twitter:card" content="summary" />
-    <link
-      rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%234b8dff'/%3E%3Cpath d='M16 8v10m0 0 4-4m-4 4-4-4M9.5 22.5h13' stroke='%23fff' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round' fill='none'/%3E%3C/svg%3E"
-    />
+    <!-- 分享卡：landing/public/og.png（1200×630，scripts/make-icons.cjs 从 brand/ 母版生成） -->
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="MediaGet 字标" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <!-- 页签图标与应用同一个资产（scripts/make-icons.cjs 产出，build-landing 镜像到 public/brand） -->
+    <link rel="icon" type="image/png" href="./brand/favicon.png" />
     <script is:inline>
       /* 主题：head 里定初值，并把开关也挂在这里。
          ?theme=light|dark 可强制预览某一主题（不写入存储）。
-         开关只能活在这段内联脚本里，不能交给 src/scripts/main.js：那个入口被打成
-         type="module"，file:// 下模块脚本会被 CORS 拦掉，监听器挂不上去，按钮就成了死键。
-         同一条理由也限制了这里能做什么——初值必须在 CSS 与正文之前定下来，而 html.js 标记
-         绝不能跟进来：内联脚本在 file:// 下照样执行，标记一打，正文就按 CSS 藏进 opacity:0，
-         而负责揭示的模块永远不来，页面比不做动画更糟（整页空白）。标记留给 main.js。 */
+         开关必须活在内联脚本里：file:// 下 <script type="module"> 会被 CORS 拦掉，
+         挂进模块的监听器不会注册，按钮就成了死键。
+         同一条理由也限制了这里能做什么——初值要在 CSS 与正文之前定下来，而 html.js 这个
+         「入场动画的开关」绝不能在这里打：head 执行时正文还没解析，标记一打、内容就按 CSS
+         藏进 opacity:0，后面那支负责揭示的脚本一旦出问题就是整页空白。标记打在 body 末尾。 */
       (function () {
         var root = document.documentElement;
 
+        /* 优先级：?theme= 强制预览 > 用户点过的档 > 系统偏好 > 页面默认（浅色）。
+           系统偏好这一档必须有：否则系统在深色的人会先看到一帧浅色再翻档。 */
         function applySavedTheme() {
           try {
             var forced = new URLSearchParams(location.search).get("theme");
-            var saved = forced || localStorage.getItem("mg-landing-theme");
+            if (forced === "light" || forced === "dark") {
+              root.dataset.theme = forced;
+              return;
+            }
+            var saved = localStorage.getItem("mg-landing-theme");
             if (saved === "light" || saved === "dark") root.dataset.theme = saved;
           } catch (error) {
-            /* 存储不可用时保持默认深色 */
+            /* 存储不可用（隐私模式 / file:// 限制）时退回系统偏好 */
+          }
+          if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+            root.dataset.theme = "dark";
           }
         }
 
-        /* 按钮文案、tooltip 与 theme-color 跟着主题走；head 阶段正文还没出来，所以只在 DOM 就绪后调用 */
+        /* 按钮文案、tooltip 与浏览器 UI 的 theme-color 跟着主题走；
+           head 阶段正文还没出来，所以只在 DOM 就绪后调用 */
         function syncChrome(theme) {
           var toLight = theme !== "light";
           var label = toLight ? "切换到浅色主题" : "切换到深色主题";
@@ -133,8 +186,9 @@ const version = release.version || "0.1.0";
             toggle.setAttribute("aria-label", label);
             toggle.setAttribute("title", label);
           }
+          /* 首屏是整页最上面那一块，浏览器 UI 跟着它的底色走（与 --hero-bg 同值） */
           var meta = document.querySelector('meta[name="theme-color"]');
-          if (meta) meta.setAttribute("content", toLight ? "#08090b" : "#f5f6f8");
+          if (meta) meta.setAttribute("content", toLight ? "#f7f7f8" : "#0c0d11");
         }
 
         applySavedTheme();
@@ -163,22 +217,42 @@ const version = release.version || "0.1.0";
   <body>
     <a class="skip-link" href="#main">跳到主要内容</a>
 
-    <header class="nav" id="nav">
-      <div class="nav-inner">
-        <a class="brand" href="#top" aria-label="MediaGet 首页">
-          <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-            <rect width="32" height="32" rx="9" />
-            <path d="M16 8v10m0 0 4-4m-4 4-4-4M9.5 22.5h13" />
-          </svg>
-          <span>MediaGet</span>
-        </a>
+    <!-- 导航：吸顶 + 玻璃。底色取页面底色再降到 78% 不透明度，叠一层 backdrop-filter——
+         滚动时标题与窗体会在它下面糊过去；静止在顶部时它与背景同色，所以不需要「滚过多少像素
+         才加背景」的状态机（也就没有 file:// 下 JS 不执行时白字压白底的降级问题）。 -->
+    <header class="nav-shell">
+      <div class="shell">
+        <div class="nav">
+          <!-- 品牌位与界面模拟窗顶带**同一份资产**的位图锁合（两份墨色，按主题二选一）：
+               业主 2026-10-20「导航栏使用和 mock 界面一样的 logo」。位图没有可读文本，
+               所以另给一句 sr-only 名字；两张图里被 display:none 的那张不进可访达树。 -->
+          <a class="brand" href="#top">
+            <img
+              class="brand-lockup"
+              data-ink="on-dark"
+              src="./brand/logo-lockup-on-dark.png"
+              alt=""
+              width="347"
+              height="80"
+            />
+            <img
+              class="brand-lockup"
+              data-ink="on-light"
+              src="./brand/logo-lockup-on-light.png"
+              alt=""
+              width="347"
+              height="80"
+            />
+            <span class="sr-only">MediaGet</span>
+          </a>
 
-        <nav class="nav-links" aria-label="页面导航">
-          <a href="#faq">常见问题</a>
-        </nav>
+          <nav class="nav-links" aria-label="页面导航">
+            <a href="#platforms">平台</a>
+            <a href="#faq">问答</a>
+          </nav>
 
-        <div class="nav-actions">
-          <button class="theme-toggle" id="themeToggle" type="button" aria-label="切换到浅色主题">
+          <div class="nav-actions">
+          <button class="theme-toggle" id="themeToggle" type="button" aria-label="切换到深色主题">
             <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
               <circle cx="12" cy="12" r="4" />
               <path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
@@ -201,55 +275,66 @@ const version = release.version || "0.1.0";
             </svg>
           </a>
         </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- 首屏是一块与正文同色的画布：承诺、一句轮换的宣传语、动作按钮都在这里，窗体的顶边接在下面（见 .tour）。
+         原来还有一条四步解析线（01 粘贴链接…04 选择下载），2026-10-20 业主删掉——首屏只留读得完的东西。
+         墨色全走 --hero-*，切换主题时整块一起翻。 -->
+    <header class="hero" id="top">
+      <div class="shell hero-copy">
+        <p class="hero-eyebrow">
+          <span class="mono">v{version}</span>
+        </p>
+
+        <!-- 首屏的主视觉就是这句承诺本身，纯中文、三行。字体全在 public/fonts/ 自托管
+             （正文两段 + 这一句的宋体，见 global.css），运行期不向任何 CDN 发请求，
+             file:// 打开也不缺字。改这句文案要同时重裁京华那份子集。 -->
+        <h1 class="hero-title">
+          <span class="hero-title-cn">粘贴一条链接，<br />从解析到下载，<br />都在这台电脑上。</span>
+        </h1>
+
+        <div class="hero-row">
+          <!-- 副文案：一句话占一行，脚本接手后逐句打字/擦除/换句。第一句在这里写死，
+               所以无 JS、或读者勾了「减少动态效果」时，它就是一句静态宣传语。
+               光标默认不显示，脚本给 .hero-sub 加上 is-typing 才出来。 -->
+          <p class="hero-sub">
+            <span id="heroTicker">{heroLines[0]}</span><span class="hero-caret" aria-hidden="true"
+            ></span>
+          </p>
+          <div class="hero-action-col">
+            <div class="hero-actions">
+              <a class="cta-primary" href={releasesLatest} target="_blank" rel="noopener">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <path d="m7 10 5 5 5-5" />
+                  <path d="M12 15V3" />
+                </svg>
+                下载 Windows 版
+              </a>
+            </div>
+            <p class="hero-hint">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 16v-4" />
+                <path d="M12 8h.01" />
+              </svg>
+              适用于 Windows 10 / 11
+            </p>
+          </div>
+        </div>
       </div>
     </header>
 
     <main id="main">
-      <!-- 首屏：唯一的强视觉。canvas 由 src/scripts/main.js 按需水合，接管前显示静态海报 -->
-      <section class="hero" id="top">
-        <div class="hero-stage" aria-hidden="true">
-          <div class="hero-poster"></div>
-          <div class="hero-rings">
-            <i class="ring-core"></i>
-            <i class="ring-horizon"></i>
-            <i class="ring-accretion"></i>
-          </div>
-          <canvas id="heroCanvas" class="hero-canvas"></canvas>
-          <div class="hero-vignette"></div>
-        </div>
-
-        <div class="hero-content">
-          <h1 class="hero-title"
-            ><span class="word-draw"
-              ><span class="word word-hollow">Media</span><i class="pen" aria-hidden="true"></i></span
-            ><span class="word word-solid">Get</span></h1
-          >
-          <p class="hero-sub">粘贴一条链接。解析、预览与下载，都在你自己的电脑上完成。</p>
-          <p class="hero-cta">
-            <a class="cta-primary" href={releasesLatest} target="_blank" rel="noopener"
-              >下载 Windows 版</a
-            >
-            <span class="cta-version">v{version}</span>
-          </p>
-        </div>
-
-        <div class="hero-cue" aria-hidden="true">
-          <span>向下</span>
-          <i></i>
-        </div>
-      </section>
-
       <!-- 界面模拟：一扇窗 + 侧栏四个导航页，外加侧栏脚注的「设置」。
            radio 驱动，零 JS——入口脚本在 file:// 下不执行，任何依赖 JS 的切页在那种场合都是死图。
            面板里的每一串文字都照 renderer 的现值写：HomePage / DownloadsPage / HistoryPage /
            StatsPage / SettingsPage 的标题、列名、徽标与按钮，不在此处美化或另起一套说法。
-           与应用的三处有意偏离都标在对应位置：队列少两列时间、设置只出「引擎」一类、数据是演示值。 -->
-      <section class="tour" id="ui">
-        <div class="tour-head">
-          <p class="block-index">01</p>
-          <h2>界面展示</h2>
-        </div>
-
+           与应用的三处有意偏离都标在对应位置：队列少两列时间、设置只出「引擎」一类、数据是演示值。
+           这扇窗紧接在首屏黑底之后、同一底色：它是首屏的一部分，不再另起「01 界面展示」的段头。 -->
+      <section class="tour reveal" id="ui" aria-label="界面展示">
         <input class="tour-radio" type="radio" name="tour" id="tour-home" checked aria-label="首页界面" />
         <input class="tour-radio" type="radio" name="tour" id="tour-queue" aria-label="队列界面" />
         <input class="tour-radio" type="radio" name="tour" id="tour-history" aria-label="历史界面" />
@@ -258,7 +343,11 @@ const version = release.version || "0.1.0";
 
         <div class="app" role="group" aria-label="MediaGet 应用界面模拟">
           <div class="app-wco">
-            <span class="app-brand">MediaGet</span>
+            <!-- 品牌位照 renderer 的现值写：真窗这里就是 BrandLogo（18px 字标），不再是一串文字 -->
+            <span class="app-brand">
+              <img data-ink="on-dark" src="./brand/logo-lockup-on-dark.png" alt="" width="347" height="80" />
+              <img data-ink="on-light" src="./brand/logo-lockup-on-light.png" alt="" width="347" height="80" />
+            </span>
             <span class="app-wco-set">设置</span>
             <!-- 真窗由 Windows 在透明带上画三枚符号，renderer 一个按钮也不自绘；这里描出来只为读得出「这是桌面窗口」 -->
             <span class="app-glyphs" aria-hidden="true"><i></i><i></i><i class="is-close"></i></span>
@@ -825,137 +914,206 @@ const version = release.version || "0.1.0";
             </div>
           </div>
         </div>
-
-        <!-- 右列只放当前那一面的说明：五段都在，靠 radio 换显隐，不做页名目录 -->
-        <div class="tour-desc">
-          <div class="page-desc" data-desc="home">
-            <p class="page-name">首页</p>
-            <p>
-              贴一条链接，或一整段分享文案、多条一起贴；识别出平台就照实写「识别为 哔哩哔哩」。
-              结果卡列资源、逐行勾选、逐行预览，清晰度另选一档，解析来源与耗时标在卡脚。
-            </p>
-            <p class="page-note">预览经主进程代理取流，直链不进渲染层、也不入库</p>
-          </div>
-          <div class="page-desc" data-desc="queue">
-            <p class="page-name">队列</p>
-            <p>
-              跨重启的全量台账：文件、状态、进度、大小、速度、剩余逐行排开，筛选与搜索都在表头那一行。
-              暂停、继续、重试、取消各归各的任务，断点从 <span class="page-mono">.part</span> 接着走。
-            </p>
-            <p class="page-note">直链到期自动换一条同资源的新链重跑一次；关窗后留在托盘继续</p>
-          </div>
-          <div class="page-desc" data-desc="history">
-            <p class="page-name">历史</p>
-            <p>
-              解析成功就记一条，没下载也留着，文件数那列写「未下载」。多选能导出、重新解析、移除记录，
-              整表清空也走这一条（表头全选 → 移除记录），没有单独的「清空历史」按钮。导出四档里
-              <span class="page-mono">xlsx / csv / json</span> 吃同一张表，<span class="page-mono">txt</span> 是作品信息全文。
-            </p>
-            <p class="page-note">「移除记录」只撤台账那一行，磁盘上的文件不动</p>
-          </div>
-          <div class="page-desc" data-desc="stats">
-            <p class="page-name">统计</p>
-            <p>
-              成功率、累计字节、平均速度、解析次数与计数起点在页首，趋势、平台榜、活跃热力、解析通道各自成块，
-              比率只从计数档算，不从明细反推。
-            </p>
-            <p class="page-note">点平台榜的一条，历史页就只看那个平台</p>
-          </div>
-          <div class="page-desc" data-desc="settings">
-            <p class="page-name">设置</p>
-            <p>
-              五类：通用、下载、外观、引擎、关于。引擎体检逐平台标注谁在解、供不供、Cookie 什么状态，
-              翻开关当场切断该平台的路由。主题与字号在「外观」，一整套配色 × 明暗 × 四档字号。
-            </p>
-            <p class="page-note">Cookie 只写进本机 userData，界面与日志里一律掩码</p>
-          </div>
-        </div>
       </section>
 
-      <section class="block" id="platforms">
-        <p class="block-index">02</p>
-        <h2>平台支持</h2>
-        <!--
-          走马灯：名字与图标来自 shared/platforms.ts，后面三份只是同一段轨道的接续拷贝
-          （aria-hidden + alt=""，读屏与视觉都不重复播报），轨道位移靠 CSS 动画，
-          份数与位移量的算法见 global.css 的 .marquee 注释。
-          容器统一 44px，data-fit 按源文件 viewBox 比例分档调光学尺寸（详见 global.css）。
-          src 用 ./ 前缀：产物可能从磁盘路径或子目录被打开，根绝对路径在那两种场合都是断的。
-        -->
-        <div class="marquee">
-          <div class="marquee-track">
-            {[0, 1, 2, 3].map((copy) => (
-              <ul class="platform-list" aria-hidden={copy > 0 || undefined}>
-                {supplied.map((platform) => (
-                  <li data-fit={iconFit[platform.key]}>
+      <section class="section reveal" id="platforms">
+        <div class="shell section-inner">
+          <div class="section-head">
+            <p class="section-index">01</p>
+            <!-- 业主 2026-10-20 定：这一块只写「支持平台」，不再拿数量与「一个入口」当卖点。
+                 数量仍出现在 meta description 里，且跟着注册表走，不再由这里手写。 -->
+            <h2>支持平台</h2>
+          </div>
+
+          <div class="section-body">
+            <!-- 两组都从注册表来：第一组 = shared/cookie-login.ts 里能自动登录的那几家（域名对得上平台），
+                 第二组 = 其余平台。这里一个平台名都不手抄，加平台时两组自动跟上。 -->
+            <div class="platform-group">
+              <h3 class="group-title">主流平台</h3>
+              <ul class="platforms">
+                {canLogin.map((platform) => (
+                  <li class="platform" data-fit={iconFit[platform.key]}>
                     <img
                       src={`./logos/${platform.iconFile}`}
-                      alt={copy > 0 ? "" : platform.name}
-                      width="26"
-                      height="26"
+                      alt=""
+                      width="22"
+                      height="22"
+                      loading="lazy"
                     />
+                    <span>{platform.name}</span>
                   </li>
                 ))}
               </ul>
-            ))}
+            </div>
+
+            <div class="platform-group">
+              <h3 class="group-title">其他平台</h3>
+              <ul class="platforms">
+                {pasteOnly.map((platform) => (
+                  <li class="platform" data-fit={iconFit[platform.key]}>
+                    <img
+                      src={`./logos/${platform.iconFile}`}
+                      alt=""
+                      width="22"
+                      height="22"
+                      loading="lazy"
+                    />
+                    <span>{platform.name}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
           </div>
         </div>
       </section>
 
-      <section class="block" id="faq">
-        <p class="block-index">03</p>
-        <h2>常见问题</h2>
-        <div class="faq">
-          <details>
-            <summary>需要注册或登录吗？</summary>
-            <p>
-              不需要注册账号。抖音、小红书、Instagram 等需要登录态的平台，可以在设置里用内置窗口登录获取
-              Cookie，也可以手动粘贴，两条路都只保存在本机。
-            </p>
-          </details>
-          <details>
-            <summary>Cookie 会被上传吗？</summary>
-            <p>
-              不会。Cookie 只写进本机的 userData 配置，界面与日志里始终以掩码出现；获取它的登录窗口也由主进程自己加载，不经过第三方服务器。
-            </p>
-          </details>
-          <details>
-            <summary>和在线解析网站有什么区别？</summary>
-            <p>
-              在线站点需要先把链接提交给它的服务器排队解析；客户端在本机直接跑对应平台的解析器，链接不经过第三方队列。直链拿到后立刻落盘，也不会出现「复制出去就过期」。
-            </p>
-          </details>
-          <details>
-            <summary>解析失败怎么办？</summary>
-            <p>
-              先看设置里的「引擎体检」：它会逐平台标注由哪个引擎解、当前是否被关掉。需要登录态的平台，补上
-              Cookie 往往就能过；被关掉的平台也可以在那里重新打开。
-            </p>
-          </details>
-          <details>
-            <summary>为什么先做 Windows？</summary>
-            <p>
-              首发目标是 Windows 10 / 11，提供安装版与免安装便携版。代码本身没有写死 Windows-only 假设，macOS
-              与 Linux 目标会按需要再加。
-            </p>
-          </details>
+      <section class="section reveal" id="faq">
+        <div class="shell section-inner">
+          <div class="section-head">
+            <p class="section-index">02</p>
+            <h2>常见问题</h2>
+          </div>
+
+          <div class="section-body faq">
+            <details open>
+              <summary>和在线解析网站有什么区别？</summary>
+              <p>
+                在线站点先把链接提交到它的服务器排队解析；MediaGet
+                在本机直接运行对应平台的解析器，链接不经过第三方队列，直链拿到就落盘，不会出现「复制出去就过期」。
+              </p>
+            </details>
+            <details>
+              <summary>需要注册或登录吗？</summary>
+              <p>
+                不需要注册账号。抖音、小红书、Instagram 等需要登录态的平台，可以在设置里用内置窗口登录获取
+                Cookie，也可以手动粘贴，两条路都只保存在本机。
+              </p>
+            </details>
+            <details>
+              <summary>Cookie 会被上传吗？</summary>
+              <p>
+                不会。Cookie 只写进本机的 userData 配置，界面与日志里始终以掩码出现；获取它的登录窗口也由主进程自己加载，不经过第三方服务器。
+              </p>
+            </details>
+            <details>
+              <summary>解析失败怎么办？</summary>
+              <p>
+                先看设置里的「引擎体检」：它会逐平台标注由哪个引擎解、当前是否被关掉。需要登录态的平台，补上
+                Cookie 往往就能过；被关掉的平台也可以在那里重新打开。
+              </p>
+            </details>
+          </div>
         </div>
       </section>
-
-      <!-- 下载只在首屏那一个按钮：链接永远指向 releases/latest，具体资产与体积由 GitHub 那页报。 -->
     </main>
 
-    <footer class="footer">
-      <p>© 2026 MediaGet · MIT License</p>
-      <p class="footer-note">
-        本地工具，不托管、不分发任何内容。请仅下载你有权保存的作品，并遵守各平台服务条款与当地法律。本项目与所列平台无隶属关系。
-      </p>
-    </footer>
+    <!-- 页脚由 components/SiteFooter.astro 提供：文档页用的是同一个组件，只是锚点前缀不同 -->
+    <SiteFooter />
 
-    <script>
-      // 按需水合入口：滚动状态与克制的淡入；WebGL 奇点由其内部按条件动态 import()
-      // （src/scripts/hero-visual.js）。主题开关不在这条路上，它在 head 的内联脚本里。
-      import "../scripts/main.js";
+    <!-- 首屏副文案的轮换打字机。
+         为什么是内联脚本、而不是 src/scripts 里的模块：file:// 下模块脚本会被 CORS 拦掉，
+         而这段只是给一行字做逐字播放，双击 dist/index.html 也该看到它动。
+         为什么脚本、而不是纯 CSS：轮换要记「说到第几句、擦到第几个字」，纯 CSS 只能靠层层
+         animation-delay 硬拼时间线，改一条文案就得重算全部延迟。代价是它只在 JS 可用时跑，
+         所以第一句完整写在 HTML 里，这里只是接管，不负责让内容出现。 -->
+    <script is:inline define:vars={{ lines: heroLines }}>
+      (function () {
+        var text = document.getElementById("heroTicker");
+        var sub = text && text.closest(".hero-sub");
+        if (!text || !sub) return;
+        /* 读者要减少动态效果时不接管：留第一句静态文案，连光标都不加 */
+        if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+        /* 四个节奏参数。注释全写在行上方：本仓的字体覆盖守卫只剥整行注释，
+           写在行尾的中文会被当成「页面文案」要求进字体子集。 */
+        var TYPE = 88;
+        var ERASE = 34;
+        var HOLD = 2100;
+        var GAP = 420;
+        var index = 0;
+        /* 首句进页面时就是满的，所以第一拍是「停住」而不是「打字」 */
+        var pos = lines[0].length;
+        var phase = "hold";
+
+        sub.classList.add("is-typing");
+
+        function step() {
+          var line = lines[index];
+          if (phase === "hold") {
+            phase = "erase";
+            return setTimeout(step, HOLD);
+          }
+          if (phase === "erase") {
+            pos -= 1;
+            text.textContent = line.slice(0, pos > 0 ? pos : 0);
+            if (pos <= 0) {
+              index = (index + 1) % lines.length;
+              pos = 0;
+              phase = "type";
+              return setTimeout(step, GAP);
+            }
+            return setTimeout(step, ERASE);
+          }
+          pos += 1;
+          text.textContent = line.slice(0, pos);
+          if (pos >= line.length) {
+            phase = "hold";
+            return setTimeout(step, HOLD);
+          }
+          return setTimeout(step, TYPE);
+        }
+
+        /* 等首屏标题落位再开口，否则两层动画在抢注意力 */
+        setTimeout(step, 900);
+      })();
+    </script>
+
+    <!-- 滚动入场（.reveal）。
+         为什么是内联脚本而不是 scripts/ 里的模块：本页之前那支 main.js 是 type="module"，
+         file:// 下会被 CORS 拦掉 —— 于是双击 dist/index.html 时只有首屏那几个写在 CSS 里的
+         动画在跑，平台段与问答段一动不动，看起来就像「别处压根没做动画」。
+         为什么标记在 body 末尾打、而不是 head 里：head 里打标记时正文还没解析，一旦这脚本
+         出问题，内容就永远停在 opacity:0；放这里，隐藏与观察在同一拍发生，脚本不跑就全程可见。 -->
+    <script is:inline>
+      (function () {
+        var root = document.documentElement;
+        var blocks = document.querySelectorAll(".reveal");
+        if (!blocks.length) return;
+
+        /* 时延挂在入场选择器真正命中的那一层（CSS 里 `html.js .reveal > *`） */
+        function stagger(section) {
+          var index = 0;
+          Array.prototype.forEach.call(section.children, function (child) {
+            child.style.setProperty("--d", index * 70 + "ms");
+            index += 1;
+          });
+        }
+
+        root.classList.add("js");
+
+        if (!("IntersectionObserver" in window)) {
+          Array.prototype.forEach.call(blocks, function (section) {
+            stagger(section);
+            section.classList.add("in");
+          });
+          return;
+        }
+
+        var revealObserver = new IntersectionObserver(
+          function (entries) {
+            entries.forEach(function (entry) {
+              if (!entry.isIntersecting) return;
+              stagger(entry.target);
+              entry.target.classList.add("in");
+              revealObserver.unobserve(entry.target);
+            });
+          },
+          { threshold: 0.12, rootMargin: "0px 0px -6% 0px" }
+        );
+        Array.prototype.forEach.call(blocks, function (section) {
+          revealObserver.observe(section);
+        });
+      })();
     </script>
   </body>
 </html>

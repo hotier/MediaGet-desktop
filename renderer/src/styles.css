@@ -372,6 +372,18 @@ body {
   stroke-width: 1.5;
 }
 
+/* 品牌字标（components/BrandLogo）：两份墨色是同一版字标的两个资产，
+ * 暗色档用白墨、浅色档用黑墨，这里只决定显示哪一份（图都在 DOM 里，换主题不重渲染）。 */
+.brand-lockup[data-ink="on-light"] {
+  display: none;
+}
+[data-theme="light"] .brand-lockup[data-ink="on-light"] {
+  display: block;
+}
+[data-theme="light"] .brand-lockup[data-ink="on-dark"] {
+  display: none;
+}
+
 /* Sonner 浮空 toast 的进出轴与留白（业主指令 2026-10-15 两条：
  * ① 框内上下空白太大（上游 padding 16px 四周写死）；② 进场从右、退场回右 —— 进出同轴。
  *
