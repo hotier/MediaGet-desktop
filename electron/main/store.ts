@@ -36,6 +36,14 @@ import { resolveKey } from "../../shared/platforms";
 import { normalizeAuthorSnapshot } from "../../shared/author";
 import { normalizeHistoryKeys } from "../../shared/history";
 
+/** Source files read only by the transitional importer; runtime reads/writes are removed after migration. */
+export const LEGACY_JSON_STORE_FILES = [
+  "config.json",
+  "queue.json",
+  "history.json",
+  "stats.json",
+] as const;
+
 /**
  * 历史窗口。5000 是给统计页的「逐文件粒度」用的：作者榜、单文件大小分布、
  * 类型字节占比只能从明细行算，计数器档给不了这些。代价是整档重写变贵——
