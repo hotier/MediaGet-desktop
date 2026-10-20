@@ -4,7 +4,8 @@ name: Landing
 # 不等主程序发版，也不受 tag 与版本号牵制 —— 文档里改一句措辞，推上去就该上线。
 #
 # 版本号仍会跟着走：release-it 发版时会把 package.json 一起提交，那一次 push 命中
-# 下面的 paths（package.json），落地页顺手重建，显示的就是新版本号。
+# 下面的 paths（package.json），落地页顺手重建，显示的就是新版本号；CHANGELOG.md
+# 同理——它被 build-landing.cjs 解析成更新日志页的数据，改了就要重建。
 # 所以这里用离线档构建：不查 GitHub Release，也就不存在「发版刚 tag、Release 还没建好
 # 就去拉数据」的竞态；页面用的 version 与下载链接分别来自 package.json 与固定地址。
 on:
@@ -12,6 +13,7 @@ on:
     branches: [main]
     paths:
       - "landing/**"
+      - "CHANGELOG.md"
       - "scripts/build-landing.cjs"
       - "scripts/make-icons.cjs"
       - "scripts/verify-landing.cjs"
@@ -59,7 +61,7 @@ jobs:
       - name: Build landing site
         run: pnpm run landing:build
 
-      - name: Verify artifact (four pages, relative refs, every local asset present)
+      - name: Verify artifact (five pages, relative refs, every local asset present)
         run: node scripts/verify-landing.cjs
 
       - uses: actions/upload-pages-artifact@v3

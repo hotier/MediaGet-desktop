@@ -136,7 +136,8 @@ body {
   font: 400 16px/1.75 var(--font-body);
   -webkit-font-smoothing: antialiased;
   overflow-x: hidden;
-  /* 切主题不做过渡：页面上千处颜色同时换档，只给 body 一个 0.4s 的渐变会让首屏与正文短暂不同色 */
+  /* 切主题的颜色过渡不走 body：那是「首屏与正文短暂不同色」的老坑，
+     现在由 View Transitions 的整页快照溶解承担（见下方主题段与 index.astro）。 */
 }
 
 h1,
@@ -229,54 +230,6 @@ button {
   border: 0;
 }
 
-/* —— 字标：一枚几何 M + 真实文本（components/BrandLockup.astro）——
-   两段（Media / Get）是一个词而不是两个词，所以单一墨色、行内不换行。
-   字距 -0.035em 是给 Bahnschrift 量的：再紧 G 会贴上 a 的肩，再松就退回普通无衬线标题。
-   符号高 0.78em（比小写高、略高于大写字高）是母版里那枚 M 与文字的高度关系。 */
-.lockup {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.26em;
-  color: inherit;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.lockup-mark {
-  flex: none;
-  height: 0.78em;
-  width: auto;
-}
-
-.lockup-stroke {
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 4;
-  /* 圆角接合：miter 在 25×24 的方格上会从两个顶角戳出 viewBox，顶层两个角会被削平 */
-  stroke-linejoin: round;
-  stroke-linecap: butt;
-}
-
-.lockup-head {
-  fill: currentColor;
-}
-
-.lockup-word {
-  font-family: var(--font-display);
-  font-weight: 700;
-  letter-spacing: -0.035em;
-}
-
-/* 接头：小写 a 的右肩与 G 的圆弧之间天然偏松，单独补 0.012em；Get 里 t 的字身窄，整段再收一档 */
-.lockup-get {
-  margin-left: 0.012em;
-  letter-spacing: -0.026em;
-}
-
-.lockup[data-size="foot"] {
-  font-size: 15px;
-}
-
 /* 窗体顶带的品牌位是两份墨色的位图（与真窗同一个资产）：按主题二选一，
    两张图恒在 DOM 里，换主题不重新取图（也就没有「先闪一帧另一种墨色」）。
    窗体跟着主题翻档，所以这里只需要看页面主题，不再有「钉住暗档」的例外。 */
@@ -295,8 +248,9 @@ img[data-ink="on-light"] {
 /* —— 首屏 ——
    一块「反色带」：导航、标题、描述与动作都在这一块里，窗体的顶边紧接在下面。
    底色与墨色全部走 --hero-*，所以切主题时整块跟着翻（浅色主题下是比正文略深一档的浅灰）。
-   那层光只在深色主题出现：三团极淡的径向渐变（紫 / 青 / 粉）把窗口从纯黑里托起来；
-   浅底上同样的光会糊成一片脏色，所以直接不画。 */
+   那层光两个主题都有，但不同配方：深色用亮墨 + 较高 alpha 把窗口从纯黑里托起来；
+   浅底上亮墨会隐形、高 alpha 会糊成脏色，所以浅色换更深的色相并把 alpha 压到个位数——
+   读起来是纸面上极淡的一层冷光，而不是一块色斑（业主 2026-10-20「亮色也要有」）。 */
 /* 底部留白是「首屏 ↔ 下面那扇窗」之间唯一的间距（.tour 没有上内边距）。
    轨迹：20–36px（窗顶几乎贴住流程线）→ 44–88px → 现在 72–140px，串成一条带子而不是一块板。
    四步流程线删掉之后首屏下部本来就空，这段留白要自己撑住「这一屏说完了、下面是证据」的停顿。 */
@@ -321,6 +275,13 @@ img[data-ink="on-light"] {
     radial-gradient(560px 340px at 78% 4%, rgb(139 107 255 / 34%), transparent 72%),
     radial-gradient(480px 300px at 94% 34%, rgb(94 231 255 / 16%), transparent 72%),
     radial-gradient(420px 260px at 56% -8%, rgb(255 122 200 / 14%), transparent 72%);
+}
+
+[data-theme="light"] .hero::before {
+  background:
+    radial-gradient(560px 340px at 78% 4%, rgb(124 92 255 / 12%), transparent 72%),
+    radial-gradient(480px 300px at 94% 34%, rgb(38 173 220 / 9%), transparent 72%),
+    radial-gradient(420px 260px at 56% -8%, rgb(235 92 168 / 7%), transparent 72%);
 }
 
 .hero > .shell {
@@ -375,7 +336,9 @@ img[data-ink="on-light"] {
   font-size: 13.5px;
 }
 
-.nav-links a {
+/* GitHub 图标（.nav-github）也住在这组里，但它有自己的 34px 圆盒，
+   胶囊内边距只给文字锚点，否则盒会被撑破 */
+.nav-links a:not(.nav-github) {
   padding: 7px 13px;
   border-radius: 999px;
   color: color-mix(in srgb, var(--hero-ink) 72%, transparent);
@@ -384,7 +347,7 @@ img[data-ink="on-light"] {
     background 0.2s var(--ease);
 }
 
-.nav-links a:hover {
+.nav-links a:not(.nav-github):hover {
   color: var(--hero-ink);
   background: color-mix(in srgb, var(--hero-ink) 8%, transparent);
 }
@@ -847,7 +810,7 @@ img[data-ink="on-light"] {
   font-size: 12.5px;
 }
 
-/* 四列：字标 + 资源 / 页面 / 条款（条款那一列是 landing/docs 三页的入口） */
+/* 四列：字标 + 资源 / 页面 / 条款（资源列带更新日志，条款列是 landing/docs 三页的入口） */
 .footer-grid {
   display: grid;
   grid-template-columns: 1.6fr repeat(3, minmax(0, 1fr));
@@ -858,10 +821,6 @@ img[data-ink="on-light"] {
   display: grid;
   align-content: start;
   gap: 10px;
-}
-
-.footer-brand .lockup {
-  color: var(--muted);
 }
 
 .footer h4 {
@@ -884,14 +843,6 @@ img[data-ink="on-light"] {
 
 .footer-grid a:not(.brand):hover {
   color: var(--text);
-}
-
-.footer-legal {
-  max-width: 62em;
-  margin-top: 34px;
-  padding-top: 22px;
-  border-top: 1px solid var(--line);
-  line-height: 1.9;
 }
 
 /* —— 滚动入场：只有透明度与位移，无装饰 ——
@@ -938,13 +889,19 @@ html.js .reveal.in > * {
 }
 
 @media (max-width: 720px) {
-  /* 导航只留品牌、主题与 GitHub：两个锚点在这个宽度上也会把品牌挤掉 */
+  /* 导航只留品牌、主题与 GitHub：文字锚点在这个宽度上也会把品牌挤掉。
+     GitHub 图标已并入链接组（业主定调放更新日志右边），这里只藏文字锚点、
+     容器保持成组，配 .nav-actions 的 margin 复原「图标 + 主题钮」在右侧的原位。 */
   .nav-links {
+    display: flex;
+  }
+
+  .nav-links a:not(.nav-github) {
     display: none;
   }
 
   .nav-actions {
-    margin-left: auto;
+    margin-left: 0;
   }
 
   .hero-title {
@@ -973,6 +930,36 @@ html.js .reveal.in > * {
 
   .footer-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* —— 主题切换的过渡 ——
+   主路线是 View Transitions（见 index.astro）：切换瞬间整页截新旧两张快照做一次
+   交叉溶解，合成器一次完成、与元素数量无关——逐元素过渡在大页面上各区域重绘
+   节奏不一，实测会出现「窗体先亮、四周慢半拍」的割裂感，这条路从结构上避开它。
+   ::view-transition-* 的动画时长在这里收口，与旧路线保持同一节奏。 */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.32s;
+  animation-timing-function: var(--ease);
+}
+
+/* 退回路线：不支持 View Transitions 的浏览器，点击那一刻给 html 挂 .theme-fading，
+   颜色类属性插值 320ms 后由脚本摘掉（index.astro）。这只在小页面够用，割裂感仍在，
+   属于「比瞬翻好一点」的兜底而不是平替。
+   不插 box-shadow：.app 的投影两主题各一份（app-mock.css），大范围阴影逐帧插值
+   会拖着窗体周边区域反复重绘，两侧空白区因此掉拍、像被切开——两档阴影都极淡，瞬切无感。
+   包在 no-preference 里：勾了「减少动态效果」的用户保持瞬翻，由下面的 reduce 段兜底。 */
+@media (prefers-reduced-motion: no-preference) {
+  html.theme-fading *,
+  html.theme-fading *::before,
+  html.theme-fading *::after {
+    transition:
+      background-color 0.32s var(--ease),
+      color 0.32s var(--ease),
+      border-color 0.32s var(--ease),
+      fill 0.32s var(--ease),
+      stroke 0.32s var(--ease) !important;
   }
 }
 

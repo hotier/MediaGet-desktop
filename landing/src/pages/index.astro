@@ -121,17 +121,17 @@ const version = release.version || "0.1.0";
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>MediaGet — 粘贴一条链接，解析、预览与下载都在你自己的电脑上完成</title>
+    <title>MediaGet-免费的作品解析平台</title>
     <meta
       name="description"
       content={`MediaGet 是一款 Windows 桌面下载器：解析与下载都在本机完成，链接不经过第三方服务器，直链拿到就落盘。支持 ${platformCount} 个平台，含资源列表预览与断点续传，Cookie 只存本机。`}
     />
     <!-- 首屏是整页最上面那一块，浏览器 UI 跟着它的底色走；切档时由 head 内联脚本改写 -->
     <meta name="theme-color" content="#f7f7f8" />
-    <meta property="og:title" content="MediaGet — 本地解析、本地下载" />
+    <meta property="og:title" content="MediaGet-免费的作品解析平台" />
     <meta
       property="og:description"
-      content="粘贴一条链接。解析、预览与下载，都在你自己的电脑上完成。"
+      content={`MediaGet 是一款 Windows 桌面下载器：解析与下载都在本机完成，链接不经过第三方服务器，直链拿到就落盘。支持 ${platformCount} 个平台，含资源列表预览与断点续传，Cookie 只存本机。`}
     />
     <meta property="og:type" content="website" />
     <!-- 绝对链接来自 astro.config 的 site（Pages 项目站），页面里不写死域名 -->
@@ -195,19 +195,39 @@ const version = release.version || "0.1.0";
 
         document.addEventListener("DOMContentLoaded", function () {
           var toggle = document.getElementById("themeToggle");
+          var fadeTimer = null;
           syncChrome(root.dataset.theme);
           if (!toggle) return;
           toggle.addEventListener("click", function () {
             var theme = root.dataset.theme === "light" ? "dark" : "light";
-            root.dataset.theme = theme;
-            try {
-              localStorage.setItem("mg-landing-theme", theme);
-            } catch (error) {
-              /* 隐私模式禁用存储时仅本次会话生效 */
+            var apply = function () {
+              root.dataset.theme = theme;
+              try {
+                localStorage.setItem("mg-landing-theme", theme);
+              } catch (error) {
+                /* 隐私模式禁用存储时仅本次会话生效 */
+              }
+              syncChrome(theme);
+              /* 首屏 WebGL island 在跑，靠这个事件换粒子配色 */
+              document.dispatchEvent(new CustomEvent("mg:theme", { detail: { theme: theme } }));
+            };
+            /* 主路线 View Transitions：整页新旧快照一次交叉溶解，全页同一拍——
+               逐元素过渡各区域重绘节奏不一，mock 窗先亮、四周慢半拍，像被切开。
+               不支持的浏览器退回 .theme-fading 逐元素渐变（global.css），再不行瞬翻。 */
+            var reduce =
+              window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+            if (!reduce && document.startViewTransition) {
+              document.startViewTransition(apply);
+            } else if (!reduce) {
+              root.classList.add("theme-fading");
+              clearTimeout(fadeTimer);
+              fadeTimer = window.setTimeout(function () {
+                root.classList.remove("theme-fading");
+              }, 340);
+              apply();
+            } else {
+              apply();
             }
-            syncChrome(theme);
-            /* 首屏 WebGL island 在跑，靠这个事件换粒子配色 */
-            document.dispatchEvent(new CustomEvent("mg:theme", { detail: { theme: theme } }));
           });
         });
       })();
@@ -249,6 +269,24 @@ const version = release.version || "0.1.0";
           <nav class="nav-links" aria-label="页面导航">
             <a href="#platforms">平台</a>
             <a href="#faq">问答</a>
+            <!-- 更新日志是站内另一页而非锚点：新标签打开，滚动位置不打断（业主 2026-10-20 定）。
+                 与页脚「资源」列、文档页共用 ./changelog.html，同步链由 verify-landing 守卫。 -->
+            <a href="./changelog.html" target="_blank" rel="noopener">更新日志</a>
+            <!-- GitHub 图标并入链接组（业主 2026-10-20「放到更新日志右边」）：
+                 窄屏断点只藏文字锚点、这枚图标跟着留在右侧（见 global.css 的 720px 段）。 -->
+            <a
+              class="nav-github"
+              href={`https://github.com/${repo}`}
+              aria-label="GitHub 仓库"
+              target="_blank"
+              rel="noopener"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 6v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"
+                />
+              </svg>
+            </a>
           </nav>
 
           <div class="nav-actions">
@@ -261,19 +299,6 @@ const version = release.version || "0.1.0";
               <path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z" />
             </svg>
           </button>
-          <a
-            class="nav-github"
-            href={`https://github.com/${repo}`}
-            aria-label="GitHub 仓库"
-            target="_blank"
-            rel="noopener"
-          >
-            <svg viewBox="0 0 24 24" aria-hidden="true">
-              <path
-                d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 6v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21"
-              />
-            </svg>
-          </a>
         </div>
         </div>
       </div>

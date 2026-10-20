@@ -1,0 +1,55 @@
+---
+/**
+ * 更新日志：内容由 scripts/build-landing.cjs 从仓库根 CHANGELOG.md 解析成
+ * changelog.json（生成物，已进 .gitignore），本页只负责展示，不抄一份文案——
+ * CHANGELOG.md 是 pnpm release 的产物，抄第二份必然过期，同步链在
+ * verify-landing.cjs 里有守卫（产物里必须有 CHANGELOG 最新那个版本号）。
+ *
+ * 字体说明：正文是动态内容（每个版本都在加新字），不参与思源子集裁剪——
+ * 子集缺的字回落系统字体，属预期；页面骨架文案（更新日志 / 当前版本 / 发布于）
+ * 在两套子集里都已覆盖，tests/landing-fonts.test.ts 会盯着新增的静态文案。
+ *
+ * commit 链接只放行 https:// 外链（与页脚的 GitHub 入口同一档），target=_blank。
+ */
+import DocPage from "../layouts/DocPage.astro";
+import changelog from "../../changelog.json";
+import release from "../../version.json";
+
+const releases = changelog.releases;
+/* 「最后更新」= 最新一个版本的日期：这份日志的更新日就是版本的发布日 */
+const updated = releases[0]?.date || "";
+---
+
+<DocPage
+  current="changelog"
+  title="更新日志"
+  updated={updated}
+  description="MediaGet 更新日志：与仓库 CHANGELOG 同源的版本记录。"
+>
+  {releases.map((rel) => (
+    <section class="changelog-release">
+      <h2>
+        v{rel.version}
+        {rel.date && <span class="changelog-date">发布于 {rel.date}</span>}
+        {rel.version === release.version && <span class="changelog-current">当前版本</span>}
+      </h2>
+      {rel.intro.map((line) => <p>{line}</p>)}
+      {rel.sections.map((section) => (
+        <div class="changelog-section">
+          <h3>{section.title}</h3>
+          <ul class="changelog-list">
+            {section.items.map((item) => (
+              <li>
+                {item.scope && <strong class="changelog-scope">{item.scope}</strong>}
+                {item.text}
+                {item.url && item.url.startsWith("https://") && (
+                  <a href={item.url} target="_blank" rel="noopener">{item.hash}</a>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </section>
+  ))}
+</DocPage>

@@ -25,6 +25,11 @@
  *   logos/ → landing/public/logos  平台图标，真源 = 注册表 + 应用资源目录
  *   brand/ → landing/public/brand  应用字标与页签图标，真源 = brand/ 母版 + scripts/make-icons.cjs
  *
+ * 还把仓库根的 CHANGELOG.md 解析成 landing/changelog.json（同样是生成物、已进 .gitignore），
+ * 供 changelog 页在构建时 import：更新日志只有一个真源，抄第二份必然过期。
+ * 解析是按本仓 pnpm release 的产出格式写的窄规则（## [版本](compare) (日期) / ### 小节 / * 列表项），
+ * 格式变了会在这里报「解析出 0 个版本」，不会静默发一个空页。
+ *
  * landing 的 `pnpm --filter mediaget-landing build` 已把本脚本串在 astro build 之前。
  *
  * 注意：Node 的全局 fetch 不读 Windows 系统代理，本机 --online 需要
@@ -39,6 +44,8 @@ const path = require("node:path");
 
 const ROOT = path.join(__dirname, "..");
 const VERSION_FILE = path.join(ROOT, "landing", "version.json");
+const CHANGELOG_SRC = path.join(ROOT, "CHANGELOG.md");
+const CHANGELOG_FILE = path.join(ROOT, "landing", "changelog.json");
 const LOGO_SRC = path.join(ROOT, "renderer", "public", "logos");
 const LOGO_DEST = path.join(ROOT, "landing", "public", "logos");
 const BRAND_SRC = path.join(ROOT, "renderer", "public", "brand");
@@ -147,9 +154,103 @@ function fromLocal() {
   };
 }
 
+/**
+ * 解析 CHANGELOG.md（conventional-changelog 的产出格式）为结构化数据。
+ *
+ * 只认三样东西，其余跳过并播报：
+ *   - `## 版本 (日期)` 或 `## [版本](compare-url) (日期)` —— 首个版本没有 compare 链接，
+ *     第二个版本起 conventional-changelog 会自动包上方括号形式，两种都要接住；
+ *   - `### 小节标题`（新增 / 修复 / …）；
+ *   - `* **scope:** 摘要 ([hash](commit-url))` —— scope 与尾部的 commit 链接都可缺省。
+ * `# 更新日志` 大标题与开头那段给维护者的说明（「本文件由 pnpm release …」）不是用户文案，
+ * 从首个 `## ` 起截断丢掉。文本不在这里转 HTML：changelog 页用 Astro 渲染，插值自动转义。
+ */
+function parseChangelog(md) {
+  const fromFirstRelease = md.search(/^## /m);
+  if (fromFirstRelease === -1) fail("CHANGELOG.md 里没有 `## ` 版本段——格式变了？");
+
+  const releases = [];
+  for (const block of md.slice(fromFirstRelease).split(/^## /m)) {
+    const lines = block.replace(/\r/g, "").split("\n");
+    const headLine = (lines.shift() || "").trim();
+    if (!headLine) continue;
+
+    let rest = headLine;
+    let compareUrl = null;
+    const bracketed = rest.match(/^\[([^\]]+)\]\(([^)]+)\)\s*/);
+    if (bracketed) {
+      rest = rest.slice(bracketed[0].length);
+      compareUrl = bracketed[2];
+    }
+    const version = (rest.match(/^\S+/) || [""])[0];
+    if (!version) {
+      log(`changelog：版本段标题读不出版本号，已跳过：${headLine.slice(0, 60)}`);
+      continue;
+    }
+    rest = rest.slice(version.length).trim();
+    const dated = rest.match(/^\(([^)]*)\)$/);
+    if (!dated) log(`changelog：v${version} 缺日期（写 (YYYY-MM-DD) 才能显示「发布于」）`);
+
+    const release = {
+      version,
+      date: dated ? dated[1].trim() : null,
+      compareUrl,
+      intro: [],
+      sections: [],
+    };
+    let section = null;
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) continue;
+      if (line.startsWith("### ")) {
+        section = { title: line.slice(4).trim(), items: [] };
+        release.sections.push(section);
+      } else if (line.startsWith("* ")) {
+        if (!section) {
+          log(`changelog：v${version} 有列表项落在小节之外，已跳过`);
+          continue;
+        }
+        section.items.push(parseChangeItem(line.slice(2)));
+      } else if (!section) {
+        release.intro.push(line);
+      } else {
+        log(`changelog：v${version} 小节内的非列表行，已跳过：${line.slice(0, 40)}`);
+      }
+    }
+    releases.push(release);
+  }
+  return releases;
+}
+
+/** 单条变更：`**scope:** 摘要 ([hash](commit-url))`，scope 与 commit 链接都可缺省 */
+function parseChangeItem(text) {
+  const item = { scope: null, text: text.trim(), hash: null, url: null };
+  const scoped = item.text.match(/^\*\*(.+?):\*\*\s*/);
+  if (scoped) {
+    item.scope = scoped[1];
+    item.text = item.text.slice(scoped[0].length).trim();
+  }
+  const linked = item.text.match(/\s*\(\[([0-9a-f]+)\]\(([^)\s]+)\)\)\s*$/);
+  if (linked) {
+    item.hash = linked[1];
+    item.url = linked[2];
+    item.text = item.text.slice(0, linked.index).trimEnd();
+  }
+  return item;
+}
+
+function syncChangelog() {
+  if (!fs.existsSync(CHANGELOG_SRC)) fail("仓库根没有 CHANGELOG.md：changelog 页没有数据源");
+  const releases = parseChangelog(fs.readFileSync(CHANGELOG_SRC, "utf8"));
+  if (releases.length === 0) fail("CHANGELOG.md 解析出 0 个版本——产出格式变了，同步规则要跟着改");
+  fs.writeFileSync(CHANGELOG_FILE, `${JSON.stringify({ source: "CHANGELOG.md", releases }, null, 2)}\n`, "utf8");
+  log(`已解析 CHANGELOG.md → ${path.relative(ROOT, CHANGELOG_FILE)}（${releases.length} 个版本）`);
+}
+
 async function main() {
   syncDir(LOGO_SRC, LOGO_DEST);
   syncDir(BRAND_SRC, BRAND_DEST);
+  syncChangelog();
 
   let info = fromLocal();
   if (online) {

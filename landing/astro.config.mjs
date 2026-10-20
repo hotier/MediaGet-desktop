@@ -16,7 +16,7 @@ import { defineConfig } from "astro/config";
  * 会把资源指到 dist/terms/_astro/，那种组合要么改成按层级算前缀，要么别用目录格式——
  * 别把 format 改回去却留着这里的 `./`。
  *
- * 逐份 HTML 改写而不是只改 index.html：文档页有三份，只改首页等于让那三页在
+ * 逐份 HTML 改写而不是只改 index.html：内页有四份，只改首页等于让内页在
  * 双击打开与子路径部署两种场合下裸奔（构建是绿的，线上是没样式的）。
  *
  * 只动 `"/_astro/`：外链（github.com）、data: URI 与正文锚点一律不碰。
@@ -50,7 +50,7 @@ function relativeOutput() {
 }
 
 // 静态输出。产物在 dist/，与主仓 dist-renderer / dist-electron 互不相干。
-// build.format = "file"：四页（index / terms / privacy / notice）都平铺在产物根，
+// build.format = "file"：五页（index / changelog / terms / privacy / notice）都平铺在产物根，
 // 页面之间的链接于是可以写成 `./terms.html` —— 双击打开与 Pages 子路径都能跳。
 // 端口避开主仓 dev server 的 5433。
 export default defineConfig({

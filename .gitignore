@@ -16,6 +16,10 @@ landing/public/logos/
 # 注意 landing/public/og.png 不在此列 —— 分享卡只有落地页用，脚本直接产出并入库。
 landing/public/brand/
 
+# 更新日志数据：scripts/build-landing.cjs 从仓库根 CHANGELOG.md 解析生成（真源在根目录那份），
+# 构建脚本总是先于 astro build 跑，所以不需要像 version.json 那样留一份快照入库。
+landing/changelog.json
+
 # bundled binaries (fetched by CI / first-run, never in git)
 resources/bin/
 *.exe

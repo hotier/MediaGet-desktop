@@ -1,14 +1,14 @@
 ---
 /**
- * 文档页外壳（用户协议 / 隐私政策 / 权利通知）。
+ * 文档页外壳（更新日志 / 用户协议 / 隐私政策 / 权利通知）。
  *
- * 三页共用这一层，页面文件里只写正文；页脚与首页是同一个组件（components/SiteFooter.astro），
- * 所以「加了第四篇只改了首页」这种错在结构上就不可能发生。
+ * 四页共用这一层，页面文件里只写正文；页脚与首页是同一个组件（components/SiteFooter.astro），
+ * 所以「加了新页只改了首页」这种错在结构上就不可能发生。
  *
  * 三条约定：
- *   1. 只引 doc.css（它自己 @import global.css），所以三页与首页共用同一套 token。
+ *   1. 只引 doc.css（它自己 @import global.css），所以四页与首页共用同一套 token。
  *      文档页没有顶栏（业主 2026-10-20 定：条款不该再复制一份导航），
- *      三篇之间的切换入口只有一个——页脚「条款」那一列。
+ *      各页之间的切换入口只有一个——页脚的「资源」与「条款」两列。
  *   2. 链接一律写成 `./xxx.html` 而不是 `/xxx`：产物是 build.format="file" 的平铺 HTML，
  *      双击 dist/index.html 与塞进 Pages 子路径都要能跳。
  *   3. 页脚传 hrefBase="./index.html"：页脚里那几列锚点属于首页，文档页上没有那些 id。
@@ -18,7 +18,7 @@ import SiteFooter from "../components/SiteFooter.astro";
 
 interface Props {
   /** 本页在产物里的文件名（不含扩展名），只用于拼 canonical */
-  current: "terms" | "privacy" | "notice";
+  current: "changelog" | "terms" | "privacy" | "notice";
   title: string;
   /** 「最后更新」用的日期，YYYY-MM-DD */
   updated: string;
