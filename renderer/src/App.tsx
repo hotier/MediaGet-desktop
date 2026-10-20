@@ -7,12 +7,14 @@
  * 样式写在 utility 里，`styles.css` 只剩 Token 与少数无法 utility 化的规则（拖拽区、滚动条）。
  */
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
-import { Download } from "lucide-react";
+import { Download, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useReducedMotion } from "motion/react";
 import { NAV_ITEMS, SETTINGS_GLYPHS, type AnimGlyphHandle, type NavKey } from "./lib/nav-icons";
+import { SIDEBAR_COLLAPSED_KEY, parseSidebarCollapsed, serializeSidebarCollapsed } from "./lib/sidebar-pref";
 import { AnimIcon } from "./components/AnimIcon";
 import { BrandLogo } from "./components/BrandLogo";
 import { api, BridgeError } from "./lib/bridge";
+import { cn } from "./lib/utils";
 import { setFontSize, setTheme, setThemeStyle, setFontFamily } from "./lib/theme";
 import { hydratePlatformSwitches } from "./store/platforms";
 import type { AppMeta, DownloadTaskView, UpdateState } from "../../types/ipc";
@@ -53,6 +55,17 @@ export default function App(): React.ReactElement {
   /** 设置钮字形的受控触发（悬停驱动，AnimIcon 只管导航那种 active 布尔） */
   const settingsGlyphRef = useRef<AnimGlyphHandle>(null);
   const reducedMotion = useReducedMotion();
+  /** 侧栏收起（规格 2026-10-20）：UI chrome，localStorage 自管，不入 AppSettings（不进脏计数/保存条） */
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
+    parseSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY)),
+  );
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((v) => {
+      const next = !v;
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, serializeSidebarCollapsed(next));
+      return next;
+    });
+  }, []);
 
   /** 队列行 → 历史页定位。稳定引用：DownloadsPage 的行是 memo 组件，内联箭头会让每行都被判「变了」 */
   const navToHistory = useCallback((target: "history", groupId: string) => {
@@ -185,12 +198,42 @@ export default function App(): React.ReactElement {
           />
         ) : (
           <>
-        <nav className="drag-region flex w-(--w-side) shrink-0 flex-col gap-1 border-r border-border bg-panel pb-3 ps-2 pe-2" aria-label="页面导航">
-          {/* 品牌行 = 顶栏带：字标垂直居中即与系统三枚按钮同轴。mb-3 + 列表 gap-1 = 16px，
-              于是首个导航项与右侧内容（带高 40 + main 的 p-4）都落在 56px 这条线上。
-              字标 18px 高：40px 带里比 15px 文字略重，又不至于顶满带高（品牌资产见 BrandLogo） */}
-          <div className="mb-3 flex h-(--wco-h) items-center px-2">
-            <BrandLogo className="h-[18px] w-auto" />
+        <nav
+          aria-label="页面导航"
+          className={cn(
+            "drag-region flex shrink-0 flex-col gap-1 border-r border-border bg-panel pb-3 ps-2 pe-2",
+            "transition-[width] duration-200 motion-reduce:transition-none",
+            sidebarCollapsed ? "w-(--w-side-collapsed)" : "w-(--w-side)",
+          )}
+        >
+          {/* 品牌行：展开 = 字标（垂直落点=「页面顶 0px」与「导航栏顶 56px」的中点，带中心下移 8px）
+              + 收起钮在字标右侧（业主 2026-10-20）；收起 = 只剩展开钮，不渲染 logo（同日定稿）。
+              mb-3 + 列表 gap-1 = 16px，首个导航项与右侧内容（带高 40 + main 的 p-4）都落在 56px 这条线上 */}
+          <div className="mb-3 flex h-(--wco-h) items-center px-3">
+            {sidebarCollapsed ? (
+              <button
+                type="button"
+                onClick={toggleSidebar}
+                aria-label="展开导航栏"
+                aria-expanded={false}
+                className="no-drag mx-auto flex h-9 w-9 translate-y-2 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              >
+                <PanelLeftOpen size={16} strokeWidth={1.5} />
+              </button>
+            ) : (
+              <>
+                <BrandLogo className="h-[18px] w-auto translate-y-2" />
+                <button
+                  type="button"
+                  onClick={toggleSidebar}
+                  aria-label="收起导航栏"
+                  aria-expanded={true}
+                  className="no-drag ms-auto flex h-9 w-9 translate-y-2 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                >
+                  <PanelLeftClose size={16} strokeWidth={1.5} />
+                </button>
+              </>
+            )}
           </div>
 
           {NAV_ITEMS.map((it) => (

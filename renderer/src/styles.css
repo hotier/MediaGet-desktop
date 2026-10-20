@@ -295,6 +295,7 @@
   --r-md: 8px; /* 控件（对齐 shadcn rounded-md） */
   --r-lg: 12px; /* 卡片与浮层（对齐 shadcn rounded-lg） */
   --w-side: 208px; /* 外壳侧栏（utility 里以 w-(--w-side) 消费） */
+  --w-side-collapsed: 56px; /* 外壳侧栏收起态：仅图标列（规格 2026-10-20） */
   --w-rail: 300px; /* 解析页右栏队列轨 */
   --wco-h: 40px; /* 顶栏带高：Window Controls Overlay 三枚按钮的家，与主进程 TITLEBAR_H 同值 */
 }
