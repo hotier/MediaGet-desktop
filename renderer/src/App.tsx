@@ -6,7 +6,7 @@
  * Ctrl+K 跳首页并聚焦它；顶栏已移除（页面标题不再占一行）。
  * 样式写在 utility 里，`styles.css` 只剩 Token 与少数无法 utility 化的规则（拖拽区、滚动条）。
  */
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { Download, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { useReducedMotion } from "motion/react";
 import { NAV_ITEMS, SETTINGS_GLYPHS, type AnimGlyphHandle, type NavKey } from "./lib/nav-icons";
@@ -236,47 +236,91 @@ export default function App(): React.ReactElement {
             )}
           </div>
 
-          {NAV_ITEMS.map((it) => (
-            <button
-              key={it.key}
-              type="button"
-              onClick={() => setPage(it.key)}
-              aria-current={page === it.key ? "page" : undefined}
-              className="no-drag flex h-9 items-center gap-2.5 rounded-md px-3 text-sm text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-[current=page]:bg-secondary aria-[current=page]:text-foreground aria-[current=page]:font-medium"
-            >
-              {/* 切换那一下的入场动效由入仓组件自带（成为当前页时 AnimIcon 唤起，见 lib/nav-icons.ts） */}
-              <AnimIcon Icon={it.Icon} active={page === it.key} />
-              <span>{it.label}</span>
-              {it.key === "downloads" && running > 0 && (
+          {NAV_ITEMS.map((it) => {
+            const btn = (
+              <button
+                type="button"
+                onClick={() => setPage(it.key)}
+                aria-current={page === it.key ? "page" : undefined}
+                aria-label={it.label}
+                className={cn(
+                  "no-drag relative flex h-9 items-center gap-2.5 rounded-md text-sm text-muted-foreground outline-none transition-colors",
+                  "hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                  "aria-[current=page]:bg-secondary aria-[current=page]:text-foreground aria-[current=page]:font-medium",
+                  sidebarCollapsed ? "w-9 justify-center px-0" : "px-3",
+                )}
+              >
+                {/* 切换那一下的入场动效由入仓组件自带（成为当前页时 AnimIcon 唤起，见 lib/nav-icons.ts） */}
+                <AnimIcon Icon={it.Icon} active={page === it.key} />
+                {!sidebarCollapsed && <span>{it.label}</span>}
+                {it.key === "downloads" && running > 0 && !sidebarCollapsed && (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Badge variant="ok" className="ms-auto">
+                        {running}
+                      </Badge>
+                    </TooltipTrigger>
+                    <TooltipContent>{running} 个任务进行中</TooltipContent>
+                  </Tooltip>
+                )}
+                {/* 收起态徽标缩为图标右上角角标：数字是窄条里唯一非文字信息，不随文字一起消失 */}
+                {it.key === "downloads" && running > 0 && sidebarCollapsed && (
+                  <Badge
+                    variant="ok"
+                    className="absolute right-0.5 top-0.5 h-3.5 min-w-3.5 px-1 py-0 text-[9px] leading-none"
+                  >
+                    {running}
+                  </Badge>
+                )}
+              </button>
+            );
+            // 收起态包 Tooltip（side="right"）；aria-label 已保证无文字时屏幕阅读器可读
+            return sidebarCollapsed ? (
+              <Fragment key={it.key}>
                 <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Badge variant="ok" className="ms-auto">
-                      {running}
-                    </Badge>
-                  </TooltipTrigger>
-                  <TooltipContent>{running} 个任务进行中</TooltipContent>
+                  <TooltipTrigger asChild>{btn}</TooltipTrigger>
+                  <TooltipContent side="right">{it.label}</TooltipContent>
                 </Tooltip>
-              )}
-            </button>
-          ))}
+              </Fragment>
+            ) : (
+              <Fragment key={it.key}>{btn}</Fragment>
+            );
+          })}
 
-          <div className="mt-auto flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => {
-                setSettingsEntry(null);
-                setSettingsMode(true);
-              }}
-              onMouseEnter={() => {
-                if (!reducedMotion) settingsGlyphRef.current?.startAnimation();
-              }}
-              onMouseLeave={() => settingsGlyphRef.current?.stopAnimation()}
-              className="no-drag flex h-9 flex-1 items-center gap-2.5 rounded-md px-3 text-sm text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
-            >
-              {/* 悬停驱动（挂 ref 后组件自身不响应 hover，见 components/AnimIcon.tsx）；离开即 stop——settings 是整枚回转，不复位也能复播，但与其他字形统一语义 */}
-              <SETTINGS_GLYPHS.entry ref={settingsGlyphRef} size={16} className="anim-icon" aria-hidden="true" />
-              <span>设置</span>
-            </button>
+          <div className={cn("mt-auto flex items-center gap-1", sidebarCollapsed && "flex-col")}>
+            {(() => {
+              const settingsBtn = (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSettingsEntry(null);
+                    setSettingsMode(true);
+                  }}
+                  onMouseEnter={() => {
+                    if (!reducedMotion) settingsGlyphRef.current?.startAnimation();
+                  }}
+                  onMouseLeave={() => settingsGlyphRef.current?.stopAnimation()}
+                  aria-label="设置"
+                  className={cn(
+                    "no-drag flex h-9 items-center gap-2.5 rounded-md text-sm text-muted-foreground outline-none transition-colors",
+                    "hover:bg-accent hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50",
+                    sidebarCollapsed ? "w-9 justify-center px-0" : "flex-1 px-3",
+                  )}
+                >
+                  {/* 悬停驱动（挂 ref 后组件自身不响应 hover，见 components/AnimIcon.tsx）；离开即 stop——settings 是整枚回转，不复位也能复播，但与其他字形统一语义 */}
+                  <SETTINGS_GLYPHS.entry ref={settingsGlyphRef} size={16} className="anim-icon" aria-hidden="true" />
+                  {!sidebarCollapsed && <span>设置</span>}
+                </button>
+              );
+              return sidebarCollapsed ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>{settingsBtn}</TooltipTrigger>
+                  <TooltipContent side="right">设置</TooltipContent>
+                </Tooltip>
+              ) : (
+                settingsBtn
+              );
+            })()}
             {update?.phase === "downloaded" && updatePolicy.onStartup && updatePolicy.autoDownload && (
               <Tooltip>
                 <TooltipTrigger asChild>
