@@ -1,0 +1,79 @@
+name: Landing
+
+# 落地页自己一条链路：只改落地页（或它依赖的那几张源表/资产）才重建并部署到 Pages，
+# 不等主程序发版，也不受 tag 与版本号牵制 —— 文档里改一句措辞，推上去就该上线。
+#
+# 版本号仍会跟着走：release-it 发版时会把 package.json 一起提交，那一次 push 命中
+# 下面的 paths（package.json），落地页顺手重建，显示的就是新版本号。
+# 所以这里用离线档构建：不查 GitHub Release，也就不存在「发版刚 tag、Release 还没建好
+# 就去拉数据」的竞态；页面用的 version 与下载链接分别来自 package.json 与固定地址。
+on:
+  push:
+    branches: [main]
+    paths:
+      - "landing/**"
+      - "scripts/build-landing.cjs"
+      - "scripts/make-icons.cjs"
+      - "scripts/verify-landing.cjs"
+      - "brand/**"
+      - "renderer/public/logos/**"
+      - "renderer/public/brand/**"
+      - "shared/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/landing.yml"
+  # 手动补发：改了仓库设置、或某次部署失败后不想再空推一个 commit 时用
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # deploy-pages 要写 Pages；id-token 走 OIDC（私有仓开启 Pages 时的鉴权路径）
+  pages: write
+  id-token: write
+
+# Pages 同一时刻只允许一个部署。排队而不取消：正在跑的那次让它跑完，
+# 中途掐断会留下半个站点。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: 构建落地页（离线档 + 产物自检）
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # pnpm 版本不硬编码：action-setup 读 package.json 的 packageManager 字段
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+
+      # 离线档：构建前会先把 renderer/public 的 logos 与 brand 镜像到 landing/public。
+      # 不引网络，落到 Pages 上的就是仓库此刻的页面。
+      - name: Build landing site
+        run: pnpm run landing:build
+
+      - name: Verify artifact (four pages, relative refs, every local asset present)
+        run: node scripts/verify-landing.cjs
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: landing/dist
+
+  deploy:
+    name: 部署到 GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deploy
+        uses: actions/deploy-pages@v4

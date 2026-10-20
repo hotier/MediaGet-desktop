@@ -3,6 +3,9 @@ name: Release
 # 触发方式：本地 `pnpm release`（release-it）跑完验收门 → 升版本 + 写 CHANGELOG +
 # 打 `vX.Y.Z` 附注标签 + push。标签一到 GitHub，本工作流就负责出包与发布 ——
 # 「什么时候算一版」是人敲命令决定的，「这一版是什么号」由 commit 前缀推导。
+#
+# 落地页不在这里：Pages 部署归 landing.yml 单独负责（只改落地页就上线，不必等发版）。
+# 发版那一次 commit 会改 package.json，命中 landing.yml 的 paths，落地页顺手重建。
 
 on:
   push:
@@ -119,40 +122,3 @@ jobs:
           gh release view "$TAG" --json tagName,name,assets \
             --jq '{tag: .tagName, name: .name, assets: [.assets[].name]}'
 
-  landing:
-    name: 发布落地页（GitHub Pages）
-    # 排在 publish 之后：落地页的版本号、发布日期与安装包体积来自「这次发布出来的」Release，
-    # 抢跑只会拿到上一个 tag（首次发布则 404）。
-    needs: publish
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # deploy-pages 要写 Pages；id-token 用于 OIDC（私有仓开启 Pages 时的鉴权路径）
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
-      # --online：向 GitHub 要真实资产（直链 + 体积）与发布日期。CI=true 会让脚本自带
-      # --strict 语义——拉不到就红，而不是发一个「下载按钮指向 Release 网页、体积写 —」的页面。
-      # 本仓是私有仓，未授权的 releases/latest 返回 404，所以必须把 GITHUB_TOKEN 传进去。
-      - name: Build landing site with this release's data
-        run: pnpm run landing:build:online
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: landing/dist
-      - name: Deploy to GitHub Pages
-        id: deploy
-        uses: actions/deploy-pages@v4

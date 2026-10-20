@@ -35,6 +35,9 @@ jobs:
 
   landing:
     name: 落地页构建（离线档 + 产物自检）
+    # 只在 PR 上跑：push 到 main 由 landing.yml 负责，它构建完同一份产物直接发 Pages，
+    # 这里不必把同一件事再做一遍。
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -48,39 +51,15 @@ jobs:
         env:
           ELECTRON_SKIP_BINARY_DOWNLOAD: 1
 
-      # 离线档：不碰 GitHub 也要能构建。这里验的是页面本身（index.astro / astro.config /
-      # 图标镜像）没坏，版本数据真假由 release.yml 的 landing job 负责。
+      # 离线档：不碰 GitHub 也要能构建（版本取 package.json）。这里验的是页面本身
+      # （astro.config / index.astro / 图标镜像）没坏。
       - run: pnpm run landing:build
 
-      # 三条都是「构建成功但页面是坏的」那种静默失败：
-      # 1. 资源引用必须已改成文档相对（./_astro/）——残留根绝对路径意味着子路径托管或
-      #    双击打开时 CSS/JS 全 404，而 astro build 一声不响；
-      # 2. 平台带数量与页面写出的数字必须自洽——带子由 shared/platforms.ts 生成，一旦有人
-      #    把平台名/数量重新抄回页面，这里当天红；
-      # 3. 每一个被引用的图标都真的落了盘（landing/public/logos 是生成物，缺谁碎谁）。
-      - name: Assert artifact is location-independent and complete
-        shell: bash
-        run: |
-          set -euo pipefail
-          page=landing/dist/index.html
-          if grep -q '"/_astro/' "$page"; then
-            echo "产物里还有站点根绝对路径的资源引用，relative-output 改写没生效" >&2
-            exit 1
-          fi
-          grep -q '"\./_astro/' "$page" || { echo "产物里没有 ./_astro/ 引用，构建形态变了" >&2; exit 1; }
-          # 图标有两处出处：平台带 + 界面模拟里的表格，所以先把 .platform-list 区间切出来。
-          # 走马灯为了无缝循环把同一段轨道排了四份拷贝，这里按文件名去重再数——数出来是「几枚
-          # 图标」而不是「几个 <img>」，改轨道份数不会把这条断言带崩。
-          # 标题只写「平台支持」、不带数字，数量对齐改用页内唯一那句承诺（meta description
-          # 的「支持 N 个平台」）：加一个平台时两处都来自注册表，少一处跟上就红。
-          wall=$(sed -n '/class="platform-list"/,/\/ul>/p' "$page" | grep -o 'src="\./logos/[^"]*"' | sort -u | wc -l)
-          [ "$wall" -ge 1 ] || { echo "平台带一枚图标都没有" >&2; exit 1; }
-          grep -q "支持 $wall 个平台" "$page" || { echo "平台带有 $wall 枚图标，页面却不说「支持 $wall 个平台」" >&2; exit 1; }
-          for f in $(grep -o 'src="\./logos/[^"]*"' "$page" | sed 's|src="\./logos/||; s|"$||' | sort -u); do
-            [ -f "landing/dist/logos/$f" ] || { echo "页面引用了 logos/$f，dist/logos 里没有这个文件" >&2; exit 1; }
-          done
-          refs=$(grep -o 'src="\./logos/[^"]*"' "$page" | sed 's|src="\./logos/||; s|"$||' | sort -u | wc -l)
-          echo "OK：$wall 个平台、全页引用 $refs 枚图标全部在位、资源引用全部文档相对"
+      # 自检与 landing.yml 共用一份脚本：四页齐备、资源引用文档相对、每个本地引用
+      # 都真的落盘、平台卡数量与页内「支持 N 个平台」自洽。构建成功但线上是坏的那类
+      # 静默失败都在这里变红。
+      - name: Verify artifact
+        run: node scripts/verify-landing.cjs
 
   build-win:
     needs: test
