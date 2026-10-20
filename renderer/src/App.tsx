@@ -201,15 +201,22 @@ export default function App(): React.ReactElement {
         <nav
           aria-label="页面导航"
           className={cn(
-            "drag-region flex shrink-0 flex-col gap-1 border-r border-border bg-panel pb-3 ps-2 pe-2",
+            "drag-region flex shrink-0 flex-col gap-1 overflow-hidden border-r border-border bg-panel pb-3 ps-2 pe-2",
             "transition-[width] duration-200 motion-reduce:transition-none",
             sidebarCollapsed ? "w-(--w-side-collapsed)" : "w-(--w-side)",
           )}
         >
           {/* 品牌行：展开 = 字标（垂直落点=「页面顶 0px」与「导航栏顶 56px」的中点，带中心下移 8px）
               + 收起钮在字标右侧（业主 2026-10-20）；收起 = 只剩展开钮，不渲染 logo（同日定稿）。
+              收起态容器转 justify-center 并去掉 px-3：56px 里再抠 24px 内边距会把 w-9 按钮压扁（整分支审查 I1），
+              居中后按钮落在 40px 内容列内、与导航项同轴。
               mb-3 + 列表 gap-1 = 16px，首个导航项与右侧内容（带高 40 + main 的 p-4）都落在 56px 这条线上 */}
-          <div className="mb-3 flex h-(--wco-h) items-center px-3">
+          <div
+            className={cn(
+              "mb-3 flex h-(--wco-h) items-center",
+              sidebarCollapsed ? "justify-center" : "px-3",
+            )}
+          >
             {sidebarCollapsed ? (
               <button
                 type="button"
