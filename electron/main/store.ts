@@ -35,6 +35,7 @@ import {
 import { resolveKey } from "../../shared/platforms";
 import { normalizeAuthorSnapshot } from "../../shared/author";
 import { normalizeHistoryKeys } from "../../shared/history";
+import type { SettingsRepository } from "./repositories";
 
 /** Source files read only by the transitional importer; runtime reads/writes are removed after migration. */
 export const LEGACY_JSON_STORE_FILES = [
@@ -122,7 +123,8 @@ export class JsonStore {
   constructor(
     private dir: string,
     private onError: (message: string) => void = (message: string): void => console.error(message),
-    private onInfo: (message: string) => void = (message: string): void => console.info(message)
+    private onInfo: (message: string) => void = (message: string): void => console.info(message),
+    private settingsRepository?: SettingsRepository
   ) {
     mkdirSync(this.dir, { recursive: true });
   }
@@ -171,6 +173,7 @@ export class JsonStore {
 
   /** 内存缓存读：core-adapter/config 的 `read` 回调在每次解析都会调用，避免热路径反复读盘 */
   loadConfig(force = false): Pick<StoreShape, "settings" | "kernel"> {
+    if (this.settingsRepository) return this.settingsRepository.loadConfig();
     if (this.configCache && !force) return this.configCache;
     const raw = this.readJson<Partial<StoreShape>>(this.path("config"), {});
     this.configCache = {
@@ -192,6 +195,11 @@ export class JsonStore {
   }
 
   saveConfig(config: { settings: AppSettings; kernel: Record<string, string> }): void {
+    if (this.settingsRepository) {
+      this.settingsRepository.saveConfig(config);
+      this.configCache = config;
+      return;
+    }
     // 写穿缓存：config.json 只有本类读写，无需再读盘
     this.configCache = config;
     this.writeJson(this.path("config"), config);
@@ -199,6 +207,7 @@ export class JsonStore {
 
   /** 内核配置单项读取（core-adapter/config 的 `read` 回调接这里） */
   getKernelValue(key: string): string | undefined {
+    if (this.settingsRepository) return this.settingsRepository.getKernelValue(key);
     return this.loadConfig().kernel[key];
   }
 

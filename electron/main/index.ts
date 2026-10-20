@@ -31,6 +31,7 @@ import { createEngine } from "./engine";
 import { Downloader } from "./downloader";
 import { createLinkRenewer } from "./link-renew";
 import { JsonStore, queueDigest } from "./store";
+import { settingsRepository } from "./storage-runtime";
 import { createStats } from "./stats";
 import { createResources, readManifest } from "./resources";
 import { createClipboardWatcher } from "./clipboard";
@@ -77,7 +78,8 @@ registerPreviewScheme();
 const store = new JsonStore(
   app.getPath("userData"),
   (m) => logger.error(m),
-  (m) => logger.info(m)
+  (m) => logger.info(m),
+  settingsRepository
 );
 
 /**

@@ -15,9 +15,8 @@
  * parser 换 Cookie **只能靠重启**（值已经进了常量），设置页那句「立即生效」对它们只到
  * douyin 这一档为止。
  */
-import { app } from "electron";
 import { SECRET_CONFIG_KEYS } from "../../core-adapter/config";
-import { JsonStore } from "./store";
+import { settingsRepository } from "./storage-runtime";
 
 /**
  * 把 userData/config.json 里的用户 Cookie 铺进 `process.env`。
@@ -25,7 +24,7 @@ import { JsonStore } from "./store";
  */
 function primeKernelCookies(): void {
   try {
-    const { settings } = new JsonStore(app.getPath("userData")).loadConfig();
+    const { settings } = settingsRepository.loadConfig();
     for (const key of SECRET_CONFIG_KEYS) {
       const value = settings.cookies?.[key];
       if (value && !process.env[key]) process.env[key] = value;
