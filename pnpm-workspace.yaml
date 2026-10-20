@@ -13,6 +13,7 @@ allowBuilds:
   electron-winstaller: false
   # Astro 依赖树里的 sharp：落地页全 SVG、不用 astro:assets，不需要其 install 脚本
   sharp: false
+  better-sqlite3: true
 minimumReleaseAgeExclude:
   - electron@44.7.2
   - lucide-react@1.57.0

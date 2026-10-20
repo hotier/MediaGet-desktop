@@ -47,6 +47,7 @@
     "@radix-ui/react-slot": "^1.5.0",
     "@radix-ui/react-switch": "^1.4.1",
     "@radix-ui/react-tooltip": "^1.4.1",
+    "better-sqlite3": "^13.0.3",
     "builder-util-runtime": "9.7.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -71,6 +72,7 @@
     "@eslint/js": "^9.39.0",
     "@release-it/conventional-changelog": "^12.0.2",
     "@tailwindcss/vite": "^4.3.3",
+    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^24.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
@@ -94,6 +96,7 @@
   "build": {
     "appId": "cc.hotier.mediaget.desktop",
     "productName": "MediaGet",
+    "npmRebuild": true,
     "directories": {
       "output": "release",
       "buildResources": "build"
