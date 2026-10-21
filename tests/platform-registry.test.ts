@@ -12,14 +12,19 @@ import { PLATFORM_INFO, localParserKeys } from "@mediaget/parse-core";
 import { describe, expect, it } from "vitest";
 import {
   ENGINE_IDS,
+  ENGINE_INFO,
   PLATFORMS,
+  SWITCHABLE_ENGINE_IDS,
+  asSwitchableEngine,
   canonicalKeys,
+  cookieKeyOf,
   displayName,
   engineCoverage,
   iconFileOf,
   isEnabled,
   isRegistered,
   platformDef,
+  primaryEngineOf,
   resolveKey,
 } from "../shared/platforms";
 
@@ -62,6 +67,29 @@ describe("注册表结构", () => {
         expect(ENGINE_IDS, `${p.key} 写了未知引擎 ${engine}`).toContain(engine as (typeof ENGINE_IDS)[number]);
       }
     }
+  });
+
+  it("主引擎解析：缺键 = mediaget，别名键先归一再查，认不出的值不左右选路", () => {
+    expect(primaryEngineOf("douyin", {})).toBe("parseCore");
+    expect(primaryEngineOf("xhs", { redbook: "amagi" })).toBe("amagi");
+    // 未登记键不还原成别的平台
+    expect(primaryEngineOf("weibo", { tiktok: "ytdlp" })).toBe("parseCore");
+    expect(asSwitchableEngine("ytdlp")).toBe("ytdlp");
+    expect(asSwitchableEngine("mock")).toBeNull();
+    expect(asSwitchableEngine("nope")).toBeNull();
+  });
+
+  it("引擎开关元数据完整：可切换引擎都是已登记 id、各有 ENGINE_INFO，且不含 mock 兜底", () => {
+    expect(SWITCHABLE_ENGINE_IDS).not.toContain("mock");
+    for (const id of SWITCHABLE_ENGINE_IDS) {
+      expect(ENGINE_IDS).toContain(id);
+      const info = ENGINE_INFO[id];
+      expect(info.id, `${id} 的 ENGINE_INFO.id 写错`).toBe(id);
+      expect(info.label.length, `${id} 没有引擎名`).toBeGreaterThan(0);
+      expect(info.desc.length, `${id} 没有一行说明`).toBeGreaterThan(0);
+    }
+    // 声明顺序 = 引擎注册表的全局登记顺序：体检按它对账「先试谁」
+    expect(SWITCHABLE_ENGINE_IDS).toEqual(["parseCore", "amagi", "ytdlp"]);
   });
 
   it("enabledByDefault 与 ready 引擎一致：没有 ready 引擎就不该默认开", () => {
@@ -134,9 +162,31 @@ describe("键归一与显示", () => {
   });
 
   it("引擎覆盖查询：登记的平台返回其声明，未登记返回 null", () => {
-    expect(engineCoverage("tiktok", "ytdlp")).toBe("declared");
+    // 2026-10-21 yt-dlp 独立引擎（ytdlp-nodejs）接入：tiktok 的原生 dlp 通路由它接管
+    expect(engineCoverage("tiktok", "ytdlp")).toBe("ready");
+    // 同日 YouTube 也接到 yt-dlp（内核那条要 API Key，随包二进制无 key 可解）
+    expect(engineCoverage("youtube", "ytdlp")).toBe("ready");
     expect(engineCoverage("douyin", "ytdlp")).toBeNull();
     expect(engineCoverage("nope", "parseCore")).toBeNull();
+  });
+
+  it("平台 → Cookie 键：注册表是唯一真源（有两家的键拼不出来）", () => {
+    expect(cookieKeyOf("youtube")).toBe("YOUTUBE_COOKIE");
+    // 按契约键大写拼会拼成 REDBOOK_COOKIE / INSTAGRAM_COOKIE，这两条正是它必须进注册表的理由
+    expect(cookieKeyOf("redbook")).toBe("XHS_COOKIE");
+    expect(cookieKeyOf("instagram")).toBe("IG_COOKIE");
+    // 别名先归一再查
+    expect(cookieKeyOf("xhs")).toBe("XHS_COOKIE");
+    // 没配 Cookie 的平台返回 null，调用方据此不传
+    expect(cookieKeyOf("twitter")).toBeNull();
+    expect(cookieKeyOf("nope")).toBeNull();
+  });
+
+  it("默认主引擎：YouTube 先试 yt-dlp，其余仍一律 mediaget", () => {
+    expect(primaryEngineOf("youtube", {})).toBe("ytdlp");
+    expect(primaryEngineOf("douyin", {})).toBe("parseCore");
+    // 用户选过就听用户的，平台默认不再生效
+    expect(primaryEngineOf("youtube", { youtube: "parseCore" })).toBe("parseCore");
   });
 });
 
@@ -167,10 +217,15 @@ describe("开关语义（主进程路由与渲染层 UI 共用这一个函数）
     const page = readFileSync(join(ROOT, "renderer", "src", "pages", "SettingsPage.tsx"), "utf8");
     const scalar = page.slice(page.indexOf("const SCALAR_SECTION"), page.indexOf("const SCALAR_FIELDS"));
     expect(scalar).not.toContain("platformSwitches");
+    expect(scalar).not.toContain("engineSwitches");
+    expect(scalar).not.toContain("platformEngines");
+    expect(scalar).not.toContain("engineFallback");
     expect(page).toContain("usePlatformStore");
-    // 预览用的假桥也必须过闸门，否则界面里关掉的平台在预览下照样能解（2026-10-16 实测踩过）
+    expect(page).toContain("useEngineStore");
+    // 预览用的假桥也必须过闸门，否则界面里关掉的平台/引擎在预览下照样能解（2026-10-16 实测踩过）
     const mock = readFileSync(join(ROOT, "renderer", "src", "dev", "mock-bridge.ts"), "utf8");
     expect(mock).toContain("isEnabled(");
+    expect(mock).toContain("isEngineEnabled(");
   });
 });
 

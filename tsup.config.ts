@@ -17,7 +17,7 @@ export default defineConfig([
     platform: "node",
     target: "node22",
     sourcemap: true,
-    external: ["electron", "electron-updater", "builder-util-runtime", "font-list", "undici", "better-sqlite3", "@mediaget/parse-core"],
+    external: ["electron", "electron-updater", "builder-util-runtime", "font-list", "undici", "better-sqlite3", "@mediaget/parse-core", "@ikenxuan/amagi", "ytdlp-nodejs"],
   },
   {
     entry: { "preload/index": "electron/preload/index.ts" },

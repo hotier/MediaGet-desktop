@@ -295,12 +295,14 @@ describe("buildWorksXlsx（真读回来：xlsx 档的唯一证据是它自己能
   const cellOf = (row: Row, key: string): unknown =>
     row.getCell(EXPORT_COLUMNS.findIndex((c) => c.key === key) + 1).value;
 
-  it("首行表头与 CSV 同一张列表（三档漂列就是这条先红）", async () => {
+  // 这两条要真写一个 xlsx 再读回来：ExcelJS 首次加载 + 落盘在并行跑全量时会轻松越过默认 5s
+  // （2026-10-21 连续三次全量红在这条，单跑 2.4s）。放宽的是**等待时间**，断言一个字没动。
+  it("首行表头与 CSV 同一张列表（三档漂列就是这条先红）", { timeout: 20_000 }, async () => {
     const sheet = await readBackXlsx(await buildWorksXlsx(rows));
     expect(headerOf(sheet)).toBe(CSV_HEADER);
   });
 
-  it("数字列是数字、时间列是日期 —— 排序筛选可用是这一档存在的全部理由", async () => {
+  it("数字列是数字、时间列是日期 —— 排序筛选可用是这一档存在的全部理由", { timeout: 20_000 }, async () => {
     const sheet = await readBackXlsx(await buildWorksXlsx(rows));
     const r2 = sheet.getRow(2);
     expect(cellOf(r2, "count")).toBe(3);

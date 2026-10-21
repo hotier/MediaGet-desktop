@@ -19,6 +19,7 @@ import { api, BridgeError } from "./lib/bridge";
 import { cn } from "./lib/utils";
 import { setFontSize, setTheme, setThemeStyle, setFontFamily } from "./lib/theme";
 import { hydratePlatformSwitches } from "./store/platforms";
+import { hydrateEngineSwitches } from "./store/engines";
 import type { AppMeta, DownloadTaskView, UpdateState } from "../../types/ipc";
 import DownloadsPage from "./pages/DownloadsPage";
 import HistoryPage from "./pages/HistoryPage";
@@ -129,8 +130,9 @@ export default function App(): React.ReactElement {
         setThemeStyle(s.themeStyle);
         setFontSize(s.fontSizePx);
         setFontFamily(s.fontFamily);
-        // 平台开关覆盖层复用这一次读，不再多打一遍 IPC
-        hydratePlatformSwitches(s.platformSwitches);
+        // 平台开关/主引擎与引擎开关的覆盖层复用这一次读，不再多打一遍 IPC
+        hydratePlatformSwitches(s.platformSwitches, s.platformEngines);
+        hydrateEngineSwitches(s.engineSwitches, s.engineFallback);
       })
       .catch(() => {});
     void loadUpdatePolicy();

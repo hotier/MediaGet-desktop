@@ -47,6 +47,11 @@ function harness(
     getThrottleMs: () => settingsRepository.loadConfig().settings.throttleMs,
     // 开关读持久值（与 index.ts 同接线）：这条链路是 P2 的验收面，下面有用例钉它
     getPlatformSwitches: () => settingsRepository.loadConfig().settings.platformSwitches,
+    // 引擎开关同一接线（v30）：关掉的引擎不参与选路与体检
+    getEngineSwitches: () => settingsRepository.loadConfig().settings.engineSwitches,
+    // 主引擎与回退开关（v31）：通道下拉 + 「失败自动回退」写的就是这两项
+    getPlatformEngines: () => settingsRepository.loadConfig().settings.platformEngines,
+    getEngineFallback: () => settingsRepository.loadConfig().settings.engineFallback,
     // 假内核：只声明 kuaishou 覆盖，探测/解析通道全部离线可控
     coreLoader: async () => ({
       localParserKeys: () => ["kuaishou"],
@@ -65,6 +70,19 @@ function harness(
         },
       }),
     }),
+    // amagi 离线桩（客户端全方法失败 + 短链展开恒 null）：解析/探针通道零真网
+    amagiMakeClient: () => ({
+      douyin: { parseWork: async () => ({ success: false, error: { kind: "network", message: "offline-stub" } }) },
+      bilibili: {
+        fetchVideoInfo: async () => ({ success: false, error: { kind: "network", message: "offline-stub" } }),
+        fetchVideoStreamUrl: async () => ({ success: false, error: { kind: "network", message: "offline-stub" } }),
+        convertAvToBv: async () => ({ success: false, error: { kind: "network", message: "offline-stub" } }),
+        fetchUserCard: async () => ({ success: false, error: { kind: "network", message: "offline-stub" } }),
+      },
+      kuaishou: { fetchVideoWork: async () => ({ success: false, error: { kind: "network", message: "offline-stub" } }) },
+      xiaohongshu: { fetchNoteDetail: async () => ({ success: false, error: { kind: "network", message: "offline-stub" } }) },
+    }),
+    amagiExpandUrl: async () => null,
     // mock 档只为验一条语义：演示结果不落历史（用例见本 describe 末尾）
     forceMode: opts.forceMode,
   });
@@ -116,6 +134,11 @@ function harness(
   // 剪贴板写入的捕获点：真实现是 Electron 的 `clipboard`（测试环境没有），这里收的就是
   // handler 真正交出去的那串字符 —— 下面的用例靠它验「文本原样到、被拒的那次没落到写入」。
   const clipboardWrites: string[] = [];
+  /**
+   * 剪贴板读取的桩。默认为空串——真应用里「剪贴板没内容」就走这条分支，不是错误。
+   * 用可变盒子是为了让「读到东西」的用例就地覆盖，不必再造一份 registerIpc。
+   */
+  const clipboardReads = { value: "" };
   registerIpc({
     ipcMain: fakeIpc,
     engine,
@@ -129,6 +152,8 @@ function harness(
     resolveSourceUrl: opts.resolveSourceUrl ?? (async ({ raw }) => raw ?? undefined),
     getFonts: async () => ["Arial", "Segoe UI", "微软雅黑"],
     writeClipboard: (text) => clipboardWrites.push(text),
+    // 读取侧：默认为空串（「剪贴板里没东西」），需要内容的用例自己覆盖 clipboardReads
+    readClipboard: () => clipboardReads.value,
     logger,
     cache,
     stats,
@@ -162,6 +187,7 @@ function harness(
     cache,
     netCache,
     clipboardWrites,
+    clipboardReads,
     dropSettings,
     cleanup: () => {
       database.close();
@@ -547,6 +573,24 @@ describe("IPC 信封与校验", () => {
     cleanup();
   });
 
+  it("app:readClipboard 原样回吐；空剪贴板是空串而不是错误；超 4000 截断（v34）", async () => {
+    const { call, clipboardReads, cleanup } = harness();
+
+    // 空剪贴板：「没东西可粘」不是失败，界面靠空串自己决定说什么
+    const empty = await call(IPC.appReadClipboard, undefined);
+    expect(empty.ok && empty.data).toEqual({ text: "" });
+
+    clipboardReads.value = "标题：示例视频 https://v.douyin.com/abc/";
+    const r = await call(IPC.appReadClipboard, undefined);
+    expect(r.ok && r.data).toEqual({ text: clipboardReads.value });
+
+    // 截断与 parse:input 的 4000 上限对齐：粘进来是为了接着解析，多出来的也用不上
+    clipboardReads.value = "x".repeat(5000);
+    const big = await call(IPC.appReadClipboard, undefined);
+    expect(big.ok && (big.data as { text: string }).text.length).toBe(4000);
+    cleanup();
+  });
+
   it("settings:set 拒绝未知字段（strict schema）", async () => {
     const { call, cleanup } = harness();
     const r = await call(IPC.settingsSet, { evilField: 1 });
@@ -555,16 +599,19 @@ describe("IPC 信封与校验", () => {
     cleanup();
   });
 
-  it("probe:engines：回落关闭时未覆盖平台 ok=false（如实汇报）", async () => {
+  it("probe:engines：假核只覆盖 kuaishou，amagi 补上四家，其余平台如实标红", async () => {
     const { call, cleanup } = harness();
     const r = await call(IPC.probeEngines);
     expect(r.ok).toBe(true);
     if (r.ok) {
-      const list = r.data as { platform: string; ok: boolean }[];
+      const list = r.data as { platform: string; ok: boolean; engines?: string[] }[];
       const ks = list.find((x) => x.platform === "kuaishou");
       const dy = list.find((x) => x.platform === "douyin");
+      const xg = list.find((x) => x.platform === "xigua");
       expect(ks?.ok).toBe(true); // 假内核声明覆盖
-      expect(dy?.ok).toBe(false); // 未覆盖且回落关（harness isFallbackEnabled=false）
+      expect(dy?.ok).toBe(true); // 假核不覆盖，但 amagi 声明可解
+      expect(dy?.engines).toEqual(["amagi"]);
+      expect(xg?.ok).toBe(false); // amagi 不覆盖 xigua，假核也没有 → 如实标红
     }
     cleanup();
   });
@@ -594,6 +641,72 @@ describe("IPC 信封与校验", () => {
 
     await call(IPC.settingsSet, { platformSwitches: { kuaishou: { enabled: true } } });
     expect((await run()).code).toBe(200);
+    cleanup();
+  });
+
+  it("引擎开关：settings:set 落盘 → 该引擎退出选路 → 体检同步（v30 全链路）", async () => {
+    const { call, cleanup } = harness();
+    // 带作品 ID 的链接才会走到 amagi 的取数（短链展开桩恒 null，会得到 400 而不是网络失败）
+    const text = "https://www.kuaishou.com/short-video/abc123";
+    // skipCache：结果缓存排在引擎选路之前，不跳过就永远命中第一条成功结果
+    const run = async (): Promise<{ result: ParseResult; viaEngine?: string }> => {
+      const r = await call(IPC.parseRun, { text, skipCache: true });
+      if (!r.ok) throw new Error(`parse:run 应当受理，实际 ${JSON.stringify(r)}`);
+      return r.data as { result: ParseResult; viaEngine?: string };
+    };
+    expect((await run()).result.code).toBe(200);
+
+    await call(IPC.settingsSet, { engineSwitches: { parseCore: { enabled: false } } });
+    // parseCore 退出选路：kuaishou 只剩 amagi（离线桩必然失败），如实交出它的失败答复
+    const off = await run();
+    expect(off.viaEngine).toBe("amagi");
+    expect(off.result.code).toBe(502);
+
+    const probe = await call(IPC.probeEngines);
+    if (probe.ok) {
+      const ks = (probe.data as EngineHealth[]).find((x) => x.platform === "kuaishou");
+      expect(ks?.engines).toEqual(["amagi"]);
+    }
+
+    // 删键 = 恢复默认全开；同一份档里引擎开关是整表替换
+    await call(IPC.settingsSet, { engineSwitches: {} });
+    expect((await run()).result.code).toBe(200);
+    cleanup();
+  });
+
+  it("平台主引擎：settings:set 落盘 → 主引擎先试、失败回退；关掉回退后只试主引擎（v31）", async () => {
+    const { call, cleanup } = harness();
+    const text = "https://www.kuaishou.com/short-video/abc123";
+    const run = async (): Promise<{ result: ParseResult; viaEngine?: string }> => {
+      const r = await call(IPC.parseRun, { text, skipCache: true });
+      if (!r.ok) throw new Error(`parse:run 应当受理，实际 ${JSON.stringify(r)}`);
+      return r.data as { result: ParseResult; viaEngine?: string };
+    };
+    expect((await run()).result.code).toBe(200);
+
+    // 选 amagi 当主引擎：它离线必然失败 → 回退 mediaget 解出
+    await call(IPC.settingsSet, { platformEngines: { kuaishou: "amagi" } });
+    const fell = await run();
+    expect(fell.viaEngine).toBe("parseCore");
+    expect(fell.result.code).toBe(200);
+
+    const listed = await call(IPC.probeEngines);
+    if (listed.ok) {
+      const ks = (listed.data as EngineHealth[]).find((x) => x.platform === "kuaishou");
+      expect(ks?.engineIds).toEqual(["amagi", "parseCore"]);
+    }
+
+    // 关掉回退：只剩主引擎，amagi 的失败就是最终答复
+    await call(IPC.settingsSet, { engineFallback: false });
+    const only = await run();
+    expect(only.viaEngine).toBe("amagi");
+    expect(only.result.code).toBe(502);
+
+    // 删键 = 回默认 mediaget + 回退开
+    await call(IPC.settingsSet, { platformEngines: {}, engineFallback: true });
+    const reset = await run();
+    expect(reset.viaEngine).toBe("parseCore");
+    expect(reset.result.code).toBe(200);
     cleanup();
   });
 

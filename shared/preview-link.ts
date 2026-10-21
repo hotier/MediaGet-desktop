@@ -27,6 +27,25 @@ export interface PreviewTarget {
   url: string;
   /** 平台键，用来查防盗链 Referer；缺省（或认不出）就不带 Referer，只补 UA */
   platform?: string;
+  /**
+   * 第二条直链：B站登录态的 dash 主链是 **video-only 分片**（`.m4s`），`<video>` 单独放不出
+   * 画面与时长，必须由主进程用随包 ffmpeg 与音频轨合流后才能预览。这条存在即表示「要合流」。
+   */
+  audioUrl?: string;
+}
+
+/**
+ * 上游地址是不是 DASH 视频分片（B站 `.m4s`）。
+ *
+ * 只看 pathname 的扩展名：`baseUrl` 后面永远挂着一串签名查询串，拿整串做 `endsWith` 永远 false。
+ * 这不是安全判据（安全闸在 `isPublicHttpUrl`），只用来决定「要不要带音频轨去合流」。
+ */
+export function isDashSegment(target: string): boolean {
+  try {
+    return /\.m4s$/i.test(new URL(target).pathname);
+  } catch {
+    return /\.m4s$/i.test(target.split(/[?#]/)[0]);
+  }
 }
 
 /**
@@ -167,12 +186,15 @@ function isBlockedHost(hostname: string): boolean {
  * 查询串用 `URLSearchParams` 编码：直链自带 `?a=1&b=2`，手工拼接会在第一个 `&` 处断链，
  * 断出来的那半截正好是最敏感签名段——所以这条链只许由本函数产出。
  */
-export function buildPreviewLink(target: string, platform?: string): string | null {
+export function buildPreviewLink(target: string, platform?: string, audio?: string): string | null {
   if (!isPublicHttpUrl(target)) return null;
   const u = new URL(`${PREVIEW_SCHEME}://${PREVIEW_HOST}/`);
   u.searchParams.set("u", target);
   const key = platform?.trim();
   if (key) u.searchParams.set("p", key);
+  // 第二条直链（B站 dash 音频轨）同样过闸：认不准就退回「只取视频」，绝不把代理
+  // 扩成第二条任意地址通道。与主链相同也不重复带（durl 单文件本身就含音轨）。
+  if (audio && audio !== target && isPublicHttpUrl(audio)) u.searchParams.set("a", audio);
   return u.href;
 }
 
@@ -245,5 +267,10 @@ export function readPreviewTarget(link: string): PreviewTarget | null {
   const url = u.searchParams.get("u");
   if (!url || !isPublicHttpUrl(url)) return null;
   const platform = u.searchParams.get("p");
-  return platform ? { url, platform } : { url };
+  // 音频轨同一道闸：伪造一条指向回环的 `a=` 不该让取流侧多跳一次内网，
+  // 但也不该因此废掉整条链——丢掉它，视频仍按原样取（B站 dash 会退化，不是安全问题）
+  const audio = u.searchParams.get("a");
+  const audioUrl = audio && audio !== url && isPublicHttpUrl(audio) ? audio : undefined;
+  const base: PreviewTarget = platform ? { url, platform } : { url };
+  return audioUrl ? { ...base, audioUrl } : base;
 }

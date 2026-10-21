@@ -116,6 +116,7 @@ export const api = {
     openLogDir: () => unwrap(bridge().app.openLogDir()),
     openExternal: (url: string) => unwrap(bridge().app.openExternal(url)),
     copyText: (text: string) => unwrap(bridge().app.copyText(text)),
+    readClipboard: () => unwrap(bridge().app.readClipboard()),
     /** 转发失败不该再生出一条转发（上报通道自身故障时无处可报）：静默吞掉 */
     log: async (level: LogSeverity, message: string) => {
       try {

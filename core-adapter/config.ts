@@ -117,6 +117,10 @@ export const SECRET_CONFIG_KEYS = [
   // 继续按机密剔除，导出配置不会把它吐出去（保留比移除安全）
   "QQMUSIC_COOKIE",
   "YOUTUBE_API_KEY",
+  // 2026-10-21：YouTube 改由 yt-dlp 主解，可以配 Cookie（年龄限制 / 登录墙内容）。
+  // 内核自己不读它，但「导出配置须剔除」与「掩码」两条按同一张表走，不在这里登记
+  // 就等于让这颗值明文进导出文件。
+  "YOUTUBE_COOKIE",
 ] as const;
 
 export function isSecretKey(key: string): boolean {

@@ -21,7 +21,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { PLATFORMS, displayName } from "../shared/platforms";
+import { PLATFORMS, cookieKeyOf, displayName } from "../shared/platforms";
 import { COOKIE_LOGIN_KEYS } from "../shared/cookie-login";
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
@@ -128,6 +128,19 @@ describe("README 平台支持表：与注册表/Cookie 规则对账", () => {
   it("COOKIE_ROWS 里的平台键都登记在注册表里（防拼错 key）", () => {
     for (const row of COOKIE_ROWS) {
       expect(displayName(row.platform), `COOKIE_ROWS 的平台键「${row.platform}」未登记`).not.toBe(row.platform);
+    }
+  });
+
+  it("COOKIE_ROWS 的键与注册表 cookieKey 双向一致（界面有输入框 = 引擎知道去哪儿取值）", () => {
+    // 单向都不够：只有界面有行，引擎取不到（或取错键）等于配了不生效；
+    // 只有注册表声明，设置页没那行等于这条能力根本没人能配。
+    for (const row of COOKIE_ROWS) {
+      expect(cookieKeyOf(row.platform), `${row.platform} 在注册表里没声明 cookieKey`).toBe(row.key);
+    }
+    for (const p of PLATFORMS) {
+      if (!p.cookieKey) continue;
+      const row = COOKIE_ROWS.find((r) => r.platform === p.key);
+      expect(row?.key, `${p.key} 声明了 cookieKey 但设置页没有对应行`).toBe(p.cookieKey);
     }
   });
 

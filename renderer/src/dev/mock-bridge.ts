@@ -34,12 +34,16 @@ import {
   type WorkStat,
 } from "../../../types/ipc";
 import {
+  ENGINE_INFO,
   PLATFORMS,
+  SWITCHABLE_ENGINE_IDS,
   canonicalKeys,
   displayName,
   engineCoverage,
   isEnabled,
+  isEngineEnabled,
   isRegistered,
+  primaryEngineOf,
 } from "../../../shared/platforms";
 import { buildAuthorSnapshot } from "../../../shared/author";
 import { isLanded, parseHistoryEntry, workKeyOf } from "../../../shared/history";
@@ -1010,6 +1014,14 @@ const mockBridge: MgBridge = {
         durationMs: 12,
       });
     }
+    // 引擎开关同一口径：全关时主进程如实回绝，预览也不许造一个成功夹具（假绿比不绿更坏）
+    if (!SWITCHABLE_ENGINE_IDS.some((id) => isEngineEnabled(id, settings.engineSwitches))) {
+      return ok<ParseRunOutcome>({
+        result: { code: 400, msg: "所有解析引擎已在设置里关闭（设置 → 引擎）" },
+        via: "local",
+        durationMs: 12,
+      });
+    }
     const fx = FIXTURES[key] ?? FIXTURES.douyin;
     const rawUrl = text.match(URL_RE)?.[0];
     const outcome: ParseRunOutcome = {
@@ -1160,18 +1172,26 @@ const mockBridge: MgBridge = {
     // 与主进程 engine.health() 同一条算式：注册表 × 引擎能力位 × 用户开关。
     // 假桥只假造数据，不假造能力 —— 预览里看到的三种真相必须和真应用措辞一致。
     engines: async () => {
-      const able = (key: string): string[] => {
-        const list: string[] = [];
-        if (engineCoverage(key, "parseCore") === "ready") list.push("本地内核");
-        return list;
+      // 引擎名单与开关同源：只按注册表能力位判，不模拟二进制定位——预览里 yt-dlp
+      // 在场不等于本机随包二进制在位。顺序 = 主引擎在前（与主进程 primaryFirst 同一条规则）。
+      const able = (key: string): Array<keyof typeof ENGINE_INFO> => {
+        const ids = SWITCHABLE_ENGINE_IDS.filter(
+          (id) => isEngineEnabled(id, settings.engineSwitches) && engineCoverage(key, id) === "ready"
+        );
+        const primary = primaryEngineOf(key, settings.platformEngines);
+        const idx = ids.indexOf(primary);
+        return idx <= 0 ? [...ids] : [ids[idx], ...ids.filter((_, i) => i !== idx)];
       };
       const rows: EngineHealth[] = PLATFORMS.map((p, i) => {
-        const covered = able(p.key);
+        const ids = able(p.key);
+        const covered = ids.map((id) => ENGINE_INFO[id].label);
         const supplied = isEnabled(p.key, settings.platformSwitches);
         return {
           platform: p.key,
           name: p.name,
           ok: supplied && covered.length > 0,
+          engines: covered,
+          engineIds: ids,
           detail: !supplied
             ? "注册表已关闭该平台（设置 → 引擎）"
             : covered.length > 0
@@ -1228,6 +1248,16 @@ const mockBridge: MgBridge = {
     copyText: async (text) => {
       await navigator.clipboard.writeText(text);
       return ok({ ok: true });
+    },
+    // 同一条理由：dev 浏览器是安全上下文、也没有主进程那条 deny-all 钩子，直接读系统剪贴板，
+    // 预览里点「粘贴」要真能粘进东西。拒绝授权/不支持时回空串——与真应用「剪贴板里没内容」
+    // 走同一个分支，不额外造一个只在 mock 里出现的错误态。
+    readClipboard: async () => {
+      try {
+        return ok({ text: (await navigator.clipboard.readText()).slice(0, 4000) });
+      } catch {
+        return ok({ text: "" });
+      }
     },
     log: async () => ok({ ok: true }),
     update: {

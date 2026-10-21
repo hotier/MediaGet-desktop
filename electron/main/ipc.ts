@@ -194,6 +194,13 @@ export interface IpcRegistryDeps {
    */
   writeClipboard: (text: string) => void;
   /**
+   * 系统剪贴板读取（index.ts 注入 = Electron `clipboard.readText`）。
+   * 与 `writeClipboard` 同一条理由：那条 deny-all 钩子把 `navigator.clipboard.readText` 也挡了
+   * （Electron 把读也报成 `clipboard-read`），首页「粘贴」按钮只能请主进程代读。
+   * 返回可能是 Promise —— Electron 44 起 `readText` 已异步化，两种都接。
+   */
+  readClipboard: () => string | Promise<string>;
+  /**
    * dev 构建 = true（index.ts 传 `!app.isPackaged`）：出参也过 CONTRACT 的 out schema。
    * 存在的理由：契约漂移在 dev 里只会让 UI 少显示一个字段、没人报错，
    * 到打包版本才暴露；把它变成 dev 期的一次 `contract-drift` 错误才是划算的顺序。
@@ -305,6 +312,7 @@ export function registerIpc(deps: IpcRegistryDeps): void {
         at,
         platform: resolveKey(outcome.result.platform ?? parsed.platformHint ?? ""),
         via: outcome.via,
+        engine: outcome.viaEngine,
         ok: outcome.result.code === 200,
         durationMs: outcome.durationMs,
         workKey: workKeyOf(sourceUrl),
@@ -428,6 +436,11 @@ function sanitizeWithExt(name: string, maxLen: number): string {
     // 整表替换：渲染层 store 每次提交完整开关快照，"关掉默认开"要落显式 false，"恢复默认"靠删键——
     // 逐键合并会让删键无法表达，语义上等价于两套真源。
     if (patch.platformSwitches !== undefined) next.settings.platformSwitches = { ...patch.platformSwitches };
+    // 引擎开关同一语义：整表替换，删键 = 恢复默认全开
+    if (patch.engineSwitches !== undefined) next.settings.engineSwitches = { ...patch.engineSwitches };
+    // 平台主引擎：整表替换，删键 = 恢复默认 mediaget
+    if (patch.platformEngines !== undefined) next.settings.platformEngines = { ...patch.platformEngines };
+    if (patch.engineFallback !== undefined) next.settings.engineFallback = patch.engineFallback;
     if (patch.cookies) {
       const entries = Object.entries(patch.cookies) as [string, string][];
       for (const [k, v] of entries) {
@@ -536,6 +549,15 @@ function sanitizeWithExt(name: string, maxLen: number): string {
   wrap(IPC.appCopyText, CopyTextInputSchema, ({ text }) => {
     deps.writeClipboard(text);
     return { ok: true };
+  });
+  // —— app:readClipboard（首页「粘贴」；渲染层读剪贴板被同一条 deny-all 挡死，见 v34 注）——
+  // 截到 4000 与 `parse:input` 的上限对齐：粘进来是为了接着识别/解析，多的部分用不上，
+  // 而先截断比让用户看到「粘贴成功、解析报错」更好。
+  wrap(IPC.appReadClipboard, null, async () => {
+    const raw = await deps.readClipboard();
+    // 非字符串一律按「没内容」处理：读剪贴板失败时上游可能给 undefined（无剪贴板的环境、
+    // 旧版 Electron 的返回值差异），让 `.slice` 崩成 TypeError 只会把原因埋掉
+    return { text: typeof raw === "string" ? raw.slice(0, 4000) : "" };
   });
   // —— stats:get（统计页数据源：事件账本按日期范围聚合，范围是必填的）——
   wrap(IPC.statsGet, StatsDateRangeSchema, (range) => deps.stats.query(range));

@@ -7,7 +7,7 @@
  * - 只要 `response.url`，正文立刻 cancel —— 这里不是抓页面，是问「短码最终指向哪」。
  *
  * 失败不是解析失败：超时、断网、反爬一律回落到用户给的那条链接（历史不能因为一次探测
- * 少一格）。URL 不进日志（隐私红线与 `AGENTS.md` §6 同一条）。
+ * 少一格）。探测失败不打日志：一次失败只值一句结论，写进历史的已经是回落后的那条链接。
  */
 import type { ParseData } from "../../types/ipc";
 import { isShortLink, pageUrlFromData } from "../../shared/source-url";

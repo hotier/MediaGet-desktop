@@ -53,8 +53,9 @@ import { createCacheProbe } from "./cache";
 import { normalizeProxyUrl, proxyUrlFromRule, sessionProxyFor } from "./proxy";
 import { createCookieLogin } from "./cookie-login";
 import type { CookieLoginKey } from "../../shared/cookie-login";
-import { DESKTOP_USER_AGENT } from "./hotlink";
+import { DESKTOP_USER_AGENT, refererFor } from "./hotlink";
 import { installPreviewProtocol, registerPreviewScheme } from "./preview-protocol";
+import { TRACK_CACHE_TTL_MS, createTrackMerger } from "./media-merge";
 import { SECRET_CONFIG_KEYS } from "../../core-adapter/config";
 import { registerIpc } from "./ipc";
 import { listInstalledFonts } from "./fonts";
@@ -240,6 +241,22 @@ const engine = createEngine({
   getThrottleMs: () => settingsRepository.loadConfig().settings.throttleMs,
   // 供给开关读持久值（每次解析/体检各读一次）：渲染层 store 只是视图，不是第二本账
   getPlatformSwitches: () => settingsRepository.loadConfig().settings.platformSwitches,
+  // 引擎开关同一处置：关掉的引擎不进选路与体检（与设置页「引擎开关」同一个真源）
+  getEngineSwitches: () => settingsRepository.loadConfig().settings.engineSwitches,
+  // 平台主引擎与回退开关（设置页「通道」下拉 + 「失败自动回退」）
+  getPlatformEngines: () => settingsRepository.loadConfig().settings.platformEngines,
+  getEngineFallback: () => settingsRepository.loadConfig().settings.engineFallback,
+  // amagi 引擎的 Cookie 供给（每次解析现读，设置页保存后立即生效；只取用户自配，零硬编码）
+  getCookies: () => settingsRepository.loadConfig().settings.cookies,
+  // amagi 引擎的代理透传（manual 档才下发；system/direct 与非法地址都按直连，与 parse-core 的 hint 同口径）
+  amagiGetProxyConfig: () => {
+    const s = settingsRepository.loadConfig().settings;
+    return { mode: s.proxyMode, url: s.proxyUrl };
+  },
+  // 解析失败现场落 app.log：结果卡只显示一句 msg，历史档不收失败行，排障只能靠这条。
+  // 文本已在 engine.ts 过 `clipForLog`（压单行、截 300 字）；日志只落本机、不上传不外发，
+  // 所以直链照原样留着——「哪条链 403」只能从现场看出来。
+  log: (level, message) => logger[level](message),
 });
 
 /**
@@ -307,6 +324,22 @@ const stats = createStats({
   onEventError: () => logger.error("[stats] 统计事件写入失败"),
 });
 
+/**
+ * DASH 双轨合流内核（预览与下载共用一份）。
+ *
+ * 产品规则：dash 的音频轨必须并进视频，交付的才是「一个完整的视频」。两处只是产物生命周期
+ * 不同——预览进 temp 按哈希缓存、按 TTL 清；下载在下载目录里落 `.part` 并就地并流。
+ * 这里的路径都是惰性求值的：模块加载时 app 还没 ready，取 `temp` 会炸。
+ */
+const trackMerger = createTrackMerger({
+  getFfmpegPath: () => readKernelConfig("FFMPEG_BIN") ?? null,
+  cacheDir: () => join(app.getPath("temp"), "mediaget-media"),
+  userAgent: DESKTOP_USER_AGENT,
+  refererFor,
+  // 失败原因已由内核把直链洗成 `<url>`：留一句给日志，排查「一直是转圈」时不再靠猜
+  onFailure: (reason) => logger.warn(`[merge] ${reason}`),
+});
+
 const downloader = new Downloader({
   getDownloadDir: () =>
     settingsRepository.loadConfig().settings.downloadDir || app.getPath("downloads"),
@@ -320,8 +353,10 @@ const downloader = new Downloader({
   },
   // UA 治理照抄内核（lib/http.ts），不私自加码；与预览代理共用同一枚常量（hotlink.ts）
   defaultUserAgent: DESKTOP_USER_AGENT,
+  // dash 双轨并流：与预览同一份内核。预览点过的那一对会直接复制缓存，省两轨下载
+  tracks: trackMerger,
   // 直链到期（403）就顺着这条任务的分享链接重新取一次签名；认不出同一份资源则返回 null，
-  // 交回原有重试与报错。合并与 TTL 都在 link-renew.ts，日志里不会出现直链（隐私红线）。
+  // 交回原有重试与报错。合并与 TTL 都在 link-renew.ts，那边只报条数不打链（见该文件头部）。
   renewUrl: createLinkRenewer({
     reparse: async (sourceUrl) =>
       (await engine.parse(sourceUrl, undefined, undefined, { skipCache: true })).result.data,
@@ -340,8 +375,10 @@ const downloader = new Downloader({
       emit(IPC.evDownloadError, t);
       notifier.onTaskEvent("error", t);
       stats.failure({ at: Date.now(), platform: t.platform, kind: t.kind, workKey: workKeyOf(t.sourceUrl) });
-      // 失败是日志里最有价值的一类：只投文件名与原因，**不投 url**（隐私红线：日志不落媒体直链）
-      logger.error(`[download] ${t.filename} 失败: ${t.error ?? "未知原因"}`);
+      // 失败是日志里最有价值的一类：文件名 + 原因 + 当前直链。日志只落本机、不外发
+      // （§6 第 7 条），直链留着才分得清「签名失效」与「节点/CDN 问题」——剥掉它就只剩一句
+      // 没法复现的「下载失败」。
+      logger.error(`[download] ${t.filename} 失败: ${t.error ?? "未知原因"} url=${t.url ?? "-"}`);
     },
     persist: (tasks) => {
       // 关库后传输回调仍可能触发落盘：跳过，最后一批已在 closeStorage 的 flush 里写过
@@ -555,6 +592,7 @@ registerIpc({
   // 复制动作由主进程代发：下面那条「所有权限请求一律拒」把渲染层的 navigator.clipboard
   // 整条挡死（Electron 把写剪贴板也报成 clipboard-read），而隐私面不接受为它开洞。
   writeClipboard: (text) => clipboard.writeText(text),
+  readClipboard: () => clipboard.readText(),
   // dev 里出参不符契约会当场报 contract-drift；打包版不为校验付代价
   validateOutputs: !app.isPackaged,
 });
@@ -726,8 +764,11 @@ app.whenReady().then(() => {
   // 代发，不放宽这里 —— 详见 types/ipc.ts 的 v11 注与 docs/UIUX-HANDOFF.md §6。
   session.defaultSession.setPermissionRequestHandler((_wc, _p, cb) => cb(false));
 
-  // 预览代理：ready 之后才装（protocol.handle 在就绪前调用会返回 false），scheme 特权已在模块期声明
-  installPreviewProtocol();
+  // 预览代理：ready 之后才装（protocol.handle 在就绪前调用会返回 false），scheme 特权已在模块期声明。
+  // B站登录态的 dash 是 video-only 分片，靠同一份合流内核并上音频轨才能进 <video>；
+  // 产物写系统 temp（不是 userData），启动时按 TTL 清一次，直链不进日志。
+  installPreviewProtocol({ merger: trackMerger });
+  void trackMerger.prune(TRACK_CACHE_TTL_MS);
 
   // 无应用菜单栏：Windows 用户不知道 Alt 后面是什么，菜单里的动作这里全有替代——
   // 编辑类由 Chromium 原生快捷键完成，退出与显示由托盘完成，重载 dev 走 detach 的开发者工具。

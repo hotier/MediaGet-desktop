@@ -194,7 +194,51 @@ export type InvokeResult<T> = InvokeOk<T> | InvokeErr;
 //     通道集合没变，载荷形状变了，按 v6 起同一条口径升号。
 // ————————————————————————————————————————————————
 
-export const CONTRACT_VERSION = 24;
+// v25：文件命名预设加两档（业主指令 2026-10-21「文件命名能加更多组合选项吗」）。
+//     `filenamePreset` 枚举新增 `titleAuthorUnderscore`（标题_作者）与 `authorTitleDate`
+//     （作者 - 标题_日期）。通道集合没变、枚举收宽，按 v6 起同一条口径升号；
+//     旧档里的旧值仍是合法枚举成员，读进来不需要迁移。
+// v26：命名预设的连接符统一为下划线（业主指令 2026-10-21「中间的连加符统一用 _」）。
+//     `authorTitle` / `titleAuthor` / `authorTitleDate` 的空格连字符一律改 `_`；
+//     v25 的 `titleAuthorUnderscore` 因此与 `titleAuthor` 重复，枚举收窄删档（未随任何发布出去）。
+//     存过该值的 dev 档由仓储读档口归一到 `titleAuthor`（repositories.ts），不会卡死设置加载。
+// v27：体检行报「实际用的引擎」（业主指令 2026-10-21「通道内改为实际使用的解析引擎，如
+//     mediaget，dlp 等」）。`EngineHealth` 新增必填 `engines: string[]`——选路顺序下真正能解
+//     该平台的引擎名（mediaget / yt-dlp…），空数组 = 今天没有引擎声明可解。通道集合没变，
+//     载荷形状变了，按 v6 起同一条口径升号；界面与 mock 桥同步消费该字段。
+// v28：解析出参报引擎归属（业主指令 2026-10-21，引擎注册制铺垫，第二个引擎接入当天生效）。
+//     `ParseRunOutcome` 新增可选 `viaEngine`（parseCore / ytdlp / mock），与选路注册表
+//     （平台 `enginePriority` 覆盖全局声明顺序）、stats_events 的 engine 列（DB 迁移 v4）
+//     同一套口径。通道集合没变、载荷形状收宽（可选键），按 v6 起同一条口径升号；
+//     旧档与旧调用方缺该键按「未知引擎」处理，不需要迁移。
+// v29：`ParseRunOutcome.viaEngine` 枚举补登记 `amagi`。v28 落枚举时 amagi 已在场却没进
+//     去（parseCore / ytdlp / mock），dev 档 validateOutputs 会把 amagi 解出的答复判成
+//     contract-drift。枚举收宽（多收一个值），通道集合与既有载荷不变，按 v6 起同一条
+//     口径升号；旧档缺该键按「未知引擎」处理，不需要迁移。
+// v30：`settings` 新增 `engineSwitches`（2026-10-21 业主指令「设置-引擎页加引擎开关」）：
+//     引擎这一层的「供不供」，与 `platformSwitches` 同一套语义（缺键 = 开，关掉的引擎
+//     在主进程选路与体检里都不再出现）。载荷形状变了（新增必填键，旧档由 DEFAULT_SETTINGS
+//     兜底为空表），按 v6/v7 同一条口径升号。
+// v32：`ParseRunOutcome` 新增 `attempts`（2026-10-21 业主指令「你需要知道各个引擎的失败原因」）：
+//     按顺序记录这一轮真调用过的引擎与各自答复（成功/失败码、失败原因、failType）。
+//     回退不再只有一个结论，用户与排查都能看到「amagi 为什么没解出来」。新增可选键，
+//     旧渲染层忽略即可；缓存命中/mock 兜底没有进选路，该键缺省。
+// v31：通道改「主引擎」下拉（2026-10-21 业主指令）——`settings` 新增 `platformEngines`
+//     （每平台先试哪个引擎，缺键 = mediaget）与 `engineFallback`（主引擎失败是否回退，
+//     缺省 true）；`EngineHealth` 新增 `engineIds`（与 `engines` 一一对应，下拉的选项值）。
+//     载荷形状变了（设置两把必填键 + 体检行一把必填键），按 v6/v7 同一条口径升号；
+//     旧档由 DEFAULT_SETTINGS 兜底，不需要迁移。
+// v33：DASH 双轨一律合流（业主指令 2026-10-21「预览和下载都是需要完整的视频，保证视频和
+//     音频都是融合的」）：`DownloadItem` 与队列快照行新增可选 `audioUrl`——主链是 DASH 视频轨
+//     时，下载器必须把音频轨并进来再落盘，交付的本身就是音画完整的文件（不再额外产「仅音频」
+//     那条独立下载项）。预览侧已按同一条规则合流（`electron/main/media-merge.ts`，两处共用
+//     同一份 ffmpeg 内核）。新增可选键，旧的单流行缺它按「无音轨」处理，不需要迁移；但渲染层
+//     与主进程必须是同一版，否则会退回无声视频，所以照 v6 起的同一条口径升号。
+// v34：新增 `app:readClipboard`（2026-10-21 业主指令「首页清除按钮：有内容时是清除，无内容时是
+//     粘贴」）：渲染层的 `navigator.clipboard.readText` 与 `writeText` 被主进程那条「所有权限
+//     一律拒」同时挡死（Electron 把读写都报成 `clipboard-read`），要读剪贴板只能由主进程代读。
+//     新增通道 + 出参 `{ text }`，通道集合变了，按 v6 起同一条口径升号。
+export const CONTRACT_VERSION = 34;
 
 // ————————————————————————————————————————————————
 // channel 常量（preload/main/renderer 三方共用字面量，禁止散落拼写）
@@ -227,6 +271,7 @@ export const IPC = {
   appLog: "app:log",
   appOpenExternal: "app:openExternal",
   appCopyText: "app:copyText",
+  appReadClipboard: "app:readClipboard",
   statsGet: "stats:get",
   updateGetState: "update:state",
   updateCheck: "update:check",
@@ -331,6 +376,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   // 只存用户改过的平台；没改过的跟随注册表 enabledByDefault，
   // 于是内核加一个平台不需要写迁移就能出现在界面上
   platformSwitches: {},
+  // 引擎开关：缺省全开；只存用户关掉的那几项（与平台开关同一套「缺键 = 默认」语义）
+  engineSwitches: {},
+  // 平台主引擎：只存用户改过的平台；缺键 = mediaget（DEFAULT_PRIMARY_ENGINE）
+  platformEngines: {},
+  // 主引擎失败后是否回退其余可用引擎（缺省开：多一个引擎多一次机会）
+  engineFallback: true,
 };
 
 /** history:list */
@@ -447,6 +498,11 @@ export interface MgBridge {
     openExternal(url: string): Promise<InvokeResult<{ ok: boolean }>>;
     /** 复制文本到系统剪贴板（主进程代发：renderer 的 navigator.clipboard 被「所有权限一律拒」那条钩子挡死，见 CONTRACT_VERSION v11 注） */
     copyText(text: string): Promise<InvokeResult<{ ok: boolean }>>;
+    /**
+     * 读系统剪贴板文本（首页「粘贴」按钮用；同一条 deny-all 钩子也挡着 `readText`，理由见 v34 注）。
+     * 没内容回空串——「剪贴板里没有东西」不是错误。
+     */
+    readClipboard(): Promise<InvokeResult<{ text: string }>>;
     /** 渲染层异常转发到文件日志（窗口崩溃外的另一条线索；级别不含 off） */
     log(level: LogSeverity, message: string): Promise<InvokeResult<{ ok: boolean }>>;
     /** 剪贴板监听命中分享链接（main 端已识别：url 有值时可直接填入输入面） */

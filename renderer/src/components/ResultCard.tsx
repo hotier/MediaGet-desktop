@@ -22,7 +22,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, CircleEuro, CircleFadingPlay, ExternalLink, FileText, Heart, Images, ListTree, MessageCircle, MessageCircleText, Music, Pause, Play, Share2, StarCheck } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, CircleEuro, CircleFadingPlay, ExternalLink, FileText, Heart, Images, ListTree, Loader2, MessageCircle, MessageCircleText, Music, Pause, Play, Share2, StarCheck } from "lucide-react";
 import { api } from "../lib/bridge";
 import {
   buildPlan,
@@ -40,7 +40,12 @@ import { buildAuthorSnapshot } from "../../../shared/author";
 import { pickWorkStat, workStatItems } from "../../../shared/work-stat";
 import { buildImageSrc, buildPreviewLink } from "../../../shared/preview-link";
 import type { ParseData, ParseRunOutcome } from "../../../types/ipc";
-import { displayName } from "../../../shared/platforms";
+import {
+  ENGINE_INFO,
+  asSwitchableEngine,
+  displayName,
+  type EngineId,
+} from "../../../shared/platforms";
 import { AuthorAvatar } from "./AuthorAvatar";
 import { PlatformIcon } from "./PlatformIcon";
 import { Button } from "./ui/button";
@@ -48,7 +53,7 @@ import { Badge } from "./ui/badge";
 import { Card, CardContent } from "./ui/card";
 import { Checkbox } from "./ui/checkbox";
 import { Alert, AlertDescription } from "./ui/alert";
-import { Tooltip, TooltipContent, TooltipTrigger, TruncatedTooltip } from "./ui/tooltip";
+import { HintInfo, Tooltip, TooltipContent, TooltipTrigger, TruncatedTooltip } from "./ui/tooltip";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select";
 import {
   Dialog,
@@ -82,8 +87,24 @@ export function ResultCard({
    */
   onNavigate?: (category: string) => void;
 }): React.ReactElement {
-  const { result, via, durationMs } = outcome;
+  const { result, via, viaEngine, durationMs } = outcome;
   const data = result.data;
+  /**
+   * 回退轨迹（v32）：把「谁失败过、失败在哪个码/哪类原因」摆出来——
+   * 卡片上的引擎名只答「谁解的」，「为什么不是主引擎」要靠这条轨迹。
+   * 只有真发生过失败才展示：一次成功的轨迹是噪音。
+   */
+  const attempts = outcome.attempts ?? [];
+  const fallbackTrail =
+    attempts.some((a) => !a.ok)
+      ? attempts
+          .map((a) =>
+            a.ok
+              ? `${ENGINE_INFO[a.engine].label}：成功`
+              : `${ENGINE_INFO[a.engine].label}：失败 ${a.code}${a.failType ? `（${a.failType}）` : ""}${a.msg ? ` — ${a.msg}` : ""}`
+          )
+          .join("；")
+      : null;
   const [err, setErr] = useState("");
   /** null = 还没手选，用内核主直链对应档位（SSR 与首帧都走这条，不等 effect 纠正） */
   const [qualityIdx, setQualityIdx] = useState<number | null>(null);
@@ -92,6 +113,26 @@ export function ResultCard({
   /** 清单里某一项的预览：只在弹窗开着的这段时间里活着（直链不进历史/日志） */
   const [previewEntry, setPreviewEntry] = useState<PlanEntry | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
+  /**
+   * 还没吐出头一帧。B站登录态的 dash 要先由主进程下完两条远程轨再并流，
+   * 十秒级等待是正常范围；不给这层提示的话，用户看到的就是「一直转圈」。
+   */
+  const [previewLoading, setPreviewLoading] = useState(false);
+  /**
+   * 加载超过 2.5s 才解释原因。
+   *
+   * 为什么要分两段文案：绝大多数预览是秒开的，一上来就写「合并音轨可能要十几秒」等于
+   * 让顺畅的那一半用户白读一句技术说明；真正慢的时候（高质量视频要先 ffmpeg 合流、
+   * 或网络打不满）又必须有人告诉他「这是正常的，在等，不是卡死」。
+   */
+  const [previewSlow, setPreviewSlow] = useState(false);
+  /**
+   * 首帧是否已到手：决定封面层淡出、画面淡入。
+   *
+   * 与 `previewLoading` 分开是因为两者语义不同——`previewLoading` 会在播放中途卡顿时
+   * 又亮起来（`waiting`），而「第一次出画」只发生一次，重播/拖动都不该再让画面重新淡入。
+   */
+  const [previewReady, setPreviewReady] = useState(false);
   /**
    * 开关与内容分家：关闭时先把 `open` 置假、内容留到退场动画跑完再释放。
    * 以前是一关就把 entry 清空，退场期间框里一个字节都没有，调多长都像「啪一下消失」。
@@ -140,6 +181,16 @@ export function ResultCard({
     // 只随解析结果重置；策略读新值迟到由下方 memo 纠正
   }, [outcome, data, parsedAt]);
 
+  // 慢加载提示的计时器：loading 一灭就复位，翻页/重开都从「正在加载」重新起算
+  useEffect(() => {
+    if (!previewLoading) {
+      setPreviewSlow(false);
+      return;
+    }
+    const timer = setTimeout(() => setPreviewSlow(true), 2500);
+    return () => clearTimeout(timer);
+  }, [previewLoading]);
+
   const qualityPlan = useMemo(() => buildQualityPlan(data, qualityStrategy), [data, qualityStrategy]);
   const qualityOptions = qualityPlan.options;
   const activeIdx = Math.min(qualityIdx ?? qualityPlan.primaryIndex, Math.max(0, qualityOptions.length - 1));
@@ -157,12 +208,32 @@ export function ResultCard({
    * （实测见 `shared/preview-link.ts` 的 `buildImageSrc`）。代理链建不出来（地址过不了安全闸、
    * 或是站内相对路由这类根本不该进 src 的形状）时没有可试的，两类都进失败说明。
    */
+  /**
+   * 预览要不要带音频轨 —— 直接问下载计划那一项（`previewEntry.audioUrl`），这里不再自己
+   * 判一遍扩展名。判两次就会分裂：YouTube 的 DASH 链长在 `googlevideo.com/videoplayback`
+   * 上，没有 `.m4s` 可认，预览与下载各判各的，最后一边有声一边没声
+   * （2026-10-21 用户报「YouTube 视频在预览页调不了音量」，根因就是这里只认 `.m4s`：
+   * 选到高于主链的档后 `<video>` 里根本没有音轨，Chromium 连音量按钮都不画）。
+   * 音频条目自己不能再带音频轨。
+   */
+  const dashAudio = previewEntry?.kind === "video" ? previewEntry.audioUrl : undefined;
   const previewSrc =
     previewEntry === null
       ? null
       : previewEntry.kind === "video" || previewEntry.kind === "audio"
-        ? buildPreviewLink(previewEntry.url, result.platform)
+        ? buildPreviewLink(previewEntry.url, result.platform, dashAudio)
         : buildImageSrc(previewEntry.url, result.platform);
+
+  /**
+   * 加载态文案：先说「在加载」，慢了才解释为什么慢。
+   * 慢的原因只有两种，分开说 —— 需要合流的那条链（`dashAudio`）是本地 ffmpeg 在出片，
+   * 与网速无关；其余是上游 CDN 打不满带宽，说「网络较慢」才对得上用户看到的现象。
+   */
+  const previewLoadingHint = previewSlow
+    ? dashAudio
+      ? "高质量视频要先合并音轨，可能还要十几秒…"
+      : "网络较慢，正在缓冲…"
+    : "正在加载预览…";
 
   /** 缺省 = 下载勾选中的那批（Ctrl+D 与动作条按钮）；传条目 = 只下这一条 */
   async function enqueue(list: PlanEntry[] = selected): Promise<void> {
@@ -175,6 +246,7 @@ export function ResultCard({
       await api.download.enqueue({
         items: list.map((p) => ({
           url: p.url,
+          audioUrl: p.audioUrl,
           filename: p.filename,
           kind: p.kind,
         })),
@@ -214,6 +286,7 @@ export function ResultCard({
         failType={result.failType}
         platformName={platformName}
         via={via}
+        engine={viaEngine}
         durationMs={durationMs}
         onRetry={onRetry}
         onOpenSource={sourceUrl ? () => void openExternal(sourceUrl) : undefined}
@@ -249,9 +322,16 @@ export function ResultCard({
    */
   const coverSrc = mix.cover ? buildImageSrc(mix.cover, result.platform) : null;
 
+  /** 预览的封面占位层：封面只属于主链那条视频，翻到别的档位时没有对应封面，不拿它冒充 */
+  const previewCoverSrc =
+    previewEntry?.url === data?.url && coverSrc ? coverSrc : undefined;
+
   /** 开预览：内容先就位再开门，入场那一帧就有画面，不会闪一下空框 */
   function showPreview(p: PlanEntry): void {
     setPreviewFailed(false);
+    // 音视频从「打开」就可能进入等待（dash 双轨合流），先亮加载态；图片不等
+    setPreviewLoading(p.kind === "video" || p.kind === "audio");
+    setPreviewReady(false);
     setPreviewEntry(p);
     setPreviewOpen(true);
   }
@@ -283,6 +363,9 @@ export function ResultCard({
     const next = previewItems[previewSeqIdx + delta];
     if (!next) return;
     setPreviewFailed(false);
+    // 与 showPreview 同一口径：翻到音视频就先亮加载态，别等新元素的 loadstart 抢进来
+    setPreviewLoading(next.kind === "video" || next.kind === "audio");
+    setPreviewReady(false);
     setPreviewEntry(next);
   }
 
@@ -428,10 +511,18 @@ export function ResultCard({
                   文件名与下载按钮的项数会当场跟着变。 */}
               {plan.length > 0 && !data?.embedOnly && qualityOptions.length > 1 && (
                 <Select value={String(activeIdx)} onValueChange={(v) => setQualityIdx(Number(v))}>
-                  <SelectTrigger size="sm" className="w-28 shrink-0" aria-label="下载清晰度">
+                  {/* 宽度只够放档位名（2026-10-21 业主「清晰度下拉框宽度减小」）：88px 里
+                      固定开销（左右内边距 + 间距 + chevron）占 40px，所以内边距同步收到 2——
+                      只收宽度不收内边距，「1080P」会先被截成「1080…」。展开后的选项不受这里限制。 */}
+                  <SelectTrigger size="sm" className="w-[5.5rem] shrink-0 px-2" aria-label="下载清晰度">
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  {/* 列表跟着 trigger 收窄（2026-10-21 业主「下拉出现的列表宽度也减小」）：
+                      基座 `min-w-[8rem]` 是给普通宽度下拉留的地板，而 Viewport 自己已经
+                      `min-w-[var(--radix-select-trigger-width)]`，所以这里把地板去掉即可——
+                      列表最窄就是 trigger 宽（88px），档位名短；真遇到长标签（B站「高清 1080P」）
+                      列表仍按内容自然变宽，不做硬截断。 */}
+                  <SelectContent className="min-w-0">
                     {qualityOptions.map((q, i) => (
                       <SelectItem key={`${q.label}-${i}`} value={String(i)}>
                         {q.label}
@@ -574,7 +665,13 @@ export function ResultCard({
           )}
 
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <ViaBadge via={via} />
+            <ViaBadge via={via} engine={viaEngine} />
+            {fallbackTrail && (
+              <span className="inline-flex items-center gap-1">
+                <Badge variant="warn">回退</Badge>
+                <HintInfo text={fallbackTrail} />
+              </span>
+            )}
             <span className="tabular-nums">{fmtDuration(durationMs)}</span>
             {parsedAt && <span className="tabular-nums">解析于 {fmtClock(parsedAt)}</span>}
             {via === "local" && durationMs < 50 && <Badge variant="secondary">缓存命中</Badge>}
@@ -653,6 +750,24 @@ export function ResultCard({
               // `.preview-video::-webkit-media-controls-play-button` 藏掉（styles.css），
               // 中央这枚接管开关；播放中自动淡出，鼠标进舞台再浮出来。
               <>
+                {/* 封面占位层（2026-10-21 业主「复用视频封面图，在封面图上加载转圈，加载出来之后渐入」）：
+                    不走 `poster` 属性——poster 画在 `<video>` 自己的盒子里，跟首帧同生共死，
+                    想「先封面、再淡入画面」就没有调节点了。这里单独一层，`previewReady` 一到
+                    就淡出，底下那块 `opacity-0 → 100` 正好接上，两层都是 `size-full object-contain`，
+                    信箱框一致，不会跳尺寸。非主链的档位没有对应封面（`coverSrc` 是主视频那张），
+                    就只留转圈，不拿别的封面冒充。 */}
+                {previewCoverSrc && (
+                  <img
+                    src={previewCoverSrc}
+                    alt=""
+                    aria-hidden="true"
+                    referrerPolicy="no-referrer"
+                    className={cn(
+                      "pointer-events-none absolute inset-0 size-full object-contain transition-opacity duration-300",
+                      previewReady ? "opacity-0" : "opacity-100"
+                    )}
+                  />
+                )}
                 <video
                   key={previewSrc}
                   ref={previewVideoRef}
@@ -666,12 +781,49 @@ export function ResultCard({
                   disableRemotePlayback
                   playsInline
                   autoPlay
-                  onError={() => setPreviewFailed(true)}
-                  onPlay={() => setPreviewPlaying(true)}
+                  onLoadStart={() => setPreviewLoading(true)}
+                  onCanPlay={() => {
+                    setPreviewLoading(false);
+                    setPreviewReady(true);
+                  }}
+                  // canplay 之后才到的卡顿走 waiting/stalled：拖动进度条、高质量档吃不满带宽
+                  // 都会先转圈再续播，没有这两个监听就只有一片静默的静止画面
+                  onWaiting={() => setPreviewLoading(true)}
+                  onStalled={() => setPreviewLoading(true)}
+                  onError={() => {
+                    setPreviewLoading(false);
+                    setPreviewFailed(true);
+                  }}
+                  onPlay={() => {
+                    setPreviewLoading(false);
+                    setPreviewPlaying(true);
+                  }}
+                  onPlaying={() => {
+                    setPreviewLoading(false);
+                    setPreviewReady(true);
+                  }}
                   onPause={() => setPreviewPlaying(false)}
                   onEnded={() => setPreviewPlaying(false)}
-                  className="preview-video max-h-full max-w-full object-contain"
+                  // 首帧到手前整块透明，让下面那张封面占位；`size-full` 是为了让两层的
+                  // `object-contain` 算出同一个信箱框，淡入时才不会「啪」地换尺寸
+                  className={cn(
+                    "preview-video size-full object-contain transition-opacity duration-300",
+                    previewReady ? "opacity-100" : "opacity-0"
+                  )}
                 />
+                {/* 加载态：转圈 + 一句会随等待时长改变的话（见 `previewLoadingHint`）。
+                    `role=status` 让读屏也知道在等，而不是把一段静默当成失败。
+                    遮罩只压 25%：底下是封面，压太重就白铺了这张图。 */}
+                {previewLoading && (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className="pointer-events-none absolute inset-0 z-[5] flex animate-in flex-col items-center justify-center gap-3 bg-black/25 fade-in-0 duration-200"
+                  >
+                    <Loader2 aria-hidden="true" className="size-7 animate-spin text-white/90 drop-shadow" />
+                    <p className="px-6 text-center text-xs text-white/90 drop-shadow">{previewLoadingHint}</p>
+                  </div>
+                )}
                 <button
                   type="button"
                   aria-label={previewPlaying ? "暂停" : "播放"}
@@ -703,7 +855,11 @@ export function ResultCard({
                   src={previewSrc}
                   controls
                   controlsList="nodownload noremoteplayback noplaybackrate"
-                  onError={() => setPreviewFailed(true)}
+                  onCanPlay={() => setPreviewLoading(false)}
+                  onError={() => {
+                    setPreviewLoading(false);
+                    setPreviewFailed(true);
+                  }}
                   className="w-full"
                 />
               </div>
@@ -801,9 +957,23 @@ function buildStatItems(
   }));
 }
 
-function ViaBadge({ via }: { via: "local" | "mock" }): React.ReactElement {
-  const label = via === "local" ? "本地内核" : "mock 骨架";
-  return <Badge variant={via === "local" ? "ok" : "secondary"}>{label}</Badge>;
+/**
+ * 结果来源徽标：报「实际解出这条结果的引擎名」（mediaget / amagi / yt-dlp），
+ * 不再是笼统的「本地内核」——用户在设置里能挑主引擎，结果卡就得如实对账是谁解的。
+ *
+ * - `viaEngine` 缺省（旧快照 / mock 兜底）时退回「本地内核」这个总称，不猜引擎；
+ * - `via === "mock"` 永远说「mock 骨架」：演示数据不许冒充某个真引擎的产物。
+ */
+function ViaBadge({
+  via,
+  engine,
+}: {
+  via: "local" | "mock";
+  engine?: EngineId;
+}): React.ReactElement {
+  if (via === "mock") return <Badge variant="secondary">mock 骨架</Badge>;
+  const id = asSwitchableEngine(engine);
+  return <Badge variant="ok">{id ? ENGINE_INFO[id].label : "本地内核"}</Badge>;
 }
 
 /**
@@ -884,6 +1054,7 @@ function ParseFailure({
   failType,
   platformName,
   via,
+  engine,
   durationMs,
   onRetry,
   onOpenSource,
@@ -893,6 +1064,8 @@ function ParseFailure({
   failType?: string;
   platformName: string;
   via: "local" | "mock";
+  /** 交出这条失败答复的引擎（失败也要说清是哪个引擎答的） */
+  engine?: EngineId;
   durationMs: number;
   onRetry?: () => void;
   onOpenSource?: () => void;
@@ -955,7 +1128,7 @@ function ParseFailure({
               重试
             </Button>
           )}
-          <ViaBadge via={via} />
+          <ViaBadge via={via} engine={engine} />
           <span className="text-xs tabular-nums text-muted-foreground">{fmtDuration(durationMs)}</span>
         </div>
       </CardContent>

@@ -20,12 +20,14 @@ describe("SQLite database foundation", () => {
   it("applies each schema migration exactly once", () => {
     const path = databasePath();
     const db = openDatabase(path);
-    expect(db.schemaVersion).toBe(3);
+    expect(db.schemaVersion).toBe(4);
     db.close();
 
     const reopened = openDatabase(path);
-    expect(reopened.schemaVersion).toBe(3);
-    expect(reopened.get<{ count: number }>("SELECT COUNT(*) AS count FROM schema_migrations")?.count).toBe(3);
+    expect(reopened.schemaVersion).toBe(4);
+    expect(reopened.get<{ count: number }>("SELECT COUNT(*) AS count FROM schema_migrations")?.count).toBe(4);
+    // v4：解析事件记「实际用的引擎」——列在不在，统计落账走不走得通就先红在这里
+    expect(reopened.get<{ name: string }>("SELECT name FROM pragma_table_info('stats_events') WHERE name = 'engine'")).toBeTruthy();
     reopened.close();
   });
 

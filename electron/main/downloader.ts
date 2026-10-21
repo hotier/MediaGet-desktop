@@ -15,6 +15,10 @@
  *   绝不把半截文件改名成「完成」的成品
  * - 无进展看门狗（默认 30s）：僵死连接中止并重试，不会一直占着执行槽；
  *   写流 'error' 当场接住（磁盘满/EPERM 报任务失败），不外泄成未捕获异常
+ * - DASH 双轨一律合流（2026-10-21 业主指令「预览和下载都是需要完整的视频」）：任务带
+ *   `audioUrl` 时，先把音频轨下到 `<part>.audio`，再用与预览共用的 `media-merge` 并流成
+ *   `<part>.merged` 后落地——只落视频轨就是无声视频，那不是用户要的文件。预览已经合过的
+ *   那一对直接复制缓存，省掉两轨下载与一次 ffmpeg。
  *
  * 依赖边界（§1）：core/downloader 不 import electron；IO 走 Node fetch + fs。
  */
@@ -40,6 +44,7 @@ import type {
 // 403 之后哪条新链属于这一份资源，两处各写一套比较规则就会得出互相矛盾的答案
 import { isSameResource } from "../../shared/link-identity";
 import { resolveKey } from "../../shared/platforms";
+import type { TrackMerger } from "./media-merge";
 
 export type PersistedQueueLike = PersistedQueueTask;
 
@@ -84,11 +89,18 @@ export interface DownloaderOptions {
    * 照原样进重试与报错）。合并与判据在 `electron/main/link-renew.ts`、`shared/link-identity.ts`。
    */
   renewUrl?: (failedUrl: string, sourceUrl?: string) => Promise<string | null>;
+  /**
+   * DASH 双轨合流内核（与预览共用 `media-merge`）。不传 = 只下主链：
+   * 测试不必为了验下载状态机去造 ffmpeg，缺 ffmpeg 的环境也照常能下主链。
+   */
+  tracks?: Pick<TrackMerger, "mergeLocal" | "copyCached">;
   events: DownloaderEvents;
   fetchImpl?: typeof fetch;
 }
 
 interface InternalTask extends DownloadTaskView {
+  /** DASH 音频轨（契约 v33）：有它就必须合流，落盘的必须是音画完整的文件 */
+  audioUrl?: string;
   referer?: string;
   headers?: Record<string, string>;
   signal?: AbortController;
@@ -211,7 +223,10 @@ export class Downloader {
     mkdirSync(this.opts.getDownloadDir(), { recursive: true });
     const ids: string[] = [];
     for (const item of items) {
-      if (!isSafeRemoteUrl(item.url)) {
+      // 音频轨与主链同一道 SSRF 闸：不安全就整条拒——只落无声视频违反产品规则，
+      // 「静默降级成一个不完整的文件」比一条看得见的 error 更坏
+      const unsafeAudio = item.audioUrl !== undefined && !isSafeRemoteUrl(item.audioUrl);
+      if (!isSafeRemoteUrl(item.url) || unsafeAudio) {
         // 不安全 URL 直接建一个 error 态任务，UI 可见、不静默丢
         const id = this.newId();
         const t: InternalTask = {
@@ -226,7 +241,9 @@ export class Downloader {
           speed: 0,
           transferMs: 0,
           transferBytes: 0,
-          error: "不安全的下载地址（私网/非 http 协议被拒绝）",
+          error: unsafeAudio
+            ? "不安全的音频轨地址（私网/非 http 协议被拒绝）"
+            : "不安全的下载地址（私网/非 http 协议被拒绝）",
           attempts: 0,
           createdAt: Date.now(),
           platform: meta?.platform ? resolveKey(meta.platform) : undefined,
@@ -246,6 +263,7 @@ export class Downloader {
         taskId: id,
         groupId,
         url: item.url,
+        audioUrl: item.audioUrl,
         filename: basename(target),
         kind: item.kind,
         status: "queued",
@@ -328,6 +346,8 @@ export class Downloader {
     for (const t of this.tasks.values()) {
       if (!isClaimingStatus(t.status)) continue;
       out.push(this.partPath(t));
+      // 合流中的音频轨也是活文件：清缓存时把它当孤儿删掉，这次下载就白等一场
+      if (t.audioUrl) out.push(this.audioPartPath(t));
     }
     return out;
   }
@@ -496,9 +516,9 @@ export class Downloader {
   /**
    * 内存里的活行快照（v22：终态行落盘即退休，台账的完整形态在 SQLite 里）。
    *
-   * 直链只在「还能续或还能重试」的状态上落盘：done 行剥成空串。理由是隐私红线「队列不保留
-   * 直链 URL」——旧实现靠"完成行不落盘"顺带满足了它，现在完成行要留，就得单独把链摘掉；
-   * 而到期直链对一条已完成记录本来也没有用途。
+   * 直链只在「还能续或还能重试」的状态上落盘：done 行剥成空串（§6 第 11 条的存储侧口径，
+   * 与日志无关——日志可以带链，见第 7 条）。旧实现靠「完成行不落盘」顺带满足了它，现在完成行
+   * 要留，就得单独把链摘掉；而到期直链对一条已完成记录本来也没有用途。
    */
   snapshot(): PersistedQueueLike[] {
     return this.order
@@ -508,6 +528,8 @@ export class Downloader {
         taskId: t.taskId,
         groupId: t.groupId,
         url: t.status === "done" ? "" : t.url,
+        // 音频轨与主链同一条纪律：done 行剥成空串，不把带签名的链留在长期档里
+        audioUrl: t.status === "done" ? undefined : t.audioUrl,
         filename: t.filename,
         referer: t.referer,
         headers: t.headers,
@@ -547,11 +569,25 @@ export class Downloader {
     return this.targetPath(t) + ".part";
   }
 
+  /** 音频轨的临时落点：与主链同目录、靠后缀区分（续传与清理都按它找） */
+  private audioPartPath(t: InternalTask): string {
+    return this.partPath(t) + ".audio";
+  }
+
+  /** 合流产物：先写它再交给 landFile，避免半截并流文件占住正式名 */
+  private mergedPartPath(t: InternalTask): string {
+    return this.partPath(t) + ".merged";
+  }
+
   private removePartFiles(part: string): void {
-    try {
-      rmSync(part, { force: true });
-    } catch {
-      /* 占用失败不影响状态机 */
+    // 三件一起清：主链 part、音频轨 part、合流产物。少清一个的后果是下次续传
+    // 拿上一档残留的音频去并流（音画不同步），比留垃圾文件严重得多
+    for (const path of [part, `${part}.audio`, `${part}.merged`]) {
+      try {
+        rmSync(path, { force: true });
+      } catch {
+        /* 占用失败不影响状态机 */
+      }
     }
     try {
       rmSync(metaPathFor(part), { force: true });
@@ -578,6 +614,142 @@ export class Downloader {
       t.filename = basename(alt);
     }
     renameSync(part, this.targetPath(t));
+  }
+
+  /**
+   * 落地 + 终态：正常下载、缓存直拷、双轨并流三条路共用这一段。
+   * 分开写的话，「完成」这一瞬的三件套（事件 / 历史 / 落盘）迟早会有一条路漏掉。
+   */
+  private landAndFinish(t: InternalTask, source: string): void {
+    this.landFile(source, t);
+    try {
+      rmSync(metaPathFor(this.partPath(t)), { force: true }); // 身份使命完成
+    } catch {
+      /* ignore */
+    }
+    t.status = "done";
+    // 完成行的速度由界面按「transferBytes ÷ transferMs」算平均（业主指令 2026-10-18），
+    // 这里清掉最后一个瞬时采样值，免得它被误读成「完成时还在跑」
+    t.speed = 0;
+    t.finishedAt = Date.now();
+    this.opts.events.progress(toView(t));
+    this.opts.events.done(toView(t));
+    this.opts.events.history({
+      groupTask: { ...toView(t), filePath: this.targetPath(t) },
+      files: [this.targetPath(t)],
+    });
+    this.persist();
+    this.retire(t.taskId);
+  }
+
+  /**
+   * 下载音频轨并与视频并流。
+   *
+   * 音频轨只有几 MB，失败由外层整体重试兜住，所以这里不复制视频那条「续链 + 完整性
+   * 闸门」的整套机器：保留 Range 续传（重试不重下）与暂停/取消响应，其余交给调用方。
+   * 返回成功时 `<part>.merged` 已就绪（由调用方 land）。
+   */
+  private async mergeAudioTrack(
+    t: InternalTask,
+    videoPart: string,
+    fetchImpl: typeof fetch,
+    baseHeaders: Record<string, string>
+  ): Promise<boolean> {
+    const audioPart = this.audioPartPath(t);
+    try {
+      await this.downloadTrack(t, t.audioUrl as string, audioPart, baseHeaders, fetchImpl);
+      if (t.status === "paused" || t.status === "canceled") return false;
+      if (!this.opts.tracks) return false;
+      return await this.opts.tracks.mergeLocal(videoPart, audioPart, this.mergedPartPath(t));
+    } catch (e) {
+      // 暂停/取消不是「合流失败」：外层按状态收尾，别把文案写成技术错误
+      if (t.status === "paused" || t.status === "canceled") return false;
+      throw e;
+    }
+  }
+
+  /**
+   * 单条轨下载（目前只给音频轨用）。
+   *
+   * 与视频主链共用同一份请求头（UA/Referer）与同一条 Range 判据：起点已到文件尾时上游回
+   * 416，那说明上一轮其实已经下完，直接进合流，别把它当失败再重试一轮。
+   */
+  private async downloadTrack(
+    t: InternalTask,
+    url: string,
+    dest: string,
+    baseHeaders: Record<string, string>,
+    fetchImpl: typeof fetch
+  ): Promise<void> {
+    let start = 0;
+    if (existsSync(dest)) {
+      try {
+        start = statSync(dest).size;
+      } catch {
+        start = 0;
+      }
+    }
+    const headers: Record<string, string> = { ...baseHeaders };
+    delete headers["Range"];
+    if (start > 0) headers["Range"] = `bytes=${start}-`;
+
+    const resp = await fetchImpl(url, { headers, signal: t.signal?.signal, redirect: "follow" });
+    if (resp.status === 416 && start > 0) return;
+    if (!resp.ok && resp.status !== 206) {
+      // 403 对音频轨是死路：续链只换主链（`renewUrl` 接口按一条链设计），这里如实说清
+      throw new Error(
+        resp.status === 403 ? "音频轨 HTTP 403（签名已过期，请重新解析后重试）" : `音频轨 HTTP ${resp.status}`
+      );
+    }
+    if (!resp.body) throw new Error("音频轨响应无 body");
+
+    const supportsRange = resp.status === 206;
+    if (start > 0 && !supportsRange) start = 0;
+    const contentLength = Number(resp.headers.get("content-length") ?? 0);
+    // 一条任务一条进度条：音频的字节也算进这行，别让进度在 100% 之后又开一段
+    if (contentLength > 0) t.total += supportsRange ? contentLength : contentLength - start;
+
+    const stream = createWriteStream(dest, { flags: supportsRange && start > 0 ? "a" : "w" });
+    let streamErr: Error | null = null;
+    // 写流的 error 必须当场接住：磁盘满/占用时 Node 会抛未捕获异常，整个主进程会消失
+    stream.once("error", (e) => {
+      streamErr = e instanceof Error ? e : new Error(String(e));
+      t.signal?.abort();
+    });
+
+    let written = start;
+    let lastEmit = 0;
+    const reader = resp.body.getReader();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (streamErr) throw streamErr;
+        if (done) break;
+        if (t.status === "canceled" || t.status === "paused") {
+          await Downloader.closeStream(stream);
+          return; // 外层按状态收尾，音频 part 保留（续传/取消清理各按策略）
+        }
+        if (!stream.write(value)) {
+          await new Promise<void>((res) => stream.once("drain", () => res()));
+        }
+        if (streamErr) throw streamErr;
+        written += value.byteLength;
+        t.received += value.byteLength;
+        t.transferBytes += value.byteLength;
+        const now = Date.now();
+        if (now - lastEmit >= PROGRESS_THROTTLE_MS) {
+          lastEmit = now;
+          this.opts.events.progress(toView(t));
+        }
+      }
+      await Downloader.closeStream(stream);
+    } catch (e) {
+      stream.destroy();
+      throw e;
+    }
+    if (contentLength > 0 && written < start + contentLength) {
+      throw new Error(`音频轨传输不完整（${written}/${start + contentLength} 字节），已保留断点`);
+    }
   }
 
   private pump(): void {
@@ -633,6 +805,36 @@ export class Downloader {
     this.opts.events.progress(toView(t));
 
     const part = this.partPath(t);
+
+    // 预览已经合过的那一对：直接复制产物，省掉两轨下载与一次 ffmpeg。同一次解析里的链相同，
+    // 哈希键一致；换档/签名刷新就是另一个键，自然走正常下载（缓存也可能已被 TTL 清走）。
+    if (t.audioUrl && this.opts.tracks) {
+      const cached = `${part}.cached`;
+      const hit = await this.opts.tracks.copyCached(t.url, t.audioUrl, cached).catch(() => false);
+      if (hit) {
+        const live = st();
+        if (live === "canceled" || live === "paused") {
+          if (live === "canceled" && !this.opts.getKeepPartials()) {
+            try {
+              rmSync(cached, { force: true });
+            } catch {
+              /* ignore */
+            }
+          }
+          return;
+        }
+        try {
+          const size = statSync(cached).size;
+          t.received = size;
+          t.total = size;
+        } catch {
+          /* stat 失败按 0 报，landFile 会如实处理 */
+        }
+        this.landAndFinish(t, cached);
+        return;
+      }
+    }
+
     let start = 0;
     if (existsSync(part)) {
       const partUrl = readPartUrl(part);
@@ -780,25 +982,37 @@ export class Downloader {
       if (t.total > 0 && t.received < t.total) {
         throw new Error(`传输不完整（${t.received}/${t.total} 字节），已保留断点`);
       }
-      this.landFile(part, t);
-      try {
-        rmSync(metaPathFor(part), { force: true }); // 身份使命完成
-      } catch {
-        /* ignore */
+
+      // DASH 双轨：上面这段落的是画面，音频轨在同一任务的另一条链上。产品规则是交付
+      // 音画完整的文件——先并流再落地，绝不把 video-only 的 part 改名成「完成」。
+      if (t.audioUrl) {
+        const merged = await this.mergeAudioTrack(t, part, fetchImpl, headers);
+        if (!merged) throw new Error("音视频合流失败（音频轨未取到或 ffmpeg 不可用）");
+        // 并流是本地 copy，中途停不下来：用户在合流那几秒里按了取消/暂停，产物当垃圾清掉，
+        // 状态留给用户按下的那个动作——不能因为副本已经跑完就替他宣布「下载完成」
+        const afterMerge = st();
+        if (afterMerge === "canceled" || afterMerge === "paused") {
+          try {
+            rmSync(this.mergedPartPath(t), { force: true });
+          } catch {
+            /* ignore */
+          }
+          if (afterMerge === "canceled" && !this.opts.getKeepPartials()) this.removePartFiles(part);
+          return;
+        }
+        this.landAndFinish(t, this.mergedPartPath(t));
+        // 并流已落地：两条轨的 part 是纯垃圾，留着会一直占下载目录
+        for (const stale of [part, this.audioPartPath(t)]) {
+          try {
+            rmSync(stale, { force: true });
+          } catch {
+            /* ignore */
+          }
+        }
+        return;
       }
-      t.status = "done";
-      // 完成行的速度由界面按「transferBytes ÷ transferMs」算平均（业主指令 2026-10-18），
-      // 这里清掉最后一个瞬时采样值，免得它被误读成「完成时还在跑」
-      t.speed = 0;
-      t.finishedAt = Date.now();
-      this.opts.events.progress(toView(t));
-      this.opts.events.done(toView(t));
-      this.opts.events.history({
-        groupTask: { ...toView(t), filePath: this.targetPath(t) },
-        files: [this.targetPath(t)],
-      });
-      this.persist();
-      this.retire(t.taskId);
+
+      this.landAndFinish(t, part);
     } catch (e) {
       clearStall();
       const live = st();

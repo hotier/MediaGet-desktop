@@ -8,7 +8,13 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { PREVIEW_SCHEME, buildImageSrc, buildPreviewLink, readPreviewTarget } from "../shared/preview-link";
+import {
+  PREVIEW_SCHEME,
+  buildImageSrc,
+  buildPreviewLink,
+  isDashSegment,
+  readPreviewTarget,
+} from "../shared/preview-link";
 
 const CDN = "https://v26.douyinvod.com/a/b.mp4?video_id=v1&sign=S1&expires=100";
 
@@ -30,6 +36,45 @@ describe("buildPreviewLink / readPreviewTarget（往返）", () => {
     const link = buildPreviewLink(CDN, "  ");
     expect(link).not.toContain("p=");
     expect(readPreviewTarget(link!)).toEqual({ url: CDN });
+  });
+});
+
+/**
+ * B站登录态 dash 的音频轨（2026-10-21）：视频轨是 video-only 分片，必须把音频轨一起交给
+ * 主进程合流。两条链都过同一道公网闸；音频轨不合法时只丢它，不废掉整条预览链。
+ */
+describe("dash 音频轨（第二条直链）", () => {
+  const VIDEO = "https://upos-sz-mirrorcos.bilivideo.com/v/80.m4s?e=1&deadline=9";
+  const AUDIO = "https://upos-sz-mirrorcos.bilivideo.com/a/30280.m4s?e=1&deadline=9";
+
+  it("带音频的链能往返出 audioUrl（合流判据就是它存在）", () => {
+    const link = buildPreviewLink(VIDEO, "bilibili", AUDIO)!;
+    expect(readPreviewTarget(link)).toEqual({ url: VIDEO, platform: "bilibili", audioUrl: AUDIO });
+  });
+
+  it("音频轨过不了公网闸 → 只带视频，不把代理扩成第二条通道", () => {
+    const link = buildPreviewLink(VIDEO, "bilibili", "http://127.0.0.1:9220/audio.m4s")!;
+    expect(readPreviewTarget(link)).toEqual({ url: VIDEO, platform: "bilibili" });
+  });
+
+  it("音频与主链相同 → 不重复带（durl 单文件本身含音轨）", () => {
+    const link = buildPreviewLink(VIDEO, "bilibili", VIDEO)!;
+    expect(readPreviewTarget(link)).toEqual({ url: VIDEO, platform: "bilibili" });
+  });
+
+  it("解链时伪造的 `a=` 指向内网也会被丢掉", () => {
+    const forged =
+      `${PREVIEW_SCHEME}://media/?u=${encodeURIComponent(VIDEO)}` +
+      `&a=${encodeURIComponent("http://169.254.169.254/latest/meta-data/")}`;
+    expect(readPreviewTarget(forged)).toEqual({ url: VIDEO });
+  });
+
+  it("isDashSegment 只看路径扩展名（签名串里带 .m4s 不算）", () => {
+    expect(isDashSegment(VIDEO)).toBe(true);
+    expect(isDashSegment("https://upos.hdslb.com/single.mp4?x=.m4s")).toBe(false);
+    expect(isDashSegment("https://upos.hdslb.com/single.mp4")).toBe(false);
+    expect(isDashSegment("not a url")).toBe(false);
+    expect(isDashSegment("https://cdn.example.invalid/a.m4s")).toBe(true);
   });
 });
 
@@ -101,7 +146,12 @@ describe("接线：CSP 只认自家 scheme，媒体 src 必经代理", () => {
   });
 
   it("音视频的 src 由 buildPreviewLink 生成；图片同走代理（buildImageSrc）", () => {
-    expect(card).toContain("buildPreviewLink(previewEntry.url, result.platform)");
+    expect(card).toContain("buildPreviewLink(previewEntry.url, result.platform, dashAudio)");
+    // 音频轨要带，但判据只在下载计划那一处（`dashAudioFor`）：渲染层若自己再按扩展名判一次，
+    // YouTube 的 googlevideo 链（pathname 是 /videoplayback，没有 `.m4s`）就会被漏掉——
+    // 选中高于主链的档后 `<video>` 里没有音轨，Chromium 连音量按钮都不画（2026-10-21 用户报）
+    expect(card).toContain("previewEntry.audioUrl");
+    expect(card).not.toContain("isDashSegment(previewEntry.url)");
     // 2026-10-18 实测推翻「img 直接吃原链」：微博图床对空 Referer 也回 403，`<img>` 带不上
     // 防盗链头。图片与音视频共用代理链；回落只放行绝对 http(s)（img-src 里的 https:）与
     // data:，站内相对路由返回 null，调用方画占位而不是演「图裂了」。

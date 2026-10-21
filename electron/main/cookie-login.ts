@@ -14,6 +14,11 @@
  *
  * 判据为什么是「登录态标记」而不是「有 cookie 就算」：匿名访客也有 `ttwid`/`did` 一类，
  * 抓早了会把半份 Cookie 存成「已配置」，而它必然解析失败——比没配更难排查。
+ *
+ * 小红书还有更隐蔽的一层（2026-10-21 业主实测：没登录却显示已获取 13 条）：
+ * 游客打开页面时前端就会注册一个 `web_session`，**名字与登录态那枚完全一样**。
+ * 所以它的判据不是「有没有」，而是「值变没变」（`volatileMarkers` + 基线），见
+ * `takeBaseline` 上方那段。
  */
 import { BrowserWindow, session, shell, type Session } from "electron";
 import { DESKTOP_USER_AGENT } from "./hotlink";
@@ -23,6 +28,7 @@ import {
   filterCookies,
   hasLoginMarker,
   isAllowedNavigation,
+  volatileMarkerChanged,
   type CookieLoginKey,
   type RawCookie,
 } from "../../shared/cookie-login";
@@ -50,6 +56,12 @@ const PARTITION = "persist:cookie-login";
 const POLL_MS = 800;
 /** 判据出现后再等的这一拍：登录成功后 cookie 是分几次写的，立刻抓容易少一枚 */
 const SETTLE_MS = 1_200;
+/**
+ * 「游客也会写」的键：页面加载完成后再等这么久才拍基线。
+ * 小红书匿名打开时前端脚本会先注册一个游客 `web_session`，拍早了基线还是空，
+ * 下一拍看到值出现就会误判成登录成功（2026-10-21 业主实测那条「没登录就显示已获取」）。
+ */
+const BASELINE_DELAY_MS = 1_500;
 const DEFAULT_TIMEOUT_MS = 3 * 60_000;
 
 export interface CookieLogin {
@@ -107,6 +119,16 @@ export function createCookieLogin(deps: CookieLoginDeps): CookieLogin {
       let deadline: NodeJS.Timeout | null = null;
       let pollTimer: NodeJS.Timeout | null = null;
 
+      const volatileNames = target.volatileMarkers ?? [];
+      /**
+       * 「游客也会写」那些键开窗那一刻的取值。**不能开窗前取**——持久分区里可能还躺着
+       * 上次的游客会话，页面一加载就会换成新的，那一换会被当成「登录成功」。
+       * 所以基线在页面加载完成、且留出页面脚本写游客会话的时间之后再拍（见下方）。
+       */
+      const baseline = new Map<string, string>();
+      /** 基线没拍到时不做「变化」判断：宁可不抓，也不能把匿名态存成已配置 */
+      let baselineReady = volatileNames.length === 0;
+
       const finish = (result: CookieLoginResult): void => {
         if (settled) return;
         settled = true;
@@ -122,7 +144,9 @@ export function createCookieLogin(deps: CookieLoginDeps): CookieLogin {
       const capture = async (): Promise<boolean> => {
         const all = (await ses.cookies.get({}).catch(() => [])) as RawCookie[];
         const mine = filterCookies(all, target.domains);
-        const header = buildCookieHeader(mine, target.markers);
+        // 排序优先级里把 volatile 也算进来：`web_session` 就是小红书最要紧那一枚，
+        // 超长时必须先它留下，别被埋点 cookie 挤掉
+        const header = buildCookieHeader(mine, [...target.markers, ...volatileNames]);
         if (!header) return false;
         deps.saveCookie(key, header);
         deps.onCaptured();
@@ -131,12 +155,33 @@ export function createCookieLogin(deps: CookieLoginDeps): CookieLogin {
         return true;
       };
 
+      /** 拍一次基线：只记 volatile 那些键当时的取值 */
+      const takeBaseline = async (): Promise<void> => {
+        const all = (await ses.cookies.get({}).catch(() => [])) as RawCookie[];
+        const mine = filterCookies(all, target.domains);
+        baseline.clear();
+        for (const c of mine) {
+          if (c.value && volatileNames.includes(c.name)) baseline.set(c.name, c.value);
+        }
+        baselineReady = true;
+      };
+
+      if (volatileNames.length > 0) {
+        win.webContents.once("did-finish-load", () => {
+          // 游客会话是页面脚本写的，给它一点时间写定再拍基线（早一步就拍到空）
+          setTimeout(() => void takeBaseline(), BASELINE_DELAY_MS);
+        });
+      }
+
       pollTimer = setInterval(() => {
         void (async () => {
           if (settled || win.isDestroyed() || settleTimer) return;
           const all = (await ses.cookies.get({}).catch(() => [])) as RawCookie[];
           const mine = filterCookies(all, target.domains);
-          if (!hasLoginMarker(mine.map((c) => c.name), target.markers)) return;
+          const loggedIn =
+            hasLoginMarker(mine.map((c) => c.name), target.markers) ||
+            (baselineReady && volatileMarkerChanged(mine, volatileNames, baseline));
+          if (!loggedIn) return;
           // 判据已出现：等一拍让同一轮登录的其余 cookie 落齐，再一次性收
           settleTimer = setTimeout(() => {
             void (async () => {
@@ -168,8 +213,17 @@ export function createCookieLogin(deps: CookieLoginDeps): CookieLogin {
         return { action: "deny" };
       });
 
-      win.once("ready-to-show", () => win.show());
+      win.once("ready-to-show", () => {
+        if (!win.isDestroyed()) win.show();
+      });
       void win.loadURL(target.url).catch((e: Error) => {
+        /**
+         * 抓完就 `destroy()`，而此刻导航往往还没走完（SPA 首屏之后仍在加载），
+         * 被打断的那次 loadURL 会以 `ERR_FAILED (-2)` / `ERR_ABORTED` reject。
+         * 那是**成功的收尾噪声**，不是「登录页打不开」——按失败处理只会让日志骗人，
+         * 顺手把一个已经成功的结果盖成 error。
+         */
+        if (settled || win.isDestroyed()) return;
         deps.logger.warn(`[cookie-login] 登录页加载失败：${e.message}`);
         finish({ captured: false, reason: "error" });
       });

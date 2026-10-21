@@ -13,6 +13,7 @@ import {
   type PersistedQueueLike,
 } from "../electron/main/downloader";
 import type { DownloadTaskView } from "../types/ipc";
+import type { TrackMerger } from "../electron/main/media-merge";
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "mg-dl-test-"));
@@ -26,6 +27,7 @@ function makeDownloader(
     stallTimeoutMs?: number;
     retryBaseDelayMs?: number;
     renewUrl?: (failedUrl: string, sourceUrl?: string) => Promise<string | null>;
+    tracks?: Pick<TrackMerger, "mergeLocal" | "copyCached">;
   }
 ) {
   const events: DownloadTaskView[] = [];
@@ -909,6 +911,115 @@ describe("断点续传：跨签名 / 跨会话接着下", () => {
     // `renewed` 不在 resume 里重开的话，这里恒为 1：同一行按多少次重试都只会在死链上打转
     expect(calls).toBe(2);
     expect(readFileSync(join(dir, "v.mp4"), "utf8")).toBe("AFTER-RETRY");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+/**
+ * DASH 双轨一律合流（契约 v33，2026-10-21 业主指令）。
+ *
+ * 判据是「任务带 audioUrl」：带它就绝不允许把 video-only 的 part 改名成完成——
+ * 用户要的是完整的视频，不是一段无声画面。
+ */
+describe("DASH 双轨合流", () => {
+  const VIDEO = "https://upos.hdslb.com/v/80.m4s?e=1";
+  const AUDIO = "https://upos.hdslb.com/a/30280.m4s?e=1";
+
+  /** 两轨都回同一份假字节；`seen` 记录请求顺序 */
+  function trackFetch(seen: string[]): typeof fetch {
+    return (async (input: unknown) => {
+      const url = String(input);
+      seen.push(url);
+      const body = new TextEncoder().encode(url === AUDIO ? "audio-bytes" : "video-bytes");
+      return new Response(body, {
+        status: 200,
+        headers: { "content-length": String(body.byteLength) },
+      });
+    }) as unknown as typeof fetch;
+  }
+
+  it("两轨都下完再合流，落地的只有合流产物（两条 part 清干净）", async () => {
+    const dir = makeTempDir();
+    const seen: string[] = [];
+    let mergeArgs: string[] | null = null;
+    const { dl, events } = makeDownloader(dir, trackFetch(seen), 2, {
+      retryBaseDelayMs: 1,
+      tracks: {
+        copyCached: async () => false,
+        mergeLocal: async (video, audio, out) => {
+          mergeArgs = [video, audio, out];
+          writeFileSync(out, "merged-file");
+          return true;
+        },
+      },
+    });
+
+    dl.enqueue([{ url: VIDEO, audioUrl: AUDIO, filename: "a.mp4", kind: "video" }], "g-merge");
+    await waitUntil(() => events.some((t) => t.status === "done"), 5000);
+
+    expect(seen).toEqual([VIDEO, AUDIO]);
+    expect(mergeArgs?.[0]).toMatch(/a\.mp4\.part$/);
+    expect(mergeArgs?.[1]).toMatch(/a\.mp4\.part\.audio$/);
+    const done = events.find((t) => t.status === "done");
+    expect(done?.filePath && readFileSync(done.filePath, "utf8")).toBe("merged-file");
+    // 两条轨的 part 是纯垃圾，完成后不许留在下载目录里
+    expect(existsSync(join(dir, "a.mp4.part"))).toBe(false);
+    expect(existsSync(join(dir, "a.mp4.part.audio"))).toBe(false);
+    expect(existsSync(join(dir, "a.mp4"))).toBe(true);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("预览已经合过的那一对：直接复制，不发任何请求", async () => {
+    const dir = makeTempDir();
+    const seen: string[] = [];
+    const { dl, events } = makeDownloader(dir, trackFetch(seen), 2, {
+      retryBaseDelayMs: 1,
+      tracks: {
+        copyCached: async (_video, _audio, out) => {
+          writeFileSync(out, "cached-file");
+          return true;
+        },
+        mergeLocal: async () => {
+          throw new Error("缓存命中时不该再跑 ffmpeg");
+        },
+      },
+    });
+
+    dl.enqueue([{ url: VIDEO, audioUrl: AUDIO, filename: "b.mp4", kind: "video" }], "g-cache");
+    await waitUntil(() => events.some((t) => t.status === "done"), 5000);
+
+    expect(seen).toEqual([]);
+    const done = events.find((t) => t.status === "done");
+    expect(done?.filePath && readFileSync(done.filePath, "utf8")).toBe("cached-file");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("没有合流器（缺 ffmpeg）→ 如实报失败，绝不静默落一段无声视频", async () => {
+    const dir = makeTempDir();
+    const seen: string[] = [];
+    const { dl, events } = makeDownloader(dir, trackFetch(seen), 2, { retryBaseDelayMs: 1 });
+
+    dl.enqueue([{ url: VIDEO, audioUrl: AUDIO, filename: "c.mp4", kind: "video" }], "g-nomerge");
+    await waitUntil(() => events.some((t) => t.status === "error"), 6000);
+
+    expect(events.find((t) => t.status === "error")?.error).toContain("合流");
+    expect(existsSync(join(dir, "c.mp4"))).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("音频轨指向内网 → 整条任务拒掉，连主链都不发请求", async () => {
+    const dir = makeTempDir();
+    const seen: string[] = [];
+    const { dl, events } = makeDownloader(dir, trackFetch(seen), 2, { retryBaseDelayMs: 1 });
+
+    dl.enqueue(
+      [{ url: VIDEO, audioUrl: "http://127.0.0.1:8080/a.m4s", filename: "d.mp4", kind: "video" }],
+      "g-ssrf"
+    );
+    await waitUntil(() => events.some((t) => t.status === "error"), 3000);
+
+    expect(events.find((t) => t.status === "error")?.error).toContain("音频轨地址");
+    expect(seen).toEqual([]);
     rmSync(dir, { recursive: true, force: true });
   });
 });

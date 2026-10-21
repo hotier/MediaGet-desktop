@@ -6,6 +6,7 @@
  * 是结果卡里唯一有正确性风险的纯函数（多 P 的清晰度回落尤其容易静默出错），
  * 抽出来才能用纯 Node 测试覆盖，不必拉起 DOM。
  */
+import { isDashSegment } from "../../../shared/preview-link";
 import type { DownloadItem, ParseData, ParsedVideoQuality } from "../../../types/ipc";
 
 /** 一个可选清晰度（null url = 用内核给的主 data.url） */
@@ -28,9 +29,31 @@ export interface PlanEntry {
   label: string;
   kind: DownloadItem["kind"];
   url: string;
+  /** DASH 音频轨：有它下载器就必须合流（交付音画完整的一个文件，见 `media-merge`） */
+  audioUrl?: string;
   filename: string;
   /** 请求的清晰度在该项上不存在、实际用默认 —— 必须显式说出来，不能静默降级 */
   fallbackNote?: string;
+}
+
+/**
+ * 这一项要不要带音频轨。
+ *
+ * 两条判据，缺一个就会有「下得下来但没声音」的档：
+ * ① 直链是 DASH 视频分片（B站未登录以外的 `.m4s`）——单放没有音轨；
+ * ② **不是主链**的档位。YouTube 的 DASH 链长在 `googlevideo.com/videoplayback` 上，
+ *    pathname 里没有 `.m4s`，扩展名认不出来，而它同样没有音轨（2026-10-21 用户报
+ *    「YouTube 视频在预览页调不了音量」就是这条：选了高于主链的档 → 无声 → Chromium
+ *    干脆不画音量按钮）。主链是渐进式（`progressive[0]`，自带音轨），所以「非主链」
+ *    这个条件只在用户真的换了档时才成立，主链那条不会被白合一次。
+ *
+ * 渐进式单文件（B站未登录的 durl、抖音/快手的 mp4）本身带声音，多叠一条只会浪费一次合流，
+ * 但不会出错——`-map 0:v:0 / 1:a:0` 取的是同一条视频的音频，不是别处的。`audioUrl`
+ * 缺省 = 单流，老路径不变。
+ */
+function dashAudioFor(url: string, audioUrl?: string, isMain = true): string | undefined {
+  if (!audioUrl) return undefined;
+  return isDashSegment(url) || !isMain ? audioUrl : undefined;
 }
 
 function qualityLabel(q: ParsedVideoQuality): string {
@@ -65,14 +88,34 @@ export function buildQualityPlan(data?: ParseData, strategy: QualityStrategy = "
   // B站只把档位挂在分 P 上（`data.qualities` 为空，顶层也没有 qualityLabel）：
   // 拿主视频那组当可选项，否则选择器永远只有「默认」一项、整块被隐藏。
   const source = data.qualities?.length ? data.qualities : (data.videos?.[0]?.qualities ?? []);
-  const options: QualityOption[] = source.map((q) => ({
-    label: qualityLabel(q),
-    url: q.url,
-    suffix: `-${qualityLabel(q)}`,
-    tier: q.quality,
-  }));
+  /**
+   * 同名档位只留一条，且**主链那条优先占位**。
+   *
+   * 两件事绑在一起，因为它们是同一个坑的两面：
+   * 1) 上游把不同 qn / 不同编码标成同一句话时（2026-10-21 用户报「2 个 1080P」），
+   *    两个芯片只会让用户分不清该选哪个，所以同名只留一条；
+   * 2) YouTube 的 360P 同时存在渐进式（含音轨，正好是主链）与 DASH video-only 两条，
+   *    单纯「先出现的留下」会把主链那条挤掉，于是 `findIndex` 找不到主链，兜底塞进一个
+   *    叫「默认」的档位——用户既不知道它是什么清晰度，也不知道它和 360P 是同一档
+   *    （2026-10-21 用户报）。所以主链出现时就顶掉同名的旧项，位置不变。
+   */
+  const byLabel = new Map<string, QualityOption>();
+  for (const q of source) {
+    const label = qualityLabel(q);
+    const option: QualityOption = { label, url: q.url, suffix: `-${label}`, tier: q.quality };
+    const prev = byLabel.get(label);
+    if (!prev || (data.url && q.url === data.url)) byLabel.set(label, option);
+  }
+  const options: QualityOption[] = [...byLabel.values()];
   let primaryIndex = data.url ? options.findIndex((o) => o.url === data.url) : -1;
-  if (data.url && primaryIndex < 0) options.unshift(defaultOption(data));
+  if (data.url && primaryIndex < 0) {
+    // 主链压根不在档位表里（内核只给了主链、没给多档）：补一条，名字取内核给的档位名。
+    // 名字撞车时加后缀区分——两个一模一样的芯片比一个「默认」更让人没法选。
+    const base = defaultOption(data);
+    const label = options.some((o) => o.label === base.label) ? `${base.label}（当前）` : base.label;
+    options.unshift({ ...base, label });
+    primaryIndex = 0;
+  }
   if (data.audioUrl) options.push({ label: "仅音频", url: data.audioUrl, suffix: "", audio: true });
   if (primaryIndex < 0) primaryIndex = 0;
   if (strategy !== "main") {
@@ -101,7 +144,12 @@ export function buildQualityOptions(data?: ParseData): QualityOption[] {
  * 在设置里给出人话示例），开关是独立布尔（可开关、可单独预览）。日期归入 titleDate 预设
  * 而非开关 —— 否则「加日期」与「标题_日期」两个概念会打架。
  */
-export type FilenamePreset = "title" | "authorTitle" | "titleAuthor" | "titleDate";
+export type FilenamePreset =
+  | "title"
+  | "authorTitle"
+  | "titleAuthor"
+  | "titleDate"
+  | "authorTitleDate";
 
 export interface FilenameExtra {
   /** 清晰度后缀（如 `-1080P`）；默认开 —— 现状主视频文件名就带该后缀，关掉才是行为变更 */
@@ -213,11 +261,16 @@ export function buildFilename(
 
   let stem: string;
   switch (rule.preset) {
+    // 连接符统一为下划线（v26）：作者缺失时退化为仅标题，不留尾部空档或孤立连接符
     case "authorTitle":
-      stem = author ? `${author} - ${title}` : title;
+      stem = author ? `${author}_${title}` : title;
       break;
     case "titleAuthor":
-      stem = author ? `${title} - ${author}` : title;
+      stem = author ? `${title}_${author}` : title;
+      break;
+    case "authorTitleDate":
+      // 三要素全上；作者缺失时就是 titleDate
+      stem = author ? `${author}_${title}_${yyyymmdd(now)}` : `${title}_${yyyymmdd(now)}`;
       break;
     case "titleDate":
       stem = `${title}_${yyyymmdd(now)}`;
@@ -315,6 +368,8 @@ export function buildPlan(
       label: `视频 · ${chosen.label}`,
       kind: "video",
       url: mainUrl,
+      // 主链判定按「选中的档位是不是主链那条」：选了更高档就是非主链，得配音轨
+      audioUrl: dashAudioFor(mainUrl, data.audioUrl, mainUrl === data.url),
       filename: buildFilename(
         { title, author, qualitySuffix: chosen.suffix, ext: ".mp4" },
         naming
@@ -322,7 +377,9 @@ export function buildPlan(
     });
   }
 
-  const wantAudio = Boolean(data.audioUrl) && (chosen.audio || !sel);
+  // 「仅音频」是排他档：只有用户明确选了它才单独产音频项。默认下载时音频已并入主视频
+  // （dash 双轨一律合流），再产一条就是让用户白下一个重复的音频文件。
+  const wantAudio = Boolean(data.audioUrl) && Boolean(chosen.audio);
   if (wantAudio) {
     out.push({
       id: "audio",
@@ -335,6 +392,8 @@ export function buildPlan(
 
   // 「仅音频」是排他档：主视频已跳过，分 P 的视频也不能再进来（否则按钮上会写 4 项）
   if (!chosen.audio) {
+    // 分 P 各自的音频轨不在契约里（`ParseData.videos[]` 没有 audioUrl），别拿顶层音频硬配
+    // ——音轨配错比无声更难发现。这里保持单流，缺口留给内核补字段。
     (data.videos ?? []).forEach((v, i) => {
       // 想要哪一档写在 suffix 上（默认项也可能带档位，例如主 url 就是 1080P）
       const wanted = chosen.suffix ? chosen.suffix.slice(1) : undefined;

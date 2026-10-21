@@ -112,6 +112,12 @@ function parseConfig(value: unknown, fingerprint: string): ParsedSource {
     platformSwitches: Object.fromEntries(
       Object.entries(rawSettings.platformSwitches ?? {}).map(([key, row]) => [key, { ...row }])
     ),
+    // 引擎开关同理逐条复制：源文件原样保留，导入时归一
+    engineSwitches: Object.fromEntries(
+      Object.entries(rawSettings.engineSwitches ?? {}).map(([key, row]) => [key, { ...row }])
+    ),
+    // 平台主引擎：别名键在写入侧已归一，这里原样收（未登记的键不还原成别的平台）
+    platformEngines: { ...(rawSettings.platformEngines ?? {}) },
     filenameExtra: { ...DEFAULT_SETTINGS.filenameExtra, ...(rawSettings.filenameExtra ?? {}) },
   });
   const kernel = value.kernel ?? {};
@@ -154,7 +160,7 @@ function parseQueue(value: unknown, fingerprint: string): ParsedSource {
         // Same rule as the repository write path: nonterminal rows keep URL and headers (restart
         // recovery and retry replay them as-is); a finished row drops both from the long-lived ledger.
         const safeTask: PersistedQueueTask =
-          task.status === "done" ? { ...task, url: "", headers: undefined } : task;
+          task.status === "done" ? { ...task, url: "", audioUrl: undefined, headers: undefined } : task;
         db.run(
           `INSERT INTO queue_tasks
             (task_id, group_id, created_at, updated_at, status, platform, search_text, payload_json)

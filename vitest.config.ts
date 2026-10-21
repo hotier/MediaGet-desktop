@@ -14,6 +14,10 @@ export default defineConfig({
     alias: {
       "~": fileURLToPath(new URL("./renderer/src", import.meta.url)),
       electron: fileURLToPath(new URL("./tests/stubs/electron.ts", import.meta.url)),
+      // amagi 的 exports 只有 import/require 条件（无 default），vite 解析不了包入口；
+      // alias 直接指 CJS 产物。测试里真客户端永远被离线桩替换（engine.test.ts 的
+      // offlineAmagi / amagi-engine.test.ts 的假客户端），这里只为让 import 可解析。
+      "@ikenxuan/amagi": fileURLToPath(new URL("./node_modules/@ikenxuan/amagi/dist/default/index.cjs", import.meta.url)),
     },
   },
   test: {

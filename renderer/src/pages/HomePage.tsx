@@ -28,12 +28,21 @@ import { Skeleton } from "../components/ui/skeleton";
 import { TruncatedTooltip } from "../components/ui/tooltip";
 import { fmtCreated } from "../lib/format";
 import { useHomeDraft } from "../store/home-draft";
+import { usePlatformStore } from "../store/platforms";
+import {
+  ENGINE_INFO,
+  asSwitchableEngine,
+  displayName,
+  primaryEngineOf,
+} from "../../../shared/platforms";
 
 type Page = "downloads" | "history";
 
 /** 文件导入上限：超出部分诚实截断并 toast 告知，不做静默丢件 */
 const IMPORT_MAX_ITEMS = 100;
 const IMPORT_MAX_BYTES = 1024 * 1024;
+
+
 
 /**
  * 一键保存的模板（txt / csv 两份，同一份说明文本）：全篇不含「http」字样——
@@ -120,6 +129,8 @@ export default function HomePage({
   const { text, setText, hint: identifyHint, setHint: setIdentifyHint, items, busy, setBusy, startBatch, patchItem, clear: clearDraft } =
     useHomeDraft();
   const [helpOpen, setHelpOpen] = useState(false);
+  /** 用户为各平台挑的主引擎（覆盖层，缺键 = mediaget）：回退提示拿它跟实际引擎对账 */
+  const primaryEngines = usePlatformStore((s) => s.primary);
   const [recent, setRecent] = useState<HistoryEntry[]>([]);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -138,6 +149,26 @@ export default function HomePage({
         // sourceUrl = 主进程归一后的真实资源页（短链已在那边跟到长链）；结果卡「来源」、
         // 下载 meta 与历史行都读这一条，作品键三处一致。失败态没有它，保留输入框原文。
         patchItem(id, { status: "done", outcome: r, sourceUrl: r.sourceUrl ?? source, at: Date.now() });
+        // —— 回退要出声（2026-10-21 业主提问「替换主引擎后仍显示 mediaget，是回退吗」）——
+        // 卡片只报「实际是谁解的」；当它不是用户挑的主引擎时，用户没法判断是没生效还是被回退。
+        // 命中缓存的那一次根本没进选路（durationMs 极短，与卡片「缓存命中」同一阈值），
+        // 不许把「换了台引擎救回来」说成这次回退。
+        const actual = asSwitchableEngine(r.viaEngine);
+        const platform = r.result.platform ?? "";
+        const intended = platform ? primaryEngineOf(platform, primaryEngines) : null;
+        // 只看 attempts（v32）：主引擎真失败过才叫回退；命中缓存那次没进选路，attempts 缺省，
+        // 不会被误报成「回退」。被引擎开关关掉/缺二进制的主引擎同理——它没被调用，不算失败。
+        const primaryFail =
+          intended && r.result.code === 200
+            ? r.attempts?.find((a) => !a.ok && a.engine === intended)
+            : undefined;
+        if (actual && intended && primaryFail && actual !== intended) {
+          // 原因用 failType（能对上内核归因，如 bot-gated）；没有就退回业务码，不塞长文本进 toast
+          const why = primaryFail.failType ? primaryFail.failType : `code ${primaryFail.code}`;
+          toast.info(
+            `${displayName(platform)}：主引擎 ${ENGINE_INFO[intended].label} 未能解出（${why}），已回退 ${ENGINE_INFO[actual].label}`
+          );
+        }
       } catch (e) {
         patchItem(id, {
           status: "error",
@@ -149,7 +180,7 @@ export default function HomePage({
         });
       }
     },
-    [patchItem]
+    [patchItem, primaryEngines]
   );
 
   /** 批量解析：串行执行（内核自带节流，串行=速率与进度都诚实），完成一张落一张 */
@@ -298,6 +329,40 @@ export default function HomePage({
     clearDraft();
   }, [clearDraft]);
 
+  /**
+   * 工作台里有没有东西——决定解析按钮左边那枚按钮演什么（2026-10-21 业主指令
+   * 「有内容时是清除，无内容时是粘贴」）。空态那枚原来是永远灰着的「清除」，
+   * 占了位置却没有任何可点的时刻；换成「粘贴」正好补上首页唯一缺的入口。
+   */
+  const hasContent = Boolean(text.trim()) || items.length > 0;
+
+  /**
+   * 粘贴：剪贴板由主进程代读（渲染层的 `navigator.clipboard.readText` 被那条
+   * 「所有权限一律拒」的钩子挡死，与复制同一条理由，见 CONTRACT_VERSION v34）。
+   * 读到的文本走 `onInput` 这一条流——识别提示、600ms 自动解析与手工粘贴完全一致。
+   */
+  const pasteFromClipboard = useCallback(async () => {
+    try {
+      const { text: raw } = await api.app.readClipboard();
+      const value = raw.trim();
+      if (!value) {
+        // 「剪贴板里没东西」不是错误，但也得说一声，否则按钮看起来像没反应
+        setIdentifyHint("剪贴板里没有可粘贴的内容");
+        return;
+      }
+      onInput(value);
+      inputRef.current?.focus();
+    } catch (e) {
+      // 别把真实原因吞成一句「读取剪贴板失败」：最常见的两种失败都是**这一版没进到跑着的进程**——
+      // 旧 preload 会说 `…readClipboard is not a function`，主进程没重启会说
+      // `No handler registered for 'app:readClipboard'`。两种情况重启即可，但提示里得看得出来。
+      const detail = (e instanceof Error ? e.message : String(e)).slice(0, 160);
+      setIdentifyHint(`读取剪贴板失败：${detail}`);
+      // 只记错误文本，不记剪贴板内容（那是用户的东西）
+      void api.app.log("warn", `[clipboard] 读取失败：${detail}`);
+    }
+  }, [onInput]);
+
   // Esc：模态优先（ResultCard 的 Dialog 自己处理）→ 清输入框
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -340,20 +405,33 @@ export default function HomePage({
               if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) parseManual();
             }}
             placeholder="粘贴分享链接或整段分享文案，多条用空格、换行隔开，Ctrl+K 任意页面直达…"
-            className="min-h-28 resize-none rounded-none border-0 bg-transparent px-4 pt-3.5 pb-2 leading-relaxed shadow-none"
+            className={
+              // 高度固定（业主指令 2026-10-21「不要随文字自动拉伸」）：基座带 `field-sizing-content`，
+              // 粘贴长文案时框会一路长到 6 行、把下面的结果卡往下顶。这里换成 fixed 并钉死 h-28，
+              // 超出部分自己滚——页面布局只跟「有几张结果卡」有关，不再跟「输入了几个字」有关。
+              "h-28 field-sizing-fixed min-h-28 resize-none overflow-y-auto rounded-none border-0 bg-transparent px-4 pt-3.5 pb-2 leading-relaxed shadow-none"
+            }
             spellCheck={false}
             aria-label="解析输入"
           />
-          {identifyHint && (
-            <p
-              className={
-                "px-4 pb-2 text-xs " +
-                (identifyHint.startsWith("未识别") ? "text-warn" : "text-muted-foreground")
-              }
-            >
-              {identifyHint}
-            </p>
-          )}
+          {/* 提示条常驻一行，不随识别结果出现/消失（业主指令 2026-10-21「粘贴文字时输入框底部
+              出现一行文字，把下方按钮都往下挤」）：空态用 `invisible` 占住同样的高度，
+              而不是不渲染——每粘一次就少一行、按钮整排往上蹦一下，比多一行更晃眼。
+              `line-clamp-1` 钉死单行，长文案不会把卡片再撑高；占位用不换行空格，
+              空字符串的行盒高度是 0，`invisible` 也补不出那一行。 */}
+          <p
+            aria-live="polite"
+            className={
+              "line-clamp-1 px-4 pb-2 text-xs " +
+              (!identifyHint
+                ? "invisible"
+                : identifyHint.startsWith("未识别")
+                  ? "text-warn"
+                  : "text-muted-foreground")
+            }
+          >
+            {identifyHint || "\u00a0"}
+          </p>
           {/* 底栏的 px-5 与结果卡 CardContent 同值：两张卡的控件右缘才会严格对齐
              （解析按钮与下载按钮曾差 8px——底栏 px-3 对 CardContent px-5） */}
           <div className="flex items-center justify-between border-t border-border px-5 py-2">
@@ -391,19 +469,33 @@ export default function HomePage({
               }}
             />
             <div className="flex items-center gap-1.5">
-              {/* 清除：清空输入与结果卡。空态不可点，避免一枚永远无反应的按钮。
-                  白字浅红底（业主指令 2026-10-19）：破坏性动作靠底色与「解析」拉开层级。
-                  不用 text-destructive-foreground——它在暗色主题是深字（err 偏亮），
-                  与业主指定的白字相反；hover 同时压住 ghost 的 accent 前景色。 */}
-              <Button
-                size="sm"
-                variant="ghost"
-                className="bg-err/70 text-white hover:bg-err/85 hover:text-white"
-                onClick={clearAll}
-                disabled={busy || (!text.trim() && items.length === 0)}
-              >
-                清除
-              </Button>
+              {/* 一枚按钮两种身份（业主指令 2026-10-21）：有内容时是「清除」，空态时是「粘贴」。
+                  两态**版式一致**（同一个位置、同一个 `size="sm"`、都是实心底，切态时是同一枚
+                  按钮换了字），但**底色分开**：清除是白字浅红底（2026-10-19 给破坏性动作定的），
+                  粘贴是 `secondary`（= `--surface-2` 次级表面）——业主 2026-10-21 要求
+                  「也要有背景色，只是不是红色」，同时否掉了 danger 色与无底的 ghost。
+                  清除的配色细节：不用 text-destructive-foreground——它在暗色主题是深字
+                  （err 偏亮），与业主指定的白字相反；hover 同时压住 ghost 的 accent 前景色。 */}
+              {hasContent ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="bg-err/70 text-white hover:bg-err/85 hover:text-white"
+                  onClick={clearAll}
+                  disabled={busy}
+                >
+                  清除
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void pasteFromClipboard()}
+                  disabled={busy}
+                >
+                  粘贴
+                </Button>
+              )}
               <Button size="sm" onClick={parseManual} disabled={busy || !text.trim()}>
                 {busy && <Loader2 className="animate-spin" />}
                 {busy ? "解析中…" : "解析"}

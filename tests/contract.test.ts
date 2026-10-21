@@ -90,7 +90,16 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
   const deps = {
     ipcMain,
     engine: {
-      health: async () => [{ platform: "douyin", name: "抖音", ok: true, detail: "可解引擎：本地内核" }],
+      health: async () => [
+        {
+          platform: "douyin",
+          name: "抖音",
+          ok: true,
+          engines: ["mediaget"],
+          engineIds: ["parseCore"],
+          detail: "可解引擎：mediaget",
+        },
+      ],
       identify: (text: string) => ({
         platform: "douyin",
         platformName: "抖音",
@@ -173,6 +182,8 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
     getFonts: async () => ["Arial", "微软雅黑"],
     /** 剪贴板写入在契约测试里只是「调得到」：真写入归 Electron，桩在这里不验内容 */
     writeClipboard: () => {},
+    /** 读取侧同理：这条用例只验「通道登记了、出参过 schema」，内容归 ipc.test.ts */
+    readClipboard: () => "",
     /**
      * 日志/缓存两个服务在契约测试里只要「形状真」：轮转、按天清理、避让活断点
      * 这些行为归 logger.test.ts / cache.test.ts 管，这里守的是通道登记与信封。

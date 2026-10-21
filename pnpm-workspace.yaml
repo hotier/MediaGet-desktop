@@ -14,6 +14,9 @@ allowBuilds:
   # Astro 依赖树里的 sharp：落地页全 SVG、不用 astro:assets，不需要其 install 脚本
   sharp: false
   better-sqlite3: true
+  # ytdlp-nodejs 的 postinstall 会往包内 ./bin 自下载 yt-dlp（绕开 binaries.json 的
+  # SHA-256 基线）——明确不跑。引擎只经 resources.locate("yt-dlp") 消费随包/自备二进制
+  ytdlp-nodejs: false
 minimumReleaseAgeExclude:
   - electron@44.7.2
   - lucide-react@1.57.0

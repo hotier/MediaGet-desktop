@@ -13,6 +13,7 @@ import {
   filterCookies,
   hasLoginMarker,
   isAllowedNavigation,
+  volatileMarkerChanged,
 } from "../shared/cookie-login";
 import { SECRET_CONFIG_KEYS } from "../core-adapter/config";
 
@@ -28,8 +29,20 @@ describe("规则表", () => {
       const t = COOKIE_LOGIN_TARGETS[key];
       expect(t.url.startsWith("https://")).toBe(true);
       expect(isAllowedNavigation(t.url, t.domains)).toBe(true);
-      expect(t.markers.length).toBeGreaterThan(0);
     }
+  });
+
+  it("每个键都得有判据：稳定 marker 或「游客也会写」的 volatile marker", () => {
+    for (const key of COOKIE_LOGIN_KEYS) {
+      const t = COOKIE_LOGIN_TARGETS[key];
+      expect(t.markers.length + (t.volatileMarkers?.length ?? 0)).toBeGreaterThan(0);
+    }
+  });
+
+  it("小红书只认 web_session 的值变化——这枚游客也会写（2026-10-21 未登录被抓那次）", () => {
+    const t = COOKIE_LOGIN_TARGETS.XHS_COOKIE;
+    expect(t.markers).not.toContain("web_session");
+    expect(t.volatileMarkers).toEqual(["web_session"]);
   });
 });
 
@@ -68,6 +81,28 @@ describe("hasLoginMarker（登录态判据）", () => {
 
   it("只有匿名键时不算：否则会把半份 Cookie 存成「已配置」", () => {
     expect(hasLoginMarker(["ttwid", "did"], ["sessionid", "sid_guard"])).toBe(false);
+  });
+});
+
+describe("volatileMarkerChanged（游客也会写的键，只认值变化）", () => {
+  const baseline = new Map([["web_session", "guest-a"]]);
+
+  it("值变了才算登录（游客会话换成正式会话）", () => {
+    expect(volatileMarkerChanged([{ name: "web_session", value: "real-b" }], ["web_session"], baseline)).toBe(true);
+  });
+
+  it("值没变 = 还是游客：名字在也一律不算", () => {
+    expect(volatileMarkerChanged([{ name: "web_session", value: "guest-a" }], ["web_session"], baseline)).toBe(false);
+  });
+
+  it("基线里没有这个键时不做判断：宁可晚一拍也不能误报", () => {
+    // 页面还在写游客会话时基线是空的，此时「值出现」若算登录，就是 2026-10-21 那次误报
+    expect(volatileMarkerChanged([{ name: "web_session", value: "guest-a" }], ["web_session"], new Map())).toBe(false);
+  });
+
+  it("空值不算有值；没配 volatile 键时恒 false", () => {
+    expect(volatileMarkerChanged([{ name: "web_session", value: "" }], ["web_session"], baseline)).toBe(false);
+    expect(volatileMarkerChanged([{ name: "web_session", value: "real-b" }], [], baseline)).toBe(false);
   });
 });
 

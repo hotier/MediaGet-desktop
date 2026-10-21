@@ -68,6 +68,7 @@ const mg: MgBridge = {
     openLogDir: () => invoke(IPC.appOpenLogDir),
     openExternal: (url) => invoke(IPC.appOpenExternal, { url }),
     copyText: (text) => invoke(IPC.appCopyText, { text }),
+    readClipboard: () => invoke(IPC.appReadClipboard),
     log: (level, message) => invoke(IPC.appLog, { level, message }),
     onClipboardLink: (cb) => on(IPC.evClipboardLink, cb),
     update: {

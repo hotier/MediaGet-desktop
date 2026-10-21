@@ -11,16 +11,21 @@
  * 与注册表的分工：注册表说「供不供 + 谁号称能解」，runner 说「今天真的解不解得了」。
  * 两者不一致时以 runner 为准 —— 宁可少供，不许假装有能力。
  *
- * 2026-10-18 起线上回落引擎已移除：列表里只剩本地内核，失败就是最终答复。
+ * 2026-10-18 起线上回落引擎已移除；2026-10-21 注册制后列表是
+ * parse-core（主）→ amagi → yt-dlp（回退），全部本地、失败就是最终答复。
  */
 import { normalizeResult } from "@mediaget/parse-core";
 import type { EngineHealth, ParseResult } from "../../types/ipc";
 import {
+  ENGINE_INFO,
   PLATFORMS,
+  SWITCHABLE_ENGINE_IDS,
   type EngineId,
   type PlatformSwitch,
+  type SwitchableEngineId,
   engineCoverage,
   isEnabled,
+  platformDef,
   resolveKey,
 } from "../../shared/platforms";
 
@@ -56,7 +61,7 @@ export type EngineOutcome =
 
 export interface ParseEngine {
   id: EngineId;
-  /** 面向用户的引擎名（体检行的「可解引擎」用它，不再出现「通道 1」这类内部编号） */
+  /** 面向用户的引擎名（体检行「通道」用它，如 mediaget / yt-dlp；不出现「通道 1」这类内部编号） */
   label: string;
   covers(platform: string): Promise<boolean>;
   run(req: EngineRequest): Promise<EngineOutcome>;
@@ -69,6 +74,7 @@ export interface ParseEngine {
 const VIA_OF: Record<EngineId, "local" | "mock"> = {
   parseCore: "local",
   ytdlp: "local",
+  amagi: "local",
   mock: "mock",
 };
 
@@ -77,13 +83,29 @@ export function viaOf(id: EngineId): "local" | "mock" {
 }
 
 /** 注册表能力位 + 引擎自报覆盖，两个条件缺一不可 */
-async function coveredBy(
+export async function coveredBy(
   platform: string,
   engine: EngineId,
   selfReported: () => Promise<Set<string>>
 ): Promise<boolean> {
   if (engineCoverage(platform, engine) !== "ready") return false;
   return (await selfReported()).has(resolveKey(platform));
+}
+
+/**
+ * 选路顺序（2026-10-21 注册制）：平台注册表的 `enginePriority` 覆盖引擎的全局声明顺序；
+ * 优先表里没点名的引擎按原相对顺序垫底。纯函数，引擎注册表（engine.ts）与体检共用同一份排序。
+ */
+export function orderedFor(
+  engines: ParseEngine[],
+  priority?: readonly EngineId[]
+): ParseEngine[] {
+  if (!priority || priority.length === 0) return engines;
+  const rank = new Map<string, number>(priority.map((id, i) => [id, i]));
+  const bottom = priority.length;
+  return [...engines].sort(
+    (a, b) => (rank.get(a.id) ?? bottom) - (rank.get(b.id) ?? bottom)
+  );
 }
 
 export function createParseCoreEngine(loadCore: () => Promise<CoreEntry>): ParseEngine {
@@ -95,7 +117,7 @@ export function createParseCoreEngine(loadCore: () => Promise<CoreEntry>): Parse
 
   return {
     id: "parseCore",
-    label: "本地内核",
+    label: ENGINE_INFO.parseCore.label,
     async covers(platform) {
       return coveredBy(platform, "parseCore", coverage);
     },
@@ -137,22 +159,38 @@ export function createParseCoreEngine(loadCore: () => Promise<CoreEntry>): Parse
   };
 }
 
-/** 注册表 × 可用引擎 → 体检行（probe:engines 的真相来源，不再由内核自述清单决定） */
+/**
+ * 注册表 × 可用引擎 → 体检行（probe:engines 的真相来源，不再由内核自述清单决定）。
+ *
+ * `engines[]` / `engineIds[]` 按该平台的**生效选路顺序**排出：界面下拉的选项先后就是
+ * 解析时试的先后（主引擎在第一项）。顺序由调用方注入（引擎宿主知道用户挑的主引擎），
+ * 缺省 = 注册表 `enginePriority` 覆盖后的全局注册顺序。
+ */
 export async function buildHealth(
   engines: ParseEngine[],
-  switches: Record<string, PlatformSwitch>
+  switches: Record<string, PlatformSwitch>,
+  orderOf: (platform: string, engines: ParseEngine[]) => ParseEngine[] = (platform, list) =>
+    orderedFor(list, platformDef(platform)?.enginePriority)
 ): Promise<EngineHealth[]> {
   const rows: EngineHealth[] = [];
   for (const p of PLATFORMS) {
     const able: string[] = [];
-    for (const engine of engines) {
-      if (await engine.covers(p.key)) able.push(engine.label);
+    const ableIds: SwitchableEngineId[] = [];
+    for (const engine of orderOf(p.key, engines)) {
+      if (!(await engine.covers(p.key))) continue;
+      able.push(engine.label);
+      // 引擎 runner 的 id 域比「可切换引擎」宽（含 mock）；这里只收可切换那几个
+      if ((SWITCHABLE_ENGINE_IDS as readonly string[]).includes(engine.id)) {
+        ableIds.push(engine.id as SwitchableEngineId);
+      }
     }
     const supplied = isEnabled(p.key, switches);
     rows.push({
       platform: p.key,
       name: p.name,
       ok: supplied && able.length > 0,
+      engines: able,
+      engineIds: ableIds,
       detail: !supplied
         ? "注册表已关闭该平台（设置 → 引擎）"
         : able.length > 0

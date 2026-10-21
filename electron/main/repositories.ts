@@ -49,7 +49,7 @@ export interface RepositorySet {
 }
 
 export type StatsEventInput =
-  | { type: "parse"; at: number; platform?: string; via: "local" | "mock"; ok: boolean; durationMs: number; workKey?: string }
+  | { type: "parse"; at: number; platform?: string; via: "local" | "mock"; engine?: string; ok: boolean; durationMs: number; workKey?: string }
   | { type: "download"; at: number; platform?: string; kind: string; outcome: "success" | "failure"; bytes: number; transferMs?: number; workKey?: string }
   | { type: "cancel"; at: number; platform?: string; kind?: string; workKey?: string };
 
@@ -65,11 +65,17 @@ export function createSettingsRepository(database: DatabaseHandle): SettingsRepo
       // 缺键按默认值兜底：契约字段会随版本增加，而库里的设置行只会写入当时的完整快照。
       // 缺键时直接 parse 会在升级后的第一次启动就抛错，等于让新增一个设置项变成破坏性变更。
       const raw = stored ? (JSON.parse(stored.value) as Partial<AppSettings>) : {};
+      // v26 收窄：titleAuthorUnderscore 与连接符统一后的 titleAuthor 同义，读档时归一，
+      // 不让严格 parse 因一个已撤的枚举值把整份设置卡死
+      const legacyPreset = (raw as { filenamePreset?: string }).filenamePreset;
+      if (legacyPreset === "titleAuthorUnderscore") raw.filenamePreset = "titleAuthor";
       const settings = AppSettingsSchema.parse({
         ...DEFAULT_SETTINGS,
         ...raw,
         cookies: { ...DEFAULT_SETTINGS.cookies, ...(raw.cookies ?? {}) },
         platformSwitches: { ...(raw.platformSwitches ?? {}) },
+        engineSwitches: { ...(raw.engineSwitches ?? {}) },
+        platformEngines: { ...(raw.platformEngines ?? {}) },
         filenameExtra: { ...DEFAULT_SETTINGS.filenameExtra, ...(raw.filenameExtra ?? {}) },
       });
       const kernel = Object.fromEntries(
@@ -135,9 +141,9 @@ const QUEUE_STATUS_ORDER = ["queued", "downloading", "paused", "done", "error", 
 /**
  * 队列快照 → 一行摘要（`5 项（downloading 1 · done 3 · error 1）`）。
  *
- * 只带条数与状态分布两维：隐私红线不让直链进日志，而排查「库里怎么少了一条」要的
- * 恰好也是这两维 —— 一行记录消失必然改变条数或某个状态的计数。进度字节不进摘要，
- * 所以 2 秒一次的进度落盘不会刷屏。
+ * 只带条数与状态分布两维：这份摘要随每次落盘打一行，塞进直链只会把 app.log 刷满，而排查
+ * 「库里怎么少了一条」要的恰好也是这两维 —— 一行记录消失必然改变条数或某个状态的计数。
+ * 进度字节不进摘要，所以 2 秒一次的进度落盘不会刷屏。
  */
 export function queueDigest(tasks: readonly PersistedQueueTask[]): string {
   const counts = new Map<string, number>();
@@ -176,6 +182,8 @@ function upsertQueueTask(database: DatabaseHandle, input: PersistedQueueTask): v
   const task: PersistedQueueTask = {
     ...input,
     url: done ? "" : input.url,
+    // 音频轨和主链同一条纪律（v33）：完成行一起摘掉，别让带签名的第二条链留在长期台账里
+    audioUrl: done ? undefined : input.audioUrl,
     headers: done ? undefined : input.headers,
     platform: input.platform ? resolveKey(input.platform) : undefined,
   };
@@ -372,10 +380,11 @@ export function createStatsRepository(database: DatabaseHandle): StatsRepository
         ? event.transferMs
         : event.type === "parse" ? event.durationMs : undefined;
       const via = event.type === "parse" ? event.via : null;
+      const engine = event.type === "parse" ? event.engine ?? null : null;
       const insertEvent = () => database.run(
           `INSERT INTO stats_events
-            (event_id, event_at, event_type, platform, kind, outcome, bytes, duration_ms, work_key, via)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            (event_id, event_at, event_type, platform, kind, outcome, bytes, duration_ms, work_key, via, engine)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           randomUUID(),
           Math.floor(event.at),
           eventType,
@@ -385,7 +394,8 @@ export function createStatsRepository(database: DatabaseHandle): StatsRepository
           bytes,
           duration === undefined ? null : nonNegativeInt(duration),
           event.workKey ?? null,
-          via
+          via,
+          engine
         );
       const insertHistory = () => {
         if (!historyEntry) return;

@@ -5,8 +5,7 @@
  * （修 UIUX-DESIGN 缺陷 §「切页静默丢未保存内容」：旧版局部 state 切页即卸载）。
  */
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { ArrowLeft, FolderOpen, KeyRound, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, FolderOpen, KeyRound, RefreshCw, Search, Trash2, X } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "~/lib/utils";
 import { api, BridgeError } from "../lib/bridge";
@@ -27,9 +26,19 @@ import type {
   UpdateState,
 } from "../../../types/ipc";
 import { CONTRACT_VERSION } from "../../../types/ipc";
-import { PLATFORMS, displayName, isEnabled } from "../../../shared/platforms";
+import {
+  ENGINE_INFO,
+  PLATFORMS,
+  SWITCHABLE_ENGINE_IDS,
+  displayName,
+  isEnabled,
+  isEngineEnabled,
+  primaryEngineOf,
+  type SwitchableEngineId,
+} from "../../../shared/platforms";
 import { isCookieLoginKey } from "../../../shared/cookie-login";
 import { usePlatformStore } from "../store/platforms";
+import { useEngineStore } from "../store/engines";
 import { AnimIcon } from "../components/AnimIcon";
 import { BrandLogo } from "../components/BrandLogo";
 import { PlatformIcon } from "../components/PlatformIcon";
@@ -40,7 +49,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "../components/ui/card"
 import { Input } from "../components/ui/input";
 import { Skeleton } from "../components/ui/skeleton";
 import { Switch } from "../components/ui/switch";
-import { HintInfo, Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
+import { HintInfo } from "../components/ui/tooltip";
 import {
   Select,
   SelectContent,
@@ -80,16 +89,17 @@ const COOKIE_ROWS: Array<{ key: string; platform: string; note: string }> = [
   { key: "XHS_COOKIE", platform: "redbook", note: "可选" },
   { key: "IG_COOKIE", platform: "instagram", note: "强烈建议：游客几乎必被风控" },
   { key: "KUAISHOU_COOKIE", platform: "kuaishou", note: "可选：仅作者主页资料（简介/获赞/粉丝数）需要，视频解析不用" },
+  { key: "YOUTUBE_COOKIE", platform: "youtube", note: "可选：年龄限制 / 需登录才可见的内容" },
 ];
 
 /** 体检表列宽：table-fixed 下不设宽的「平台」列吃剩余；其余按 `1.5rem + Nem` 定宽（与队列/历史页同口径，跟字号档缩放） */
 const ENGINE_COL = {
-  /** max(开关 w-11, 「提供」二字 + info 图标) */
-  supply: "w-[calc(1.5rem+3.5em)]",
+  /** 列头「状态」二字；列里是开关，2026-10-21 业主指令三列放宽、不再贴着排 */
+  supply: "w-[calc(1.5rem+5em)]",
   /** 最宽形态是徽标「未配置」 */
-  cookie: "w-[calc(1.5rem+4.2em)]",
-  /** 最宽形态是徽标「本地内核」 */
-  channel: "w-[calc(1.5rem+5.2em)]",
+  cookie: "w-[calc(1.5rem+6.5em)]",
+  /** 预留并行多枚徽标的宽度（后续一个平台可能同时挂多条通道） */
+  channel: "w-[calc(1.5rem+12em)]",
 } as const;
 
 /**
@@ -107,11 +117,11 @@ function fieldChanged(f: keyof AppSettings, draft: AppSettings, saved: AppSettin
 
 /** 标量字段归属哪个设置区块（脏计数/放弃都以区块为粒度）；Cookie 字段的区块 id = 其 key */
 const SCALAR_SECTION: Partial<Record<keyof AppSettings, string>> = {
-  launchAtLogin: "startup",
-  minimizeToTray: "window",
-  notifyOnDone: "notify",
-  notifyOnError: "notify",
-  clipboardWatch: "clipboard",
+  launchAtLogin: "system",
+  minimizeToTray: "system",
+  notifyOnDone: "system",
+  notifyOnError: "system",
+  clipboardWatch: "system",
   logLevel: "log",
   logRetentionDays: "log",
   downloadDir: "dir",
@@ -142,12 +152,39 @@ const CATEGORIES: Array<{
   icon: AnimGlyph;
   sections: string[];
 }> = [
-  { id: "general", label: "通用", icon: SETTINGS_GLYPHS.categories.general, sections: ["startup", "window", "notify", "clipboard", "cache", "log"] },
+  { id: "general", label: "通用", icon: SETTINGS_GLYPHS.categories.general, sections: ["system", "cache", "log"] },
   { id: "download", label: "下载", icon: SETTINGS_GLYPHS.categories.download, sections: ["dir", "name", "load", "proxy", "post"] },
   { id: "appearance", label: "外观", icon: SETTINGS_GLYPHS.categories.appearance, sections: ["theme", "font"] },
   { id: "engine", label: "引擎", icon: SETTINGS_GLYPHS.categories.engine, sections: ["engines", ...COOKIE_ROWS.map((r) => r.key)] },
   { id: "about", label: "关于", icon: SETTINGS_GLYPHS.categories.about, sections: ["about"] },
 ];
+
+/**
+ * 设置搜索索引（2026-10-21）：每个可渲染区块的关键词条 —— 卡片标题 + 行标签 + 常用别名。
+ * 只供搜索过滤，不参与渲染；改 renderSection 里的某行文案时顺手同步这里。
+ * Cookie 行不单列（它们的卡片在 engines 区块里，平台名已随 PLATFORMS 并入该条）。
+ */
+const SECTION_SEARCH: Record<string, string> = {
+  system: "系统设置 开机自启动 自启 关窗 最小化 托盘 系统通知 下载完成 下载失败 提醒 剪贴板 复制链接 自动填入 快捷键 Ctrl+Alt+V 监听",
+  cache: "本地缓存 清理缓存 重新统计 占用 临时文件",
+  log: "日志 日志级别 保留天数 清理日志 日志目录",
+  dir: "下载目录 存储位置 保存位置 浏览",
+  name: "文件命名 命名组合 清晰度 序号 文件名 预览",
+  load: "并发与节流 并发线程 温和节流 限速 速度 下载",
+  proxy: "网络代理 代理模式 代理地址 直连 跟随系统 Clash",
+  post: "完成容错 自动打开目录 失败自动重试 断点 默认清晰度",
+  theme: "主题 主题风格 深色 浅色 明暗 跟随系统 外观",
+  font: "界面字体 字号 字体族 正文档位 字体",
+  // 平台显示名/英文名并入引擎条：搜「小红书」「bilibili」都命中平台配置表
+  engines: `引擎开关 引擎 mediaget amagi yt-dlp 失败自动回退 回退 主引擎 平台配置 解析引擎 平台 开关 提供 通道 Cookie 体检 ${PLATFORMS.map((p) => `${p.name} ${p.nameEn}`).join(" ")}`,
+  about: "关于 更新 检查更新 静默下载 更新通道 版本 随包二进制 完整性 协议 许可 MIT 开源",
+};
+
+/** 关键词命中判定：多词按空格拆开、每个词都得命中（「代理 clash」「字体 字号」这类组合可用） */
+function searchHit(sectionId: string, tokens: string[]): boolean {
+  const text = (SECTION_SEARCH[sectionId] ?? "").toLowerCase();
+  return text !== "" && tokens.every((t) => text.includes(t));
+}
 
 /** 数值档位下拉：常用选项 + 自定义（选中后下拉框变输入框）；min/max 与契约同区间 */
 const CONC_OPTIONS = [1, 2, 3, 5, 8, 10];
@@ -176,9 +213,10 @@ const SAMPLE_AUTHOR = "小明";
  */
 const FILENAME_PRESETS: Array<{ value: FilenamePreset; label: string; sample: string }> = [
   { value: "title", label: "仅标题", sample: "{标题}" },
-  { value: "authorTitle", label: "作者 - 标题", sample: "{作者} - {标题}" },
-  { value: "titleAuthor", label: "标题 - 作者", sample: "{标题} - {作者}" },
+  { value: "authorTitle", label: "作者_标题", sample: "{作者}_{标题}" },
+  { value: "titleAuthor", label: "标题_作者", sample: "{标题}_{作者}" },
   { value: "titleDate", label: "标题_日期", sample: "{标题}_20261015" },
+  { value: "authorTitleDate", label: "作者_标题_日期", sample: "{作者}_{标题}_{日期}" },
 ];
 
 /**
@@ -219,10 +257,11 @@ export default function SettingsPage({
   const [cookieEdits, setCookieEdits] = useState<Record<string, string>>({});
   const [cookieClears, setCookieClears] = useState<Record<string, boolean>>({});
   const [sel, setSel] = useState(initialCategory ?? CATEGORIES[0].id);
+  /** 设置搜索：非空时跨分类过滤展示命中的设置卡片（侧栏选中分类保持不动，仅作导航底色） */
+  const [query, setQuery] = useState("");
   const [engines, setEngines] = useState<EngineHealth[]>([]);
   const [bins, setBins] = useState<BinaryStatusReport | null>(null);
-  const [savedFlash, setSavedFlash] = useState(false);
-  const [saveError, setSaveError] = useState("");
+
   const [pending, setPending] = useState<{ type: "switch"; to: string } | { type: "exit" } | null>(null);
   /** Cookie 弹窗：打开的 COOKIE_ROWS key + 草稿文本（打开时从已暂存的编辑值预填） */
   const [cookieKey, setCookieKey] = useState<string | null>(null);
@@ -238,7 +277,7 @@ export default function SettingsPage({
   const [cacheBusy, setCacheBusy] = useState(false);
   const [cacheError, setCacheError] = useState("");
   const [cacheConfirm, setCacheConfirm] = useState(false);
-  const [notice, setNotice] = useState<{ id: number; text: string } | null>(null);
+  const [logConfirm, setLogConfirm] = useState(false);
   const cacheScanned = useRef(false);
   /**
    * 平台开关活在 Zustand 而不是本页草稿：它即时落盘、即时生效，与「保存」无关，
@@ -246,6 +285,19 @@ export default function SettingsPage({
    */
   const switches = usePlatformStore((s) => s.switches);
   const setPlatformEnabled = usePlatformStore((s) => s.setEnabled);
+  /**
+   * 引擎开关（2026-10-21）：与平台开关同一套语义——即时落盘、即时生效，
+   * 不进脏计数、不受「放弃」影响（主进程选路与体检读的是持久值）。
+   */
+  const engineSwitches = useEngineStore((s) => s.switches);
+  const setEngineEnabled = useEngineStore((s) => s.setEnabled);
+  const engineFallback = useEngineStore((s) => s.fallback);
+  const setEngineFallback = useEngineStore((s) => s.setFallback);
+  const allEnginesOff = SWITCHABLE_ENGINE_IDS.every((id) => !isEngineEnabled(id, engineSwitches));
+
+  /** 平台主引擎覆盖层（通道列下拉即写它；缺键 = mediaget） */
+  const primaryEngines = usePlatformStore((s) => s.primary);
+  const setPrimaryEngine = usePlatformStore((s) => s.setPrimary);
 
   useEffect(() => {
     void api.settings
@@ -294,12 +346,6 @@ export default function SettingsPage({
     cacheScanned.current = true;
     void scanCache();
   }, [sel, scanCache]);
-
-  useEffect(() => {
-    if (!notice) return;
-    const t = setTimeout(() => setNotice(null), 4000);
-    return () => clearTimeout(t);
-  }, [notice]);
 
   // Esc 退出设置模式（确认浮层打开时由浮层自己处理；焦点在输入类控件里时 Esc 只归控件自己）
   useEffect(() => {
@@ -459,11 +505,47 @@ export default function SettingsPage({
       await setPlatformEnabled(key, enabled);
       setEngines(await api.probe.engines());
     } catch (e) {
-      setNotice({
-        id: Date.now(),
-        text: `${displayName(key)}：开关未能落盘，已回滚（${e instanceof BridgeError ? e.message : String(e)}）`,
-      });
+      toast.error(`${displayName(key)}：开关未能落盘，已回滚（${e instanceof BridgeError ? e.message : String(e)}）`);
     }
+  }
+
+  /** 引擎开关：同一条纪律——乐观写 + 失败回滚 + 复检让「通道」列当场跟着变 */
+  async function toggleEngine(id: SwitchableEngineId, enabled: boolean): Promise<void> {
+    try {
+      await setEngineEnabled(id, enabled);
+      setEngines(await api.probe.engines());
+    } catch (e) {
+      toast.error(`${ENGINE_INFO[id].label}：开关未能落盘，已回滚（${e instanceof BridgeError ? e.message : String(e)}）`);
+    }
+  }
+
+  /** 回退开关：关掉 = 只用主引擎，它的失败就是最终答复 */
+  async function toggleFallback(enabled: boolean): Promise<void> {
+    try {
+      await setEngineFallback(enabled);
+      setEngines(await api.probe.engines());
+    } catch (e) {
+      toast.error(`失败自动回退：开关未能落盘，已回滚（${e instanceof BridgeError ? e.message : String(e)}）`);
+    }
+  }
+
+  /** 通道下拉：选中的引擎成为该平台的主引擎（失败后按回退开关决定是否再试其余） */
+  async function choosePrimary(platform: string, engine: SwitchableEngineId): Promise<void> {
+    try {
+      await setPrimaryEngine(platform, engine);
+      setEngines(await api.probe.engines());
+    } catch (e) {
+      toast.error(`${displayName(platform)}：主引擎未能落盘，已回滚（${e instanceof BridgeError ? e.message : String(e)}）`);
+    }
+  }
+
+  /**
+   * 下拉的显示值：用户挑的引擎今天不在场（被引擎开关关掉 / 二进制缺失）时落到当前
+   * 第一可用项——界面不显示一个不存在的选项，但**不静默改写存档**（会话内不改键）。
+   */
+  function primaryOf(e: EngineHealth): SwitchableEngineId {
+    const wanted = primaryEngineOf(e.platform, primaryEngines);
+    return e.engineIds.includes(wanted) ? wanted : e.engineIds[0];
   }
 
   /** Cookie 单元格：状态徽标即入口，点击开弹窗（体检表 Cookie 列） */
@@ -516,7 +598,6 @@ export default function SettingsPage({
 
   async function save(): Promise<void> {
     if (!saved || !draft) return;
-    setSaveError("");
     const cookies: Record<string, string> = {};
     for (const row of COOKIE_ROWS) {
       const v = (cookieEdits[row.key] ?? "").trim();
@@ -529,10 +610,10 @@ export default function SettingsPage({
       setDraft(structuredClone(next));
       setCookieEdits({});
       setCookieClears({});
-      setSavedFlash(true);
-      setTimeout(() => setSavedFlash(false), 2500);
+      // 全仓口径：动作结果走统一 toast（图标 + 一句），不再用保存条里的闪现徽标
+      toast.success("设置已保存");
     } catch (e) {
-      setSaveError(e instanceof BridgeError ? e.message : String(e));
+      toast.error(`保存失败：${e instanceof BridgeError ? e.message : String(e)}`);
     }
   }
 
@@ -547,10 +628,7 @@ export default function SettingsPage({
       const r = await api.app.clearCache(keys);
       setCache(r.report);
       const stuck = CACHE_ITEMS.filter((c) => r.skipped.includes(c.key)).map((c) => c.label);
-      setNotice({
-        id: Date.now(),
-        text: `已释放 ${fmtBytes(r.freed)}${stuck.length > 0 ? `；${stuck.join("、")}未能清除` : ""}`,
-      });
+      toast.success(`已释放 ${fmtBytes(r.freed)}${stuck.length > 0 ? `；${stuck.join("、")}未能清除` : ""}`);
     } catch (e) {
       setCacheError(e instanceof BridgeError ? e.message : String(e));
     } finally {
@@ -566,20 +644,21 @@ export default function SettingsPage({
     try {
       const r = await api.app.clearCache(["logs"]);
       setCache(r.report);
-      setNotice({ id: Date.now(), text: `日志已清空，释放 ${fmtBytes(r.freed)}` });
+      toast.success(`日志已清空，释放 ${fmtBytes(r.freed)}`);
     } catch (e) {
       setCacheError(e instanceof BridgeError ? e.message : String(e));
     } finally {
       setCacheBusy(false);
+      setLogConfirm(false);
     }
   }
 
   async function openLogDir(): Promise<void> {
     try {
       const r = await api.app.openLogDir();
-      if (!r.ok) setNotice({ id: Date.now(), text: "日志目录打开失败" });
+      if (!r.ok) toast.error("日志目录打开失败");
     } catch {
-      setNotice({ id: Date.now(), text: "日志目录打开失败" });
+      toast.error("日志目录打开失败");
     }
   }
 
@@ -588,6 +667,66 @@ export default function SettingsPage({
   const cookieRow = COOKIE_ROWS.find((r) => r.key === cookieKey);
   const cookieConfigured = cookieRow ? Boolean(saved?.cookies[cookieRow.key]) : false;
   const cookieClearing = cookieRow ? Boolean(cookieClears[cookieRow.key]) && cookieConfigured : false;
+  /** 日志占用：缓存快照里 logs 项（与「本地缓存」表共用同一份快照，避免两处数字打架） */
+  const logBytes = cache?.items.find((i) => i.key === "logs")?.bytes ?? 0;
+
+  /**
+   * 搜索态：命中即定位 —— 内容区只显示当前分类里命中的区块；当前分类没有命中时
+   * 自动切到首个命中的分类（见下方 effect，直接 setSel 不走 goto 的放弃把关：
+   * 搜索跳转不丢草稿，脏计数按分类原样挂着，用户再手动切回时照常把关）。
+   * 侧栏保持原样（2026-10-21 业主定调：不显命中数、不禁用其他分类）。
+   */
+  const q = query.trim().toLowerCase();
+  const searching = q.length > 0;
+  const searchTokens = q.split(/\s+/);
+  const shownSections = catNow.sections.filter((s) => searchHit(s, searchTokens));
+  const anyHit = CATEGORIES.some((c) => c.sections.some((s) => searchHit(s, searchTokens)));
+
+  // 搜索命中即定位：当前分类没有命中就切到首个命中的分类；一个词谁都没命中则原地给空态
+  useEffect(() => {
+    if (!q) return;
+    const tokens = q.split(/\s+/);
+    const hit = (s: string): boolean => {
+      const text = (SECTION_SEARCH[s] ?? "").toLowerCase();
+      return text !== "" && tokens.every((t) => text.includes(t));
+    };
+    const countIn = (catId: string): number =>
+      (CATEGORIES.find((c) => c.id === catId)?.sections ?? []).filter(hit).length;
+    if (countIn(sel) > 0) return;
+    const target = CATEGORIES.find((c) => countIn(c.id) > 0);
+    if (target) setSel(target.id);
+  }, [q, sel]);
+
+  /**
+   * 设置搜索框（2026-10-21，同日业主调整：挪进侧栏标题之下）：非空即在当前分类内过滤
+   * 命中卡片，当前分类无命中时自动定位到首个命中的分栏（见上方 effect）。
+   * 侧栏是拖拽区，交互控件须包 no-drag；≤860px 侧栏隐藏，同一份 JSX 复用进顶部 chips 区。
+   */
+  const searchBox = (
+    <div className="no-drag relative">
+      <Search
+        aria-hidden
+        className="pointer-events-none absolute start-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+      />
+      <Input
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="搜索设置项…"
+        aria-label="搜索设置项"
+        className="bg-muted/40 ps-9 pe-9 hover:border-input focus-visible:border-input focus-visible:bg-muted/70 focus-visible:ring-0"
+      />
+      {query && (
+        <button
+          type="button"
+          aria-label="清空搜索"
+          onClick={() => setQuery("")}
+          className="absolute end-2 top-1/2 -translate-y-1/2 rounded-sm p-1 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        >
+          <X size={14} strokeWidth={1.5} />
+        </button>
+      )}
+    </div>
+  );
 
   const nav = (
     <nav
@@ -600,6 +739,8 @@ export default function SettingsPage({
       <div className="mb-3 flex h-(--wco-h) items-center px-3 text-[15px] font-semibold tracking-wide">
         <span className="translate-y-2">设置</span>
       </div>
+
+      <div className="mb-1">{searchBox}</div>
 
       {CATEGORIES.map((cat) => {
         const active = cat.id === sel;
@@ -644,9 +785,9 @@ export default function SettingsPage({
     if (!saved || !draft) return null;
 
     switch (id) {
-      case "startup":
+      case "system":
         return (
-          <ItemCard title="启动">
+          <ItemCard title="系统设置">
             <Row label="开机自启动" end>
               <Switch
                 id="launch-at-login"
@@ -655,12 +796,6 @@ export default function SettingsPage({
                 onCheckedChange={(v) => setDraft({ ...draft, launchAtLogin: v })}
               />
             </Row>
-          </ItemCard>
-        );
-
-      case "window":
-        return (
-          <ItemCard title="窗口行为">
             <Row label="关窗最小化到托盘" end>
               <Switch
                 id="minimize-to-tray"
@@ -669,17 +804,7 @@ export default function SettingsPage({
                 onCheckedChange={(v) => setDraft({ ...draft, minimizeToTray: v })}
               />
             </Row>
-          </ItemCard>
-        );
-
-      case "notify":
-        return (
-          <ItemCard title="系统通知">
-            <Row
-              label="下载完成时通知"
-              hint="该组全部文件下载结束才弹一次系统通知（按组聚合，图集不会逐张弹）；点击通知回到窗口。"
-              end
-            >
+            <Row label="下载完成时通知" end>
               <Switch
                 id="notify-on-done"
                 aria-label="下载完成时通知"
@@ -687,11 +812,7 @@ export default function SettingsPage({
                 onCheckedChange={(v) => setDraft({ ...draft, notifyOnDone: v })}
               />
             </Row>
-            <Row
-              label="下载失败时通知"
-              hint="重试用尽仍失败时弹通知，附失败原因；组内部分成功会连同完成数一起播报。"
-              end
-            >
+            <Row label="下载失败时通知" end>
               <Switch
                 id="notify-on-error"
                 aria-label="下载失败时通知"
@@ -699,17 +820,7 @@ export default function SettingsPage({
                 onCheckedChange={(v) => setDraft({ ...draft, notifyOnError: v })}
               />
             </Row>
-          </ItemCard>
-        );
-
-      case "clipboard":
-        return (
-          <ItemCard title="剪贴板">
-            <Row
-              label="复制链接自动填入"
-              hint="复制到含分享链接的文字后，自动填入首页输入框并开始解析。另有一条全局快捷键 Ctrl+Alt+V（不受本开关限制，按下才读一次）：任意界面唤起主窗口并填入当前剪贴板内容。填入只覆盖空输入框或上一条剪贴板内容，不动手输内容；识别纯本地，文本不出本机。"
-              end
-            >
+            <Row label="复制链接自动填入" end>
               <Switch
                 id="clipboard-watch"
                 aria-label="复制链接自动填入"
@@ -722,7 +833,7 @@ export default function SettingsPage({
 
       case "cache":
         return (
-          <ItemCard title="本地缓存" desc="只统计本应用自己产生的临时文件；更新包与本机记录只显示占用，不在清理范围。">
+          <ItemCard title="本地缓存">
             {cacheError && <p className="text-xs text-err">{cacheError}</p>}
             {cache ? (
               <>
@@ -732,10 +843,7 @@ export default function SettingsPage({
                     const bytes = item?.bytes ?? 0;
                     return (
                       <li key={meta.key} className="flex items-center gap-3 px-3 py-2 text-sm">
-                        <span className="flex items-center gap-1.5">
-                          {meta.label}
-                          <HintInfo text={meta.hint} />
-                        </span>
+                        <span>{meta.label}</span>
                         <span className={cn("ms-auto tabular-nums", bytes === 0 && "text-disabled")}>
                           {item ? fmtBytes(bytes) : "—"}
                         </span>
@@ -745,7 +853,9 @@ export default function SettingsPage({
                 </ul>
                 <div className="flex items-center gap-3">
                   <span className="text-xs text-muted-foreground tabular-nums">
-                    共 {fmtBytes(cache.totalBytes)} · 可清理 {fmtBytes(cache.clearableBytes)}
+                    {/* 更新包缓存不入表（主进程照报契约，但界面不展示），「共」按可见行合计保证与表格对得上 */}
+                    共 {fmtBytes(cache.items.filter((i) => i.key !== "update").reduce((n, i) => n + i.bytes, 0))} ·
+                    可清理 {fmtBytes(cache.clearableBytes)}
                   </span>
                   <div className="ms-auto flex gap-2">
                     <Button variant="outline" size="sm" disabled={cacheBusy} onClick={() => void scanCache()}>
@@ -784,19 +894,18 @@ export default function SettingsPage({
         );
 
       case "log": {
-        const logBytes = cache?.items.find((i) => i.key === "logs")?.bytes ?? 0;
         return (
           <ItemCard title="日志" desc="运行日志写到 userData/logs/app.log，超 2 MB 自动轮转。只记录运行事件，不写入 Cookie 与媒体直链。">
             <Row
               label="日志级别"
-              hint="「全部」含启动与队列恢复等常规信息；「关闭」停写新行，已落盘的文件仍在，用下方「清理日志」删除。改动保存后立即生效，无需重启。"
+              hint="「关闭」不再写新行，已落盘文件用下方「清理日志」删除；保存后立即生效。"
               end
             >
               <Select
                 value={draft.logLevel}
                 onValueChange={(v) => setDraft({ ...draft, logLevel: v as AppSettings["logLevel"] })}
               >
-                <SelectTrigger className="w-36" aria-label="日志级别">
+                <SelectTrigger className="w-28" aria-label="日志级别">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -808,7 +917,7 @@ export default function SettingsPage({
                 </SelectContent>
               </Select>
             </Row>
-            <Row label="保留天数" hint="按最后写入时间清理超期的日志文件（当前档也在内，下次写入自动重建）；启动与保存设置时各扫一次。" end>
+            <Row label="保留天数" end>
               <PresetSelect
                 value={draft.logRetentionDays}
                 options={LOG_RETENTION_OPTIONS}
@@ -834,7 +943,7 @@ export default function SettingsPage({
                   size="sm"
                   disabled={cacheBusy || logBytes === 0}
                   className="text-err hover:bg-transparent hover:text-err"
-                  onClick={() => void clearLogs()}
+                  onClick={() => setLogConfirm(true)}
                 >
                   <Trash2 />
                   清理日志
@@ -869,7 +978,7 @@ export default function SettingsPage({
       case "name":
         return (
           <ItemCard title="文件命名">
-            <Row label="命名组合" hint="决定文件名的主体部分。作者缺失时自动退化为仅标题，不会留下多余的连接符。" end>
+            <Row label="命名组合" end>
               <Select
                 value={draft.filenamePreset}
                 onValueChange={(v) => setDraft({ ...draft, filenamePreset: v as AppSettings["filenamePreset"] })}
@@ -886,7 +995,7 @@ export default function SettingsPage({
                 </SelectContent>
               </Select>
             </Row>
-            <Row label="追加清晰度" hint="在主体后加当前清晰度后缀（如 -1080P）；多清晰度平台用它区分不同画质。" end>
+            <Row label="追加清晰度" end>
               <Switch
                 id="fn-quality"
                 aria-label="追加清晰度"
@@ -896,7 +1005,7 @@ export default function SettingsPage({
                 }
               />
             </Row>
-            <Row label="多文件加序号" hint="图集第 3 张加 -3、分 P 第 2 集加 -P2，避免同名相撞。关掉则由同名冲突规则自动改名兜底。" end>
+            <Row label="多文件加序号" end>
               <Switch
                 id="fn-index"
                 aria-label="多文件加序号"
@@ -921,7 +1030,7 @@ export default function SettingsPage({
       case "load":
         return (
           <ItemCard title="并发与节流">
-            <Row label="并发线程（1–10）" hint="同时在下载的任务数；住宅带宽建议 3。" end>
+            <Row label="并发线程（1–10）" hint="住宅带宽建议 3。" end>
               <PresetSelect
                 value={draft.maxConcurrent}
                 options={CONC_OPTIONS}
@@ -932,7 +1041,7 @@ export default function SettingsPage({
                 onChange={(v) => setDraft({ ...draft, maxConcurrent: v })}
               />
             </Row>
-            <Row label="温和节流" hint="住宅 IP 也怕高频：平台风控升级时用它降速，默认不限（0–60000 毫秒）。" end>
+            <Row label="温和节流" hint="平台风控升级时用它降速，默认不限。" end>
               <PresetSelect
                 value={draft.throttleMs}
                 options={THROTTLE_OPTIONS}
@@ -951,7 +1060,7 @@ export default function SettingsPage({
           <ItemCard title="网络代理">
             <Row
               label="代理模式"
-              hint="解析、下载与更新检查的网络请求统一走此代理；「跟随系统」即用 Windows 代理设置（Clash 等系统代理开启时自动生效）。"
+              hint="解析、下载与更新检查统一走此代理；「跟随系统」即用 Windows 代理设置（Clash 等自动生效）。"
               end
             >
               <Select
@@ -969,7 +1078,7 @@ export default function SettingsPage({
               </Select>
             </Row>
             {draft.proxyMode === "manual" && (
-              <Row label="代理地址" hint="http/https 代理均可（如 127.0.0.1:7897，缺协议自动补 http://）；保存后对新请求生效，地址非法时按直连处理。">
+              <Row label="代理地址" hint="缺协议自动补 http://；地址非法时按直连处理。">
                 <Input
                   value={draft.proxyUrl}
                   placeholder="http://127.0.0.1:7897"
@@ -982,8 +1091,8 @@ export default function SettingsPage({
 
       case "post":
         return (
-          <ItemCard title="完成后与容错">
-            <Row label="下载完成自动打开所在目录" hint="每个任务完成即在资源管理器定位该文件；并发下载时会连环弹窗，确认再开。" end>
+          <ItemCard title="完成容错">
+            <Row label="下载完成自动打开所在目录" end>
               <Switch
                 id="open-folder-done"
                 aria-label="下载完成自动打开所在目录"
@@ -991,7 +1100,7 @@ export default function SettingsPage({
                 onCheckedChange={(v) => setDraft({ ...draft, openFolderOnDone: v })}
               />
             </Row>
-            <Row label="失败自动重试" hint="网络错/风控抖动自动重试（指数退避 1s/2s/4s），用尽才标失败；0 = 不重试。" end>
+            <Row label="失败自动重试" end>
               <PresetSelect
                 value={draft.retryTimes}
                 options={[0, 1, 2, 3]}
@@ -1002,7 +1111,7 @@ export default function SettingsPage({
                 onChange={(v) => setDraft({ ...draft, retryTimes: v })}
               />
             </Row>
-            <Row label="取消任务保留断点文件" hint="开：取消后 .part 留在磁盘，同链接再次入队从断点续；关：取消即删，腾磁盘空间。暂停的断点始终保留。" end>
+            <Row label="取消任务保留断点文件" end>
               <Switch
                 id="keep-partials"
                 aria-label="取消任务保留断点文件"
@@ -1010,7 +1119,7 @@ export default function SettingsPage({
                 onCheckedChange={(v) => setDraft({ ...draft, keepPartials: v })}
               />
             </Row>
-            <Row label="默认清晰度" hint="新解析结果的清晰度预选：内核推荐 = 分享页默认那档；最高画质 / 最低画质按内核画质档位取极值。仍可手选覆盖。" end>
+            <Row label="默认清晰度" end>
               <Select
                 value={draft.defaultQuality}
                 onValueChange={(v) => setDraft({ ...draft, defaultQuality: v as AppSettings["defaultQuality"] })}
@@ -1031,7 +1140,7 @@ export default function SettingsPage({
       case "theme":
         return (
           <ItemCard title="主题">
-            <Row label="主题风格" hint="一套风格 = 一整套主题色（底色/线条/焦点色），深浅色各配一档；改选立即预览。" end>
+            <Row label="主题风格" end>
               <Select
                 value={draft.themeStyle}
                 onValueChange={(v) => setDraft({ ...draft, themeStyle: v as AppSettings["themeStyle"] })}
@@ -1055,7 +1164,7 @@ export default function SettingsPage({
                 </SelectContent>
               </Select>
             </Row>
-            <Row label="明暗主题" hint="选择后立即预览；保存后持久生效。「跟随系统」随 Windows 深浅色自动切换。" end>
+            <Row label="明暗主题" end>
               <Select
                 value={draft.theme}
                 onValueChange={(v) => setDraft({ ...draft, theme: v as AppSettings["theme"] })}
@@ -1076,7 +1185,7 @@ export default function SettingsPage({
       case "font":
         return (
           <ItemCard title="界面字体与字号">
-            <Row label="字体族" hint="读取本机已安装字体，可搜索；选中立即预览，保存后持久生效。「系统默认」吃 Segoe UI / 雅黑 基座栈，等宽档不受影响（命令仍用等宽）。" end>
+            <Row label="字体族" end>
               <FontPicker
                 value={draft.fontFamily}
                 onChange={(v) => setDraft({ ...draft, fontFamily: v })}
@@ -1084,7 +1193,7 @@ export default function SettingsPage({
                 ariaLabel="界面字体族"
               />
             </Row>
-            <Row label="正文档位" hint="改选立即预览（整屏跟着变），保存后持久生效。默认 13px，可自定义 12–18px；较小档自动少 1px，较大档多 1px。" end>
+            <Row label="正文档位" end>
               <PresetSelect
                 value={draft.fontSizePx}
                 options={FONT_OPTIONS}
@@ -1100,7 +1209,41 @@ export default function SettingsPage({
 
       case "engines":
         return (
-          <ItemCard title="解析引擎" desc="「提供」列是注册表开关：关掉后主进程在调用任何引擎之前就回绝该平台的解析请求，落盘即生效、不等「保存」。其余列只如实汇报本机体检真相，不发抓取、不打平台风控；Cookie 点徽标弹窗粘贴（仅存本机，风险自负）。">
+          <>
+            {/* 引擎开关（2026-10-21 业主指令）：引擎这一层的「供不供」，放在平台配置之上。
+                关掉的引擎在主进程选路与体检里都不再出现——这里不是纯视觉开关。 */}
+            <ItemCard
+              title="引擎开关"
+              desc="关掉的引擎不再参与解析与体检；下方平台表的「主引擎」列会立刻跟着变。关掉平台则这一行不再提供任何解析能力，主引擎也随之锁定。开关即时生效，无需保存。"
+            >
+              {SWITCHABLE_ENGINE_IDS.map((id) => (
+                <Row key={id} label={ENGINE_INFO[id].label} hint={ENGINE_INFO[id].desc} end>
+                  <Switch
+                    aria-label={`启用 ${ENGINE_INFO[id].label} 引擎`}
+                    checked={isEngineEnabled(id, engineSwitches)}
+                    onCheckedChange={(v) => void toggleEngine(id, v)}
+                  />
+                </Row>
+              ))}
+              <Row
+                label="失败自动回退"
+                hint="主引擎解析失败后，按上方顺序再试其余可用引擎；关掉则只用主引擎，它的失败就是最终答复。"
+                end
+              >
+                <Switch
+                  aria-label="引擎失败自动回退"
+                  checked={engineFallback}
+                  onCheckedChange={(v) => void toggleFallback(v)}
+                />
+              </Row>
+              {allEnginesOff && (
+                <p className="text-xs text-muted-foreground">
+                  所有引擎都已关闭：解析不会得到真实结果，请至少打开一个。
+                </p>
+              )}
+            </ItemCard>
+
+            <ItemCard title="平台配置">
             {engines.length === 0 ? (
               <p className="text-xs text-muted-foreground">未获取到体检数据。</p>
             ) : (
@@ -1109,19 +1252,17 @@ export default function SettingsPage({
                   <TableHeader>
                     <TableRow>
                       <TableHead>平台</TableHead>
-                      <TableHead className={ENGINE_COL.supply}>
-                        <span className="flex items-center gap-1.5">
-                          提供
-                          <HintInfo text="关 = 该平台不再对外供给：解析请求在任何引擎被调用之前就被主进程回绝（已入队的下载不受影响）。即时生效，不需要点「保存」。" />
-                        </span>
-                      </TableHead>
+                      <TableHead className={ENGINE_COL.supply}>状态</TableHead>
                       <TableHead className={ENGINE_COL.cookie}>Cookie</TableHead>
-                      <TableHead className={ENGINE_COL.channel}>通道</TableHead>
+                      <TableHead className={ENGINE_COL.channel}>主引擎</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {engines.map((e) => {
                       const cookie = COOKIE_ROWS.find((r) => r.platform === e.platform);
+                      // 平台关掉 = 这一行不提供任何解析引擎能力：主引擎下拉只读，
+                      // 别让人以为改个引擎就能绕开供给闸门（主进程在引擎被调用前就回绝）
+                      const supplied = isEnabled(e.platform, switches);
                       return (
                         <TableRow key={e.platform}>
                           <TableCell className="gap-2">
@@ -1133,7 +1274,7 @@ export default function SettingsPage({
                           <TableCell className={ENGINE_COL.supply}>
                             <Switch
                               aria-label={`提供 ${e.name} 解析`}
-                              checked={isEnabled(e.platform, switches)}
+                              checked={supplied}
                               onCheckedChange={(v) => void togglePlatform(e.platform, v)}
                             />
                           </TableCell>
@@ -1145,17 +1286,31 @@ export default function SettingsPage({
                             )}
                           </TableCell>
                           <TableCell className={ENGINE_COL.channel}>
-                            {/* 徽标只有一词，三种真相的完整说明挂在悬浮上（纯说明一瞥走 tooltip，带动作的说明才用弹窗） */}
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <span className="inline-flex cursor-help outline-none">
-                                  <EngineToneBadge e={e} />
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent className="max-w-72 leading-relaxed">
-                                {e.detail ?? "无引擎汇报细节"}
-                              </TooltipContent>
-                            </Tooltip>
+                            {/* 主引擎下拉（2026-10-21）：选项 = 今天真能解该平台的引擎，
+                                选中项先试，失败后按「失败自动回退」决定是否再试其余。
+                                平台关掉 = 这一行不提供任何解析引擎能力，下拉禁用（无悬浮说明）。 */}
+                            {e.engineIds.length === 0 ? (
+                              <Badge variant="outline">不可用</Badge>
+                            ) : (
+                              <Select
+                                value={primaryOf(e)}
+                                disabled={!supplied}
+                                onValueChange={(v) =>
+                                  void choosePrimary(e.platform, v as SwitchableEngineId)
+                                }
+                              >
+                                <SelectTrigger className="w-28" aria-label={`${e.name} 主引擎`}>
+                                  <SelectValue />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {e.engineIds.map((id) => (
+                                    <SelectItem key={id} value={id}>
+                                      {ENGINE_INFO[id].label}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            )}
                           </TableCell>
                         </TableRow>
                       );
@@ -1169,7 +1324,8 @@ export default function SettingsPage({
                 版本 v{meta.version} · Electron {meta.electron} · 内核 {meta.kernelMode}
               </p>
             )}
-          </ItemCard>
+            </ItemCard>
+          </>
         );
 
       case "about":
@@ -1181,7 +1337,7 @@ export default function SettingsPage({
               <BrandLogo className="h-6 w-auto" />
             </div>
 
-            <ItemCard title="更新策略" desc="打包发布态生效；开发环境无发布通道，点「检查更新」会提示「当前运行环境没有更新源」，属预期。开关保存后立即生效（启动检测自下次启动读取）。">
+            <ItemCard title="更新策略" desc="打包发布态生效；开发环境没有更新源，点「检查更新」的提示属预期。">
               <Row label="启动时自动检测更新" end>
                 <Switch
                   aria-label="启动时自动检测更新"
@@ -1208,7 +1364,7 @@ export default function SettingsPage({
               </Row>
             </ItemCard>
 
-            <ItemCard title="版本信息" desc="客户端版本与框架版本。框架版本 = IPC 契约演进号：主进程与渲染进程共用 types/ipc.ts 单一真源，通道或载荷形状不兼容变更时递增。">
+            <ItemCard title="版本信息">
               <Row label="客户端版本" end>
                 <span className="pt-2 font-mono text-sm">v{meta?.version ?? "—"}</span>
               </Row>
@@ -1222,7 +1378,7 @@ export default function SettingsPage({
               </Row>
             </ItemCard>
 
-            <ItemCard title="随包二进制" desc="完整性档位如实展示：已校验=有 SHA-256 基线且匹配；降级=无基线（仅定位不校验）；已拒绝=哈希不符（不使用，依赖它的解析会失败）。">
+            <ItemCard title="随包二进制" desc="已校验 = 哈希与基线匹配；降级 = 无基线仅定位；已拒绝 = 哈希不符，不使用。">
               {!bins || bins.binaries.length === 0 ? (
                 <p className="text-xs text-muted-foreground">未获取到二进制状态。</p>
               ) : (
@@ -1256,7 +1412,7 @@ export default function SettingsPage({
               )}
             </ItemCard>
 
-            <ItemCard title="协议框架" desc="本项目以 MIT 协议开源；下列组件按各自上游协议分发，随包二进制（yt-dlp / ffmpeg）独立于本项目许可证。">
+            <ItemCard title="协议框架">
               <Row label="本项目许可" end>
                 <span className="pt-2 font-mono text-sm">MIT</span>
               </Row>
@@ -1302,8 +1458,9 @@ export default function SettingsPage({
           key={sel}
           className="flex-1 overflow-y-auto p-4 animate-in fade-in duration-200 slide-in-from-left-3 [scrollbar-gutter:stable]"
         >
-          {/* ≤860px：侧栏隐藏，降级为顶部横向 chip */}
+          {/* ≤860px：侧栏隐藏，降级为顶部横向 chip；搜索框随侧栏一起消失，这里补同一份兜底 */}
           <div className="mb-4 hidden flex-col gap-2 max-[860px]:flex">
+            {searchBox}
             <div className="flex items-center gap-1.5 overflow-x-auto">
               <Button variant="ghost" size="icon-sm" aria-label="返回" onClick={requestExit}>
                 <ArrowLeft />
@@ -1336,29 +1493,33 @@ export default function SettingsPage({
                     <Skeleton className="h-9 w-2/3" />
                   </CardContent>
                 </Card>
+              ) : searching ? (
+                shownSections.length === 0 ? (
+                  /* 正要自动切到命中分栏时不闪空态（anyHit 说明 effect 马上会切走） */
+                  anyHit ? null : (
+                    <p className="py-12 text-center text-sm text-muted-foreground">
+                      没有匹配「{query.trim()}」的设置项
+                    </p>
+                  )
+                ) : (
+                  shownSections.map((s) => <Fragment key={s}>{renderSection(s)}</Fragment>)
+                )
               ) : (
                 catNow.sections.map((s) => <Fragment key={s}>{renderSection(s)}</Fragment>)
               )}
             </div>
 
             {/* 保存条：浮在内容之上的圆角卡（业主指令 2026-10-19）。
-                粘底与毛玻璃不变，但视觉上收成一张卡：宽度与卡片列对齐（mx-[3%]），
+                保存成败的播报走统一 toast（2026-10-21），这里只留「未保存计数 + 动作」。
                 只在真有内容时描边——空态不画边，否则底部会留一条没有内容的横线。 */}
             <div
               className={cn(
                 "sticky bottom-0 mx-[3%] flex min-h-0 items-center justify-end gap-3 transition-colors",
-                !loading && (savedFlash || dirty > 0 || Boolean(saveError)) &&
-                  "rounded-lg border border-border bg-background/85 shadow-sm backdrop-blur-sm"
+                !loading && dirty > 0 && "rounded-lg border border-border bg-background/85 shadow-sm backdrop-blur-sm"
               )}
             >
-              {savedFlash && !loading && (
-                <div className="flex w-full items-center justify-end px-3 py-2.5">
-                  <Badge variant="ok">已保存 ✓</Badge>
-                </div>
-              )}
-              {(dirty > 0 || saveError) && !loading && (
+              {dirty > 0 && !loading && (
                 <div className="flex w-full items-center gap-3 rounded-lg bg-warn/5 px-3 py-2.5">
-                  {saveError && <span className="ms-auto max-w-[48rem] truncate text-xs text-err" title={saveError}>{saveError}</span>}
                   {dirty > 0 && (
                     <>
                       <span className="ms-auto text-xs text-warn tabular-nums">{dirty} 项未保存</span>
@@ -1415,7 +1576,11 @@ export default function SettingsPage({
 
       <Dialog open={cookieRow !== undefined} onOpenChange={(v) => !v && setCookieKey(null)}>
         {cookieRow && (
-          <DialogContent className="max-w-md">
+          // max-h + overflow：DialogContent 是 `fixed top-1/2 -translate-y-1/2` 居中，
+          // 内容一旦高于视口就上下两头一起被裁（页面本身不可滚），输入框会整段落到屏幕外。
+          // Cookie 这层内容最多（说明三行 + 按钮 + 已配置提示 + 输入框 + 页脚），字号档调大或
+          // 窗口矮时必现，所以这一张自己兜住高度。
+          <DialogContent className="max-h-[calc(100vh-2rem)] max-w-md overflow-y-auto">
             <DialogHeader>
               <DialogTitle>{displayName(cookieRow.platform)} Cookie</DialogTitle>
               <DialogDescription>
@@ -1461,7 +1626,8 @@ export default function SettingsPage({
                   onChange={(e) => setCookieDraft(e.target.value)}
                   placeholder="粘贴 Cookie 整串"
                   aria-label={`${displayName(cookieRow.platform)} Cookie`}
-                  className="min-h-24 font-mono text-xs"
+                  // field-sizing-fixed + 固定高度：粘贴的是整串几百字符，自动增高会把页脚按钮挤出弹窗
+                  className="field-sizing-fixed h-28 overflow-y-auto font-mono text-xs"
                 />
                 {cookieConfigured && (
                   <p className="text-xs text-muted-foreground">
@@ -1502,8 +1668,8 @@ export default function SettingsPage({
           <DialogHeader>
             <DialogTitle>清理本地缓存</DialogTitle>
             <DialogDescription>
-              删除网络缓存、孤儿断点与临时残留（约 {fmtBytes(cache?.clearableBytes ?? 0)}）。进行中的下载会被避让，
-              本机记录与更新包不动。此操作立即生效，不走「保存」。
+              即将清理本地缓存，预计释放约 {fmtBytes(cache?.clearableBytes ?? 0)}；
+              进行中的下载任务不受影响，此操作不可逆。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
@@ -1517,17 +1683,24 @@ export default function SettingsPage({
         </DialogContent>
       </Dialog>
 
-      {notice &&
-        createPortal(
-          <div
-            key={notice.id}
-            role="status"
-            className="fixed top-4 right-4 z-50 max-w-[24rem] rounded-md border border-border bg-popover px-3 py-2 text-sm text-popover-foreground shadow-md"
-          >
-            {notice.text}
-          </div>,
-          document.body,
-        )}
+      <Dialog open={logConfirm} onOpenChange={setLogConfirm}>
+        <DialogContent className="max-w-sm" showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>清理日志</DialogTitle>
+            <DialogDescription>
+              将删除全部日志文件，预计释放 {fmtBytes(logBytes)}，此操作不可逆。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLogConfirm(false)}>
+              取消
+            </Button>
+            <Button variant="destructive" disabled={cacheBusy} onClick={() => void clearLogs()}>
+              清理
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
@@ -1717,8 +1890,4 @@ function IntegrityBadge({
   return <Badge variant={variant}>{label}</Badge>;
 }
 
-/** 通道真相：绿=本地内核可解，灰=不可用（线上回落在 2026-10-18 移除，只剩这一条通道） */
-function EngineToneBadge({ e }: { e: EngineHealth }): React.ReactElement {
-  if (!e.ok) return <Badge variant="outline">不可用</Badge>;
-  return <Badge variant="ok">本地内核</Badge>;
-}
+

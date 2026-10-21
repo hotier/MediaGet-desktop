@@ -18,6 +18,7 @@
 import { z } from "zod";
 import { IPC } from "./ipc";
 import { COOKIE_LOGIN_KEYS, type CookieLoginKey } from "../shared/cookie-login";
+import { SWITCHABLE_ENGINE_IDS } from "../shared/platforms";
 
 const STR = z.string();
 export const DateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
@@ -174,6 +175,13 @@ export const ParseInputSchema = z.object({
 
 export const DownloadItemSchema = z.object({
   url: z.string().url().max(4000),
+  /**
+   * DASH 音频轨（v33）：有它就必须合流，交付的必须是音画合一的完整文件。
+   *
+   * 产品规则（业主 2026-10-21「预览和下载都是需要完整的视频，保证视频和音频都是融合的」）：
+   * B站登录态只回 video-only 分片，单独落盘就是无声视频。缺该键 = 单流，按老路径走。
+   */
+  audioUrl: z.string().url().max(4000).optional(),
   filename: STR.min(1).max(200),
   referer: z.string().url().max(2000).optional(),
   headers: z.record(STR.max(100), STR.max(4000)).optional(),
@@ -249,6 +257,9 @@ export const TaskIdInputSchema = z.object({ taskId: STR.min(1).max(64) });
  */
 export const PlatformSwitchSchema = z.object({ enabled: z.boolean() }).strict();
 
+/** 单引擎开关覆盖（与平台开关同形；缺键 = 开，见 shared/platforms 的 isEngineEnabled） */
+export const EngineSwitchSchema = z.object({ enabled: z.boolean() }).strict();
+
 /** 全量生效配置（settings:get / settings:set 的出参） */
 export const AppSettingsSchema = z.object({
   /** 下载目录（绝对路径；空串 = 系统下载目录） */
@@ -281,8 +292,9 @@ export const AppSettingsSchema = z.object({
   retryTimes: z.number().int().min(0).max(3),
   /** 清晰度预选默认策略：main=内核推荐直链 / highest=最高画质 / lowest=最低画质省流量 */
   defaultQuality: z.enum(["main", "highest", "lowest"]),
-  /** 下载文件名主体组合：title=仅标题 / authorTitle=作者 - 标题 / titleAuthor=标题 - 作者 / titleDate=标题_日期 */
-  filenamePreset: z.enum(["title", "authorTitle", "titleAuthor", "titleDate"]),
+  /** 下载文件名主体组合（连接符统一为下划线）：title=仅标题 / authorTitle=作者_标题 /
+   *  titleAuthor=标题_作者 / titleDate=标题_日期 / authorTitleDate=作者_标题_日期 */
+  filenamePreset: z.enum(["title", "authorTitle", "titleAuthor", "titleDate", "authorTitleDate"]),
   /** 追加开关（在预设主体之后）：quality=清晰度后缀、index=多文件序号 */
   filenameExtra: z.object({ quality: z.boolean(), index: z.boolean() }),
   /** 取消任务保留 .part 断点（下次同链接入队可续）；关=取消即删腾磁盘 */
@@ -307,6 +319,24 @@ export const AppSettingsSchema = z.object({
    * 所以注册表增删平台不需要动存档形状。键是契约键（别名在写入侧已归一）。
    */
   platformSwitches: z.record(STR, PlatformSwitchSchema),
+  /**
+   * 引擎开关（v30，2026-10-21）：引擎这一层的「供不供」，与平台开关同一套语义——
+   * 缺键 = 开（`isEngineEnabled`），只有用户关掉时才落显式 false；
+   * 关掉的引擎在主进程选路与体检里都不再出现（不是只在界面上藏起来）。
+   * 键 = 可切换引擎 id（`SWITCHABLE_ENGINE_IDS`，mock 兜底不在其中）。
+   */
+  engineSwitches: z.record(z.enum(SWITCHABLE_ENGINE_IDS), EngineSwitchSchema),
+  /**
+   * 平台主引擎（v31，2026-10-21）：每个平台先试哪个引擎。缺键 = mediaget
+   * （`DEFAULT_PRIMARY_ENGINE`）；只存用户改过的平台，注册表增删平台不用写迁移。
+   * 键是契约键（别名在写入侧已归一），值是可切换引擎 id。
+   */
+  platformEngines: z.record(STR, z.enum(SWITCHABLE_ENGINE_IDS)),
+  /**
+   * 引擎失败回退（v31）：主引擎失败后是否按顺序再试其余可用引擎。
+   * 缺省 true；关掉 = 只用主引擎，它的失败就是最终答复。
+   */
+  engineFallback: z.boolean(),
   // 安装策略固定为「手动重启安装」：setup 包做不了无感静默安装，`autoInstallOnAppQuit` 恒 false，
   // 安装只由关于页流式下载弹窗的「立即重启」触发，不作为开关暴露
 });
@@ -395,6 +425,8 @@ export const PersistedQueueTaskSchema = z.object({
    * 而队列从此是长期档，把带签名的 URL 永久留在盘上违反隐私红线「队列不保留直链」）。
    */
   url: STR,
+  /** DASH 音频轨（v33）：删除时机与 `url` 完全一致——done 行同样剥成空串，不把签名链留盘 */
+  audioUrl: STR.optional(),
   filename: STR,
   referer: STR.optional(),
   headers: z.record(STR, STR).optional(),
@@ -451,11 +483,35 @@ export const IdentifyOutcomeSchema = z.object({
   kind: z.enum(["url", "share-text", "unknown"]),
 });
 
+/**
+ * 单次引擎尝试（v32）：哪个引擎试过、成没成、失败原因是什么。
+ * 「回退」只有结论、没有原因时用户无法判断该去修什么（缺 Cookie？二进制？站方改版？），
+ * 所以失败引擎自己的答复要跟着结果一起回渲染层。
+ */
+export const ParseAttemptSchema = z
+  .object({
+    engine: z.enum(SWITCHABLE_ENGINE_IDS),
+    ok: z.boolean(),
+    /** 该引擎给出答复的业务码（不可用时为 0） */
+    code: z.number(),
+    /** 失败原因原文（引擎自己的 msg，已截断；成功时缺省） */
+    msg: STR.max(300).optional(),
+    failType: STR.optional(),
+  })
+  .strict();
+
 export const ParseRunOutcomeSchema = z.object({
   result: ParseResultSchema,
   /** 结果来源（线上回落在 2026-10-18 移除，只剩本地内核与 mock 演示） */
   via: z.enum(["local", "mock"]),
+  /** 实际解出这条结果的引擎（v28 注册制；v29 补登记 amagi——它在场却进不了枚举，dev 出参校验会拒掉它的答复）：统计按它对账「谁解的」；mock 兜底与缓存命中可缺省 */
+  viaEngine: z.enum(["parseCore", "ytdlp", "amagi", "mock"]).optional(),
   durationMs: z.number(),
+  /**
+   * 这一轮按顺序真的调用过的引擎（v32）：失败在前、成功在后，各带自己的原因。
+   * 缺省 = 没进选路（缓存命中 / mock 兜底 / 平台被关），界面不要凭空编造「回退」。
+   */
+  attempts: z.array(ParseAttemptSchema).max(8).optional(),
   /**
    * 来源链接的真实资源页（v16）：短链已跟到长链，或由作品 ID 直接拼成官方页面；
    * 跟不动/认不出时就是用户输入的那条。首页拿它写结果卡与下载 meta，主进程拿它写历史，
@@ -608,6 +664,13 @@ export const EngineHealthSchema = z.object({
   platform: STR,
   name: STR,
   ok: z.boolean(),
+  /** 实际可解该平台的引擎名（选路顺序；空 = 今天没有引擎声明可解） */
+  engines: z.array(STR),
+  /**
+   * 与 `engines` 一一对应的引擎 id（v31）：平台表的「通道」下拉用它做选项值与提交值。
+   * 显示名留给人看、id 留给机器判——别让渲染层拿 label 反查 id。
+   */
+  engineIds: z.array(z.enum(SWITCHABLE_ENGINE_IDS)),
   detail: STR.optional(),
   durationMs: z.number().optional(),
 });
@@ -698,6 +761,15 @@ export const UrlInputSchema = z.object({
  */
 export const CopyTextInputSchema = z.object({
   text: STR.min(1).max(200_000),
+});
+
+/**
+ * app:readClipboard 出参。上限与 `IdentifyInputSchema` / `ParseInputSchema` 对齐（4000）：
+ * 粘贴是为了「填进输入面接着识别与解析」，超出解析入参上限的部分粘过来也用不上，
+ * 而主进程先截断，比让渲染层粘进一整篇富文本再被 `parse` 拒一次更干净。
+ */
+export const ReadClipboardOutputSchema = z.object({
+  text: STR.max(4000),
 });
 
 // ————————————————————————————————————————————————
@@ -845,6 +917,7 @@ export const CONTRACT = {
   [IPC.appLog]: invoke(LogWriteInputSchema, OkFlagSchema),
   [IPC.appOpenExternal]: invoke(UrlInputSchema, OkFlagSchema),
   [IPC.appCopyText]: invoke(CopyTextInputSchema, OkFlagSchema),
+  [IPC.appReadClipboard]: invoke(null, ReadClipboardOutputSchema),
   [IPC.statsGet]: invoke(StatsDateRangeSchema, StatsQueryResultSchema),
   [IPC.updateGetState]: invoke(null, UpdateStateSchema),
   [IPC.updateCheck]: invoke(null, UpdateStateSchema),

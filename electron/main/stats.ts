@@ -46,6 +46,8 @@ export interface StatsParseInput {
   at: number;
   platform?: string;
   via: "local" | "mock";
+  /** 实际解出结果的引擎（v28 注册制）；mock 兜底与缓存命中可缺省 */
+  engine?: string;
   ok: boolean;
   durationMs: number;
   workKey?: string;
@@ -110,9 +112,9 @@ export function createStats(opts: StatsOptions): StatsRecorder {
       recordEvent({ type: "cancel", ...input });
     },
 
-    parse({ at, platform, via, ok, durationMs, workKey, historyEntry }) {
+    parse({ at, platform, via, engine, ok, durationMs, workKey, historyEntry }) {
       recordEvent(
-        { type: "parse", at, platform, via, ok, durationMs: nonNegativeInt(durationMs), workKey },
+        { type: "parse", at, platform, via, engine, ok, durationMs: nonNegativeInt(durationMs), workKey },
         historyEntry
       );
     },

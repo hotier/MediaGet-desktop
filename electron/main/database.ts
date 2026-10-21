@@ -100,6 +100,11 @@ const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX queue_tasks_group_page ON queue_tasks(group_id, created_at DESC, task_id DESC);
     `,
   },
+  {
+    // v28 引擎注册制：解析事件记「实际用的引擎」，统计/排障按它对账「谁解的」
+    version: 4,
+    sql: "ALTER TABLE stats_events ADD COLUMN engine TEXT;",
+  },
 ];
 
 function migrate(db: BetterSqlite3.Database): number {
