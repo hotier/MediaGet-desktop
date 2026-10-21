@@ -132,7 +132,8 @@
     "win": {
       "target": [
         "nsis",
-        "portable"
+        "portable",
+        "7z"
       ]
     },
     "nsis": {
@@ -149,6 +150,9 @@
         "en_US"
       ],
       "artifactName": "${productName}-Setup-${version}.${ext}"
+    },
+    "7z": {
+      "artifactName": "${productName}-${version}.${ext}"
     },
     "portable": {
       "artifactName": "${productName}-Portable-${version}.${ext}"

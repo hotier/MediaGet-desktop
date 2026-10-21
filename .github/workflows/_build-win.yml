@@ -68,19 +68,22 @@ jobs:
         run: |
           $setup = Get-ChildItem -Path release -Filter 'MediaGet-Setup-*.exe' -ErrorAction SilentlyContinue
           if (-not $setup) { throw "release/ 下没有 NSIS 安装包（MediaGet-Setup-*.exe）：目录页/安装日志都落在它上面" }
+          $archive = Get-ChildItem -Path release -Filter 'MediaGet-*.7z' -ErrorAction SilentlyContinue
+          if (-not $archive) { throw "release/ 下没有 7z 归档（MediaGet-*.7z）：绿色解压分发靠它" }
           $yml = Join-Path 'release' 'latest.yml'
           if (-not (Test-Path $yml)) { throw "release/ 下缺少 latest.yml：应用内检测更新会永远查不到版本" }
           $blockmap = Get-ChildItem -Path release -Filter '*.exe.blockmap' -ErrorAction SilentlyContinue
           if (-not $blockmap) { throw "release/ 下缺少 *.exe.blockmap：增量更新会退化成整包下载" }
-          Write-Host "  OK $($setup[0].Name) ($($setup[0].Length) 字节) + latest.yml + $($blockmap[0].Name)"
+          Write-Host "  OK $($setup[0].Name) ($($setup[0].Length) 字节) + $($archive[0].Name) ($($archive[0].Length) 字节) + latest.yml + $($blockmap[0].Name)"
 
-      # 只留发布所需的三类文件：win-unpacked 有几万个文件、体积数倍于安装包，
+      # 只留发布所需的四类文件：win-unpacked 有几万个文件、体积数倍于安装包，
       # 传上去既慢又没人下载。
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact_name }}
           path: |
             release/*.exe
+            release/*.7z
             release/*.yml
             release/*.blockmap
           if-no-files-found: error

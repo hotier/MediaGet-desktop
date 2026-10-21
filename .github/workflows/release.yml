@@ -98,7 +98,7 @@ jobs:
           # latest.yml 是 electron-updater 的更新源清单，必须与安装包同在一个 Release；
           # 缺它则应用内「检测更新」永远查不到版本（README P6 的端到端前置）。
           # 缺附件这件事已在 `_build-win.yml` 的断言里挡过一次，这里是上传前的最后一道。
-          assets=(release/*.exe release/*.yml release/*.blockmap)
+          assets=(release/*.exe release/*.7z release/*.yml release/*.blockmap)
           if [ ${#assets[@]} -eq 0 ]; then
             echo "release/ 下没有可上传产物" >&2
             exit 1

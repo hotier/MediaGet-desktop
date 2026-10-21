@@ -153,13 +153,13 @@
 
 ## 7. 构建与发布
 
-- `electron-builder`：`nsis`（assisted 安装、桌面/开始菜单快捷方式、卸载器）+ `portable`（单文件免安装，内测分发）。产物目录 `release/`。
+- `electron-builder`：`nsis`（assisted 安装、桌面/开始菜单快捷方式、卸载器）+ `portable`（单文件免安装，内测分发）+ `7z`（win-unpacked 归档，绿色解压分发；产物 `MediaGet-x.y.z.7z`，命名刻意不带 `Portable` 字样，避免与 portable 自解压 exe 混淆）。产物目录 `release/`。
 - **安装体验的四处开关都在配置里，别改回模板默认**（业主 2026-10-21「安装时不能选择安装位置 / 不能显示安装日志」）：
   - `nsis.allowToChangeInstallationDirectory: true`——不开就只有「当前位置装下去」，用户改不了盘（默认 per-user 落到 `%LOCALAPPDATA%\Programs\MediaGet`）。
   - `nsis.perMachine: false` + `oneClick: false`——保留安装范围选择页（仅当前用户 / 所有用户），选「所有用户」才走 UAC 提权。
   - `nsis.installerLanguages: ["zh_CN", "en_US"]`——打包语言收窄到两档，中文系统不必依赖 OS 语言回落。
   - `nsis.deleteAppDataOnUninstall: false`——数据去留改由卸载向导当场问（`build/installer.nsh` 的 `customUnInstall`，默认按钮=保留），别打开这个开关做「一律删除」。
-- **安装日志**：模板把细节面板两处都关死了（`common.nsh` 顶层 `ShowInstDetails nevershow`、`installSection.nsh` 复制文件前 `SetDetailsPrint none`）。前者由 `build/installer.nsh` 的 `customHeader` 在全局作用域重开（同名 Installer 属性后写者胜）；后者改不掉——要改就得整体接管 `nsis.script` 并每次升级重放模板 diff，故不做。因此安装日志是**阶段摘要**而非逐文件行：面板里四行（目录 / 范围 / 沙箱 icacls 返回码 / 完成），完整一份落 `$INSTDIR\install.log`（UTF-16LE+BOM，随卸载删除），完成页「查看安装日志」勾选即用记事本打开。`tests/installer.test.ts` 钉住这几条。
+- **安装日志**：模板把细节面板两处都关死了（`common.nsh` 顶层 `ShowInstDetails nevershow`、`installSection.nsh` 复制文件前 `SetDetailsPrint none`）。前者由 `build/installer.nsh` 的 `customHeader` 在全局作用域重开（同名 Installer 属性后写者胜）；后者改不掉——要改就得整体接管 `nsis.script` 并每次升级重放模板 diff，故不做。因此安装日志是**阶段摘要**而非逐文件行：只进进度条**上方**的细节列表（`SetDetailsPrint listonly`），进度条**下方**彻底留白——状态行不写、品牌文字置空（`customHeader` 里 `BrandingText " "`，用空格不用空串，旧版 makensis 对空串会回落默认值）；完整一份落 `$INSTDIR\install.log`（UTF-16LE+BOM，随卸载删除），完成页**不放**「查看安装日志」按钮（业主 2026-10-21 二次定调：日志在上、下方留白、完成页不放按钮），要排查时手动打开。`tests/installer.test.ts` 钉住这几条。
 - **安装器视觉与卸载项**：向导的侧边图（164×314）和页头图（150×57）是 `build/installerSidebar.bmp` / `build/installerHeader.bmp`——文件名叫对就被 electron-builder 默认接走，不用在 `nsis` 里再配。两份都是**生成物**（`pnpm brand:assets`），MUI 只认 24 位 BMP 且尺寸写死。`package.json` 的 `homepage` 会被 electron-builder 拿去填卸载项的「帮助」链接（先读 `nsis.uninstallUrlHelp`，缺省回落它）。
 - 二进制随包：`yt-dlp.exe`、`ffmpeg.exe` 放 `extraResources`，**不打进 asar**；首启校验 SHA-256 后释放到 `userData/bin/`，支持「用户自备路径」覆盖。
 - 开发期补件：`pnpm dev` 前置 `node scripts/fetch-binaries.cjs --soft`——脚本幂等（在位且校验通过即跳过，约 0.3s），新机器不必先手动跑 `fetch:binaries`；`--soft` 只对**下载失败**容错（退出 0 + 播报「随包二进制未就绪」，manifest 写成部分清单，运行时对应链路如实降级），`binaries.json` 本身残缺或哈希不符仍非零退出。CI 不传 `--soft`，严格语义不变——这条分界由 `tests/binaries-watch.test.ts` 用真子进程锁住退出码。
@@ -168,9 +168,9 @@
 - CI（GitHub Actions）—— **四个工作流按时间线分工，验收与出包各只有一份实现**（2026-10-21 收拢，此前 `ci.build-win` 与 `release.publish` 是两份拷贝，已经漂移：资源落地断言与 `latest.yml`/`blockmap` 断言只长在 CI 那份上）：
   - `.github/actions/setup/action.yml`（composite）：pnpm + Node + `pnpm install` 的唯一一份环境准备，六个 job 共用；输入 `skip_electron`（默认 `"1"`，出包 job 必须传 `"0"`，否则 electron-builder 找不到分发件）。**checkout 留在各工作流**——composite 自己要先被 checkout 下来才能 `uses`。
   - `_verify.yml`（`workflow_call`）：typecheck + lint + vitest（全离线）。
-  - `_build-win.yml`（`workflow_call`）：拉固定版本二进制并强校验 → `electron-builder --win --publish never` → 断言安装包内 `resources/bin` 的 `yt-dlp.exe`/`ffmpeg.exe`/`manifest.json` 齐备 → 断言 `MediaGet-Setup-*.exe` + `latest.yml` + `*.exe.blockmap` 都在 → 只把这三类文件交 artifact（`win-unpacked` 不传）。
+  - `_build-win.yml`（`workflow_call`）：拉固定版本二进制并强校验 → `electron-builder --win --publish never` → 断言安装包内 `resources/bin` 的 `yt-dlp.exe`/`ffmpeg.exe`/`manifest.json` 齐备 → 断言 `MediaGet-Setup-*.exe` + `MediaGet-*.7z` + `latest.yml` + `*.exe.blockmap` 都在 → 只把这四类文件交 artifact（`win-unpacked` 不传）。
   - `ci.yml`（push `main` / PR）：`test` → `_verify`；`build-win`（仅 main）→ `_build-win`；`landing`（仅 PR）跑落地页构建 + `verify-landing.cjs`。
-  - `release.yml`（push `v*` 标签，或手动 `workflow_dispatch` 干跑）：`verify` → `_verify`（tag 可能指向 CI 从未跑过的 commit，故复检一次）；`build` → `_build-win`；`publish` 取回 artifact、断言 tag 与 `package.json` 一致、用 `gh release create` 把 `*.exe` + `latest.yml` + `*.blockmap` 传到同一个 Release。`latest.yml` 与安装包不同 Release，应用内「检测更新」就永远查不到版本。手动触发默认 `dry_run=true`：只跑到出包为止，用来在真发版前确认流水线还活着。
+  - `release.yml`（push `v*` 标签，或手动 `workflow_dispatch` 干跑）：`verify` → `_verify`（tag 可能指向 CI 从未跑过的 commit，故复检一次）；`build` → `_build-win`；`publish` 取回 artifact、断言 tag 与 `package.json` 一致、用 `gh release create` 把 `*.exe` + `*.7z` + `latest.yml` + `*.blockmap` 传到同一个 Release。`latest.yml` 与安装包不同 Release，应用内「检测更新」就永远查不到版本。手动触发默认 `dry_run=true`：只跑到出包为止，用来在真发版前确认流水线还活着。
   - `landing.yml`（push `main` 且命中 paths / 手动）与 `binaries-watch.yml`（每周一 cron）职责独立，不参与上面两条链路。
   - 内核腐化告警不再靠并列检出冒烟（`smoke:kernel` 已随 2982811 拆桥删除）：`tests/kernel-sync.test.ts` 直接对工件 `dist/index.d.ts` 断言契约面，装不上依赖即红。
 - 发版：`pnpm release`（release-it）—— 先跑 `typecheck`/`lint`/`test` 门禁，再按 commit 前缀推导版本（`feat`→minor、`fix`→patch、`!` 或 `BREAKING CHANGE`→major），写 `CHANGELOG.md`、提交 `chore(release): vX.Y.Z`、打附注标签并 push。版本号只写进 `package.json`（`npm.publish: false`，本包 `private`，不上注册表）。要改档位随时覆盖：`pnpm release patch|minor|major|1.2.3`（显式参数优先于 commit 推导，实测确认）。
