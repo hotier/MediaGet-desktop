@@ -2,6 +2,19 @@
 
 本文件由 `pnpm release` 按 commit 前缀生成；用户可见的变化请在此基础上补一句人话。
 
+## [0.2.1](https://github.com/hotier/mediaGet-desktop/compare/v0.2.0...v0.2.1) (2026-10-21)
+
+### 新增
+
+* **build:** 发布产物增加 7z 绿色归档 ([398f99d](https://github.com/hotier/mediaGet-desktop/commit/398f99dd47a33667b5536d22e2b64ed7e40b3a57))
+
+### 修复
+
+* **build:** 补 app-builder-lib 在 pnpm 11 hoisted 布局下的依赖收集错误 ([2a32fda](https://github.com/hotier/mediaGet-desktop/commit/2a32fda84193b521969c9550ede887b0fac42991))
+* **installer:** 安装日志只进细节列表，进度条下方留白，完成页去掉日志按钮 ([c251aec](https://github.com/hotier/mediaGet-desktop/commit/c251aec108a1a2d7f673052182f5527c1246b0e0))
+* **settings:** 下线随包二进制状态区，精简各卡冗余说明与文案 ([886f3d2](https://github.com/hotier/mediaGet-desktop/commit/886f3d22399e1432afd9e98e28cdb8cf40417a47))
+* **updater:** 打包后取不到 autoUpdater 导致永远无更新源 ([2ae47b7](https://github.com/hotier/mediaGet-desktop/commit/2ae47b79da414cf51faa0a0f21de02a932531e45))
+
 ## [0.2.0](https://github.com/hotier/mediaGet-desktop/compare/v0.1.0...v0.2.0) (2026-10-21)
 
 ### 新增
