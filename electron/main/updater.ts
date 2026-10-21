@@ -26,6 +26,25 @@ export interface UpdaterSource {
   quitAndInstall(): void;
 }
 
+/**
+ * 从 `await import("electron-updater")` 的命名空间里取 `autoUpdater`。
+ *
+ * 为什么不能直接解构：electron-updater 6.x 的 `out/main.js` 用
+ * `Object.defineProperty(exports, "autoUpdater", { enumerable: true, get })` 惰性导出，
+ * Node 的 CJS→ESM 命名导出探测（cjs-module-lexer）认不出这个 getter —— 打包产物里
+ * `import()` 回来的命名空间有 AppUpdater/NsisUpdater 等一堆名字，唯独**没有** autoUpdater
+ * （它只挂在 `default`（即 module.exports）上）。解构拿到 undefined 后再 attach 会在
+ * bind 里抛 TypeError，被 index.ts 的 catch 静默吞掉，界面于是永远停在
+ * 「当前运行环境没有更新源」（2026-10-21 安装版实测）。`require()` 路径没有这层探测，
+ * 两条路径都要取。
+ */
+export function pickAutoUpdater<T>(mod: {
+  autoUpdater?: T;
+  default?: { autoUpdater?: T } | null;
+}): T | undefined {
+  return mod.autoUpdater ?? mod.default?.autoUpdater;
+}
+
 /** 更新策略（AppSettings 的「静默下载」落点；启动检查在 index.ts 把关，安装固定手动确认）。 */
 export interface UpdaterPolicy {
   autoDownload: boolean;

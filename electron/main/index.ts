@@ -59,7 +59,7 @@ import { TRACK_CACHE_TTL_MS, createTrackMerger } from "./media-merge";
 import { SECRET_CONFIG_KEYS } from "../../core-adapter/config";
 import { registerIpc } from "./ipc";
 import { listInstalledFonts } from "./fonts";
-import { createUpdater } from "./updater";
+import { createUpdater, pickAutoUpdater } from "./updater";
 import { IPC, type DownloadTaskView, type HistoryEntry } from "../../types/ipc";
 import { workKeyOf } from "../../shared/history";
 
@@ -521,14 +521,21 @@ if (app.isPackaged) {
   void (async () => {
     await proxyReady; // 更新检查也吃用户代理
     try {
-      const { autoUpdater } = await import("electron-updater");
+      // 不能解构 autoUpdater：打包后它只挂在命名空间的 default 上（见 pickAutoUpdater 注释）
+      const mod = (await import("electron-updater")) as typeof import("electron-updater") & {
+        default?: typeof import("electron-updater");
+      };
+      const autoUpdater = pickAutoUpdater(mod);
+      if (!autoUpdater) throw new Error("electron-updater 未导出 autoUpdater");
       updater.attach(autoUpdater);
       // 启动检测开关关着就只挂源不检查；手动「检查更新」不受此开关限制
       if (settingsRepository.loadConfig().settings.updateOnStartup) {
         await updater.check(); // 静默检查一次，失败留在 error 由设置页重试
       }
-    } catch {
-      /* 无发布源 / electron-updater 不可用：保持 unsupported，不阻断启动 */
+    } catch (e) {
+      // 无发布源 / electron-updater 不可用：保持 unsupported，不阻断启动。
+      // 但失败必须留痕 —— 静默吞掉会让「永远没有更新源」查不出原因（2026-10-21 事故）。
+      logger.warn(`[update] 更新源挂载失败，保持无源状态：${(e as Error).message || String(e)}`);
     }
   })();
 }

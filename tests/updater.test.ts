@@ -8,7 +8,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { CancellationError, CancellationToken } from "builder-util-runtime";
-import { createUpdater, type UpdaterSource } from "../electron/main/updater";
+import { createUpdater, pickAutoUpdater, type UpdaterSource } from "../electron/main/updater";
 import type { UpdateState } from "../types/ipc";
 
 class FakeSource implements UpdaterSource {
@@ -330,5 +330,27 @@ describe("错误与守卫", () => {
     updater.attach(source);
     source.fire("update-available", { version: "0.2.0" });
     expect(() => updater.install()).toThrow(/尚未下载完成/);
+  });
+});
+
+/**
+ * 事故回归（2026-10-21 安装版）：electron-updater 的 autoUpdater 是 defineProperty getter，
+ * 打包后 cjs-module-lexer 探测不到它，`await import()` 的命名空间里只有 default 上有。
+ * 旧代码直接解构 → undefined → attach 抛错被吞 → 界面永远「当前运行环境没有更新源」。
+ */
+describe("pickAutoUpdater（动态 import 命名空间取源）", () => {
+  it("命名导出存在时直接取（dev/打包 CJS 均如此时优先）", () => {
+    const named = { marker: "named" };
+    expect(pickAutoUpdater({ autoUpdater: named, default: { autoUpdater: { marker: "default" } } })).toBe(named);
+  });
+
+  it("命名导出被 cjs-module-lexer 漏掉时回落到 default.autoUpdater", () => {
+    const fallback = { marker: "default" };
+    expect(pickAutoUpdater({ default: { autoUpdater: fallback } })).toBe(fallback);
+  });
+
+  it("两处都没有 = undefined（由调用方抛错并留痕，而不是拿 undefined 去 attach）", () => {
+    expect(pickAutoUpdater({})).toBeUndefined();
+    expect(pickAutoUpdater({ default: null })).toBeUndefined();
   });
 });
