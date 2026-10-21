@@ -8,7 +8,9 @@
 
 ; ─────────────────────────────────────────────────────────────────────────────
 ; 一、安装体验：可选安装目录 + 看得见的安装日志
-;    （业主 2026-10-21：「安装的时候不能选择安装位置 / 不能显示安装日志」）
+;    （业主 2026-10-21：「安装的时候不能选择安装位置 / 不能显示安装日志」；
+;      同日二次定调：安装日志只显示在进度条**上方**的细节列表里，进度条**下方**
+;      什么都不显示（品牌文字也算），完成页不要「查看安装日志」勾选框。）
 ;
 ; 目录页不需要脚本：package.json 的 `nsis.allowToChangeInstallationDirectory` 打开即出
 ; 目录页；选完目录后模板会在末尾补上 APP_FILENAME（用户选 D:\Apps 实际落到
@@ -20,9 +22,12 @@
 ; 前者用 customHeader 重开（该宏插在 common.nsh 之后、仍是全局作用域，同名属性的
 ; 后写者胜，属编译期覆盖）；后者在本文件这一层改不掉——上游 issue 里唯一的办法是
 ; beforePack 钩子把 node_modules 的 installSection.nsh 换掉（monkey patch，升级即失效），
-; 本仓不走这条路。代价是复制文件那几十秒面板里是空的（进度条照走），文字要等
-; customInstall 才出现；所以安装日志由 customInstall 自己产出：阶段摘要进细节面板，
-; 完整一份落 $INSTDIR\install.log，完成页勾选「查看安装日志」即开。
+; 本仓不走这条路。空白段改由 customHeader 里的**隐藏区段**补：区段名以 `-` 开头
+; （组件页看不见但照样执行），且声明在模板的 `Section "install"` 之前，于是它先跑，
+; 那一行状态就能在整个「载荷解包 + 复制进安装目录」期间留在面板上。
+; 阶段摘要仍由 customInstall 自己产出：只进进度条上方的细节列表（SetDetailsPrint
+; listonly，下方的状态行与品牌文字都不写），完整一份落 $INSTDIR\install.log，
+; 完成页不放按钮，要排查时手动打开该文件。
 ; ─────────────────────────────────────────────────────────────────────────────
 
 ; 三个变量只在安装趟的 customInstall 里用；卸载器趟若声明而不引用会触发 6001，
@@ -31,19 +36,27 @@
   Var /GLOBAL sandboxAclResult
   Var /GLOBAL installLogHandle
   Var /GLOBAL installScopeLabel
-
-  ; 完成页那颗勾选框：MUI 在 !insertmacro MUI_PAGE_FINISH 时读取这几个 define，
-  ; 本文件先于模板被 include，时序刚好对。
-  !define MUI_FINISHPAGE_SHOWREADME "$INSTDIR\install.log"
-  !define MUI_FINISHPAGE_SHOWREADME_TEXT "查看安装日志"
-  !define MUI_FINISHPAGE_SHOWREADME_NOTCHECKED
 !endif
 
 !macro customHeader
+  ; 进度条下方留白：品牌文字也置空（common.nsh 把它设成了 "${PRODUCT_NAME} ${VERSION}"，
+  ; 同名属性后写者胜；用单个空格而不是 ""，旧版 makensis 对空串会回落默认值）
+  BrandingText " "
   !ifdef BUILD_UNINSTALLER
     ShowUninstDetails show
   !else
     ShowInstDetails show
+
+    ; 隐藏区段：区段名以 `-` 开头 → 组件页看不见，但照样按声明顺序执行。customHeader 被
+    ; 插在模板的 `Section "install"` 之前，所以这一段先跑，打印的那一行能在整个「载荷解包
+    ; + 复制进安装目录」期间留在细节面板上（主安装段一进门就 SetDetailsPrint none，之后
+    ; 模板不再放行任何文字）。listonly 而不是 both：下方状态行按业主定调保持留白。
+    Section "-install status"
+      ${IfNot} ${Silent}
+        SetDetailsPrint listonly
+        DetailPrint "正在解压应用文件到 $INSTDIR，这一步需要一些时间，请稍候……"
+      ${EndIf}
+    SectionEnd
   !endif
 !macroend
 
@@ -115,7 +128,8 @@
   ${EndIf}
 
   ${IfNot} ${Silent}
-    SetDetailsPrint both
+    ; listonly：只写进度条上方的细节列表；下方状态行保持留白（业主 2026-10-21 二次定调）
+    SetDetailsPrint listonly
     DetailPrint "安装目录：$INSTDIR"
     DetailPrint "安装范围：$installScopeLabel"
     DetailPrint "沙箱读/执行权限：icacls 返回 $sandboxAclResult（0 = 成功）"

@@ -16,7 +16,11 @@ import { describe, expect, it } from "vitest";
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 const PKG = JSON.parse(readFileSync(`${ROOT}package.json`, "utf8")) as {
-  build: { nsis: Record<string, unknown> };
+  build: {
+    nsis: Record<string, unknown>;
+    win: { target: string[] };
+    "7z": { artifactName: string };
+  };
 };
 const NSIS = PKG.build.nsis;
 const INCLUDE = readFileSync(`${ROOT}build/installer.nsh`, "utf8");
@@ -33,10 +37,27 @@ describe("NSIS 安装器：安装位置与安装日志", () => {
     expect(INCLUDE).toMatch(/ShowUninstDetails show/);
   });
 
-  it("安装日志落盘，且完成页能一键打开", () => {
-    expect(INCLUDE).toContain("MUI_FINISHPAGE_SHOWREADME");
+  it("安装日志落盘，但完成页不放日志按钮（业主 2026-10-21 二次定调）", () => {
+    expect(INCLUDE).not.toContain("MUI_FINISHPAGE_SHOWREADME");
     expect(INCLUDE).toContain("install.log");
     expect(INCLUDE).toMatch(/!macro customInstall[\s\S]*?FileWriteUTF16LE[\s\S]*?!macroend/);
+  });
+
+  it("日志只进进度条上方的细节列表，下方彻底留白（listonly + 品牌文字置空）", () => {
+    const install = INCLUDE.match(/!macro customInstall([\s\S]*?)!macroend/);
+    if (!install) throw new Error("build/installer.nsh 里找不到 customInstall");
+    expect(install[1]).toContain("SetDetailsPrint listonly");
+    expect(install[1]).not.toContain("SetDetailsPrint both");
+    expect(INCLUDE).toMatch(/!macro customHeader[\s\S]*?BrandingText " "[\s\S]*?!macroend/);
+  });
+
+  it("解包期的空白段由隐藏区段补一行状态（必须声明在 customHeader 里才排得到主安装段之前）", () => {
+    const header = INCLUDE.match(/!macro customHeader([\s\S]*?)!macroend/);
+    if (!header) throw new Error("build/installer.nsh 里找不到 customHeader");
+    // 区段名以 - 开头 = 组件页看不见但照样执行；掉到 customInstall 里就晚了（那时已经装完）
+    expect(header[1]).toMatch(/Section "-/);
+    expect(header[1]).toMatch(/Section "-[\s\S]*?\$\{IfNot\} \$\{Silent\}[\s\S]*?SetDetailsPrint listonly[\s\S]*?DetailPrint/);
+    expect(header[1]).not.toContain("SetDetailsPrint both");
   });
 
   it("卸载改数据去留时只在非静默路径弹框（静默=/S，升级跑的就是它）", () => {
@@ -62,5 +83,18 @@ describe("NSIS 安装器：安装位置与安装日志", () => {
       expect(bmp.readInt32LE(22), `${file} 高度`).toBe(h);
       expect(bmp.readUInt16LE(28), `${file} 位深`).toBe(24);
     }
+  });
+});
+
+/**
+ * 事故回归（2026-10-21 首次加 7z target）：`"7z": { artifactName }` 曾被写成
+ * build 顶层的裸 `"artifactName"`——JSON 依然合法、typecheck/lint/vitest 全绿，
+ * 但 7z 吃的是全局默认名、且日后任何 target 都会继承它。编译器管不到配置结构，
+ * 只能钉在这里。
+ */
+describe("发布产物：7z 绿色归档", () => {
+  it("win.target 含 7z，且 7z 有自己的 artifactName 而不是 build 顶层默认值", () => {
+    expect(PKG.build.win.target).toContain("7z");
+    expect(PKG.build["7z"].artifactName).toBe("${productName}-${version}.${ext}");
   });
 });
