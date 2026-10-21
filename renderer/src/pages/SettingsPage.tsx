@@ -20,7 +20,6 @@ import {
 import type {
   AppMeta,
   AppSettings,
-  BinaryStatusReport,
   CacheStatus,
   EngineHealth,
   UpdateState,
@@ -59,7 +58,7 @@ import {
   SelectValue,
 } from "../components/ui/select";
 import { FontPicker } from "../components/FontPicker";
-import { Alert, AlertDescription } from "../components/ui/alert";
+
 import {
   Dialog,
   DialogContent,
@@ -177,7 +176,7 @@ const SECTION_SEARCH: Record<string, string> = {
   font: "界面字体 字号 字体族 正文档位 字体",
   // 平台显示名/英文名并入引擎条：搜「小红书」「bilibili」都命中平台配置表
   engines: `引擎开关 引擎 mediaget amagi yt-dlp 失败自动回退 回退 主引擎 平台配置 解析引擎 平台 开关 提供 通道 Cookie 体检 ${PLATFORMS.map((p) => `${p.name} ${p.nameEn}`).join(" ")}`,
-  about: "关于 更新 检查更新 静默下载 更新通道 版本 随包二进制 完整性 协议 许可 MIT 开源",
+  about: "关于 更新 检查更新 静默下载 更新通道 版本 协议 许可 MIT 开源",
 };
 
 /** 关键词命中判定：多词按空格拆开、每个词都得命中（「代理 clash」「字体 字号」这类组合可用） */
@@ -260,7 +259,6 @@ export default function SettingsPage({
   /** 设置搜索：非空时跨分类过滤展示命中的设置卡片（侧栏选中分类保持不动，仅作导航底色） */
   const [query, setQuery] = useState("");
   const [engines, setEngines] = useState<EngineHealth[]>([]);
-  const [bins, setBins] = useState<BinaryStatusReport | null>(null);
 
   const [pending, setPending] = useState<{ type: "switch"; to: string } | { type: "exit" } | null>(null);
   /** Cookie 弹窗：打开的 COOKIE_ROWS key + 草稿文本（打开时从已暂存的编辑值预填） */
@@ -308,7 +306,6 @@ export default function SettingsPage({
       })
       .catch(() => {});
     void api.probe.engines().then(setEngines).catch(() => {});
-    void api.app.getBinaryStatus().then(setBins).catch(() => {});
   }, []);
 
   // 外观预览：改动即所见；放弃/退出时回落到已保存值
@@ -983,7 +980,7 @@ export default function SettingsPage({
                 value={draft.filenamePreset}
                 onValueChange={(v) => setDraft({ ...draft, filenamePreset: v as AppSettings["filenamePreset"] })}
               >
-                <SelectTrigger className="w-48" aria-label="命名组合">
+                <SelectTrigger className="w-28" aria-label="命名组合">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -1029,8 +1026,8 @@ export default function SettingsPage({
 
       case "load":
         return (
-          <ItemCard title="并发与节流">
-            <Row label="并发线程（1–10）" hint="住宅带宽建议 3。" end>
+          <ItemCard title="并发节流">
+            <Row label="并发线程" hint="住宅带宽建议 3。" end>
               <PresetSelect
                 value={draft.maxConcurrent}
                 options={CONC_OPTIONS}
@@ -1060,7 +1057,6 @@ export default function SettingsPage({
           <ItemCard title="网络代理">
             <Row
               label="代理模式"
-              hint="解析、下载与更新检查统一走此代理；「跟随系统」即用 Windows 代理设置（Clash 等自动生效）。"
               end
             >
               <Select
@@ -1092,10 +1088,10 @@ export default function SettingsPage({
       case "post":
         return (
           <ItemCard title="完成容错">
-            <Row label="下载完成自动打开所在目录" end>
+            <Row label="下载完成自动打开目录" end>
               <Switch
                 id="open-folder-done"
-                aria-label="下载完成自动打开所在目录"
+                aria-label="下载完成自动打开目录"
                 checked={draft.openFolderOnDone}
                 onCheckedChange={(v) => setDraft({ ...draft, openFolderOnDone: v })}
               />
@@ -1128,7 +1124,7 @@ export default function SettingsPage({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="main">内核推荐</SelectItem>
+                  <SelectItem value="main">默认画质</SelectItem>
                   <SelectItem value="highest">最高画质</SelectItem>
                   <SelectItem value="lowest">最低画质</SelectItem>
                 </SelectContent>
@@ -1319,11 +1315,6 @@ export default function SettingsPage({
                 </Table>
               </div>
             )}
-            {meta && (
-              <p className="text-xs tabular-nums text-muted-foreground">
-                版本 v{meta.version} · Electron {meta.electron} · 内核 {meta.kernelMode}
-              </p>
-            )}
             </ItemCard>
           </>
         );
@@ -1337,10 +1328,10 @@ export default function SettingsPage({
               <BrandLogo className="h-6 w-auto" />
             </div>
 
-            <ItemCard title="更新策略" desc="打包发布态生效；开发环境没有更新源，点「检查更新」的提示属预期。">
-              <Row label="启动时自动检测更新" end>
+            <ItemCard title="软件更新">
+              <Row label="自动检查更新" end>
                 <Switch
-                  aria-label="启动时自动检测更新"
+                  aria-label="自动检查更新"
                   checked={draft.updateOnStartup}
                   onCheckedChange={(v) => setDraft({ ...draft, updateOnStartup: v })}
                 />
@@ -1378,40 +1369,6 @@ export default function SettingsPage({
               </Row>
             </ItemCard>
 
-            <ItemCard title="随包二进制" desc="已校验 = 哈希与基线匹配；降级 = 无基线仅定位；已拒绝 = 哈希不符，不使用。">
-              {!bins || bins.binaries.length === 0 ? (
-                <p className="text-xs text-muted-foreground">未获取到二进制状态。</p>
-              ) : (
-                <ul className="flex flex-col gap-2">
-                  {bins.binaries.map((b) => (
-                    <li key={b.name} className="flex flex-wrap items-center gap-2 text-sm">
-                      <span className="font-mono text-xs">{b.name}</span>
-                      <IntegrityBadge integrity={b.integrity} />
-                      {b.origin && (
-                        <span className="cursor-default text-xs text-muted-foreground">来源 {b.origin}</span>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {bins && !bins.manifestLoaded && (
-                <Alert variant="warn">
-                  <AlertDescription>
-                    未加载到随包 manifest.json：本次不做完整性校验。
-                    {import.meta.env.DEV ? (
-                      <>
-                        开发环境可执行
-                        <code className="rounded-sm bg-sunken px-1.5 py-0.5 font-mono text-xs">node scripts/fetch-binaries.cjs</code>
-                        生成。
-                      </>
-                    ) : (
-                      "请重新安装或下载最新版。"
-                    )}
-                  </AlertDescription>
-                </Alert>
-              )}
-            </ItemCard>
-
             <ItemCard title="协议框架">
               <Row label="本项目许可" end>
                 <span className="pt-2 font-mono text-sm">MIT</span>
@@ -1429,9 +1386,6 @@ export default function SettingsPage({
                   <span>yt-dlp · Unlicense</span>
                   <span>FFmpeg · LGPL-2.1+</span>
                 </div>
-              </Row>
-              <Row label="数据边界" end>
-                <span className="pt-2 text-sm">全部本机存储</span>
               </Row>
             </ItemCard>
           </>
@@ -1873,21 +1827,3 @@ function Row({
     </div>
   );
 }
-
-const INTEGRITY: Record<string, [string, "ok" | "warn" | "secondary"]> = {
-  verified: ["已校验", "ok"],
-  degraded: ["降级", "warn"],
-  rejected: ["已拒绝", "warn"],
-  missing: ["未找到", "secondary"],
-};
-
-function IntegrityBadge({
-  integrity,
-}: {
-  integrity: BinaryStatusReport["binaries"][number]["integrity"];
-}): React.ReactElement {
-  const [label, variant] = INTEGRITY[integrity] ?? [integrity, "secondary"];
-  return <Badge variant={variant}>{label}</Badge>;
-}
-
-
