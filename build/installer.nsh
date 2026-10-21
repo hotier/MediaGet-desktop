@@ -25,11 +25,13 @@
 ; 完整一份落 $INSTDIR\install.log，完成页勾选「查看安装日志」即开。
 ; ─────────────────────────────────────────────────────────────────────────────
 
-Var /GLOBAL sandboxAclResult
-Var /GLOBAL installLogHandle
-Var /GLOBAL installScopeLabel
-
+; 三个变量只在安装趟的 customInstall 里用；卸载器趟若声明而不引用会触发 6001，
+; 而 electron-builder 以 /WX 调 makensis（警告即编译失败）。
 !ifndef BUILD_UNINSTALLER
+  Var /GLOBAL sandboxAclResult
+  Var /GLOBAL installLogHandle
+  Var /GLOBAL installScopeLabel
+
   ; 完成页那颗勾选框：MUI 在 !insertmacro MUI_PAGE_FINISH 时读取这几个 define，
   ; 本文件先于模板被 include，时序刚好对。
   !define MUI_FINISHPAGE_SHOWREADME "$INSTDIR\install.log"

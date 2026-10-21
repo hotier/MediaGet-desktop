@@ -24,6 +24,11 @@ minimumReleaseAgeExclude:
   # （1.1.1 = 2026-10-18 上游修小红书解析那一版，发布当天同样落在窗口内）
   - "@mediaget/parse-core@1.0.0 || 1.1.0 || 1.1.1"
   - astro@7.4.1
+
+# 根 package.json 里的 cookie@2.0.1 是布局钉、不是业务依赖：hoisted 下 astro 要
+# cookie@2，@mediaget/parse-core → express 要 cookie@0.7。干净安装会让 0.7.1 占住
+# 根位置，astro 的 `import { parseCookie } from 'cookie'` 在 CI 直接报 "CommonJS
+# module"（本地增量安装反而绿）。直接依赖保证 2.0.1 永远在根、0.7.1 缩进 express。
 overrides:
   # app-builder-lib@26.15.x 声明 "@electron/get": "^3.0.0"，但它的
   # resolveCacheMode() 读的是 ElectronDownloadCacheMode —— 该枚举 3.1.0 才加入。

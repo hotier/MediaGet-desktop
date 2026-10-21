@@ -177,17 +177,20 @@ function parseChangelog(md) {
 
     let rest = headLine;
     let compareUrl = null;
+    let version = "";
     const bracketed = rest.match(/^\[([^\]]+)\]\(([^)]+)\)\s*/);
     if (bracketed) {
-      rest = rest.slice(bracketed[0].length);
+      version = bracketed[1].trim();
       compareUrl = bracketed[2];
+      rest = rest.slice(bracketed[0].length);
+    } else {
+      version = (rest.match(/^\S+/) || [""])[0];
+      rest = rest.slice(version.length).trim();
     }
-    const version = (rest.match(/^\S+/) || [""])[0];
     if (!version) {
       log(`changelog：版本段标题读不出版本号，已跳过：${headLine.slice(0, 60)}`);
       continue;
     }
-    rest = rest.slice(version.length).trim();
     const dated = rest.match(/^\(([^)]*)\)$/);
     if (!dated) log(`changelog：v${version} 缺日期（写 (YYYY-MM-DD) 才能显示「发布于」）`);
 
