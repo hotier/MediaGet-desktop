@@ -214,7 +214,7 @@
 | Button 变体 | `solid`（主操作，1 屏最多 1 个）/ `outline`（次级）/ `ghost`（行内操作，透明底）/ `danger`（`--line-invalid` 描边 + `--danger` 文字，**实心红只用于"清空/删除"确认**）| — |
 | **触控/点击目标** | 行内 ghost 按钮视觉 24px，但 `min-height:32px; padding` 补齐到 **≥ 32px 实际命中区**；纯图标按钮命中区 **40×40** | 现状 `button { padding:6px 14px }` ≈ 30px 高，勉强可用；密集任务行的"取消"按钮是最容易点错的 |
 | **Input / Select** | 高 32px；`--surface-2` 底 + `--line-control` 边；focus 时边框转 `--line-focus` + 1px ring | rest / hover / focus / **invalid**（左边 3px `--danger` 色条 + 下方错误文本）/ disabled |
-| **Textarea（粘贴框）** | 默认 3 行 → **可粘贴后自动增高至 6 行**；focus ring | rest / **有内容（右边出现清除 ✕）** / 识别成功（左侧 3px `--accent`）/ 识别失败（左侧 3px `--warning`） |
+| **Textarea（粘贴框）** | **固定高度 `h-28`（约 4 行），不随文字拉伸**，超出自己滚（2026-10-21 业主指令「固定首页输入框高度，不要随文字自动拉伸」）；focus ring | rest / **有内容（动作条那枚按钮 =「清除」）/ 空态（=「粘贴」，2026-10-21 业主指令：一枚按钮两种身份）** / 识别成功（左侧 3px `--accent`）/ 识别失败（左侧 3px `--warning`）。**框下那行识别提示常驻单行**（空态 `invisible` 占位、`line-clamp-1` 钉死一行），出现/消失不挤下方按钮（2026-10-21 业主「粘贴文字时出现一行文字，把下方按钮都往下挤」） |
 | **Chip 状态徽标** | 高 20px；`--r-sm`；tint 底 + 语义文字 + 12px 图标 | 6 种下载状态（§3.1）+ 平台 chip + `via` 通道 chip |
 | **Card** | pad `--sp-4`/`--sp-5`；`--r-lg`；`--sh-1`；边框 `--line` | static / **interactive**（cursor pointer + hover `--sh-2`） |
 | **Progress** | 主任务 6px、子任务/图集子行 4px；`--r-full` | determinate / **indeterminate**（`total===0` 时的滑动条，现状只有一行 `…` 文本）/ done / error / paused（fill 降透明度 60%） |
@@ -326,7 +326,7 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 2. **图集预览**：`data.images[]` 现状被平铺进 `items`（`ResultCard.tsx:37-39`）但**界面上看不见有几张、长什么样**，用户只能信任按钮上那个数字。改为 **9 张缩略网格 + "+N"**，点击进入模态大图（`--z-modal`）。
 3. **元数据补全**：`data.stat`（view/like/share）、`data.avatar`、`data.music` 全部未使用 —— 在结果卡加一行统计（12px muted，`tabular-nums`），信息密度提升但需处理 `statsUnreliable`（契约字段）：为 true 时该行加 `⚠︎ 数据可能不准` tooltip。
 4. **`embedUrl` 的处理**：现状只在下载按钮旁挂一句 hint（`ResultCard.tsx:110-112`），但 `ParseData.embedUrl` 意味着"这平台只能官方嵌入播放"。建议：隐藏下载按钮，改为 `[↗ 在浏览器中打开播放]`（走 `shell.openExternal` —— 注意 renderer 无此 API，`main/index.ts:219-221` 的 `setWindowOpenHandler` 会拦截 `window.open`，所以用 `<a target="_blank">` 触发它，**零契约变更**）。
-5. **通道标注保持诚实**：`.via-line` 的「本地内核 / mock 骨架」+ 耗时是本项目最好的设计之一（README「结果来源如实标注」），**只优化视觉**（tint 底 chip），**文案不改**。线上回落在 2026-10-18 移除，`fallbackReason` 与「为什么走了线上？」一并删除。
+5. **通道标注保持诚实**：`.via-line` 的来源徽标 + 耗时是本项目最好的设计之一（README「结果来源如实标注」）。**2026-10-21 改口径**：徽标不再一律写「本地内核」，而是报**实际解出这条结果的引擎名**（`viaEngine` → `ENGINE_INFO.label`：mediaget / amagi / yt-dlp）——用户在设置里能挑主引擎，结果卡就得对得上账；`viaEngine` 缺省（旧快照）才退回「本地内核」这个总称，`via === "mock"` 仍是「mock 骨架」（演示数据不许冒充真引擎）。缓存命中保留引擎名：结果缓存与 `engine` 一起存（进程内内存 TTL）。线上回落在 2026-10-18 移除，`fallbackReason` 与「为什么走了线上？」一并删除。
 
 **空态 / 首次使用**
 
@@ -472,9 +472,17 @@ C1 约束下的可行方案有两类（**2026-10-14 业主修订：`lucide-react
 | **快捷键（新增）** | 只读速查表 + `[复制]` + 冲突提示 | 桌面用户最需要的是"粘贴即解析"。§3.4 全表 |
 | **高级/关于** | `BinaryStatusReport`（完整性）、`probe:engines`（体检）、版本、内核模式、`exportRedacted` 导出、日志目录 | ① 现状体检 chips **只有绿/橙两色，`detail` 藏在 `title` 里**（`SettingsPage.tsx:163`）—— 三种真相（本地可解 / 注册表已关闭 / **无引擎 → 不可用**）用两色表达不完，`ipc.ts:249-258` 明确有三种 detail。改为**两态徽标**：绿 `本地内核` / 灰 `不可用`（线上回落在 2026-10-18 移除，不再有第三通道），且**默认展开当前平台清单表格**而非 chip 墙 ② 二进制完整性（`已校验/降级/已拒绝/未找到`）现状已渲染，保留，但"降级"必须给**可执行建议**（现状给的是 `node scripts/fetch-binaries.cjs` 命令行 —— 对终端用户无意义，应仅 dev 构建显示，prod 显示"请重新安装或下载最新版"） |
 
-**保存交互**：现状"底部 `保存设置` 全量提交 + `已保存 ✓` chip 2.5s"。**改为脏状态跟踪**：任一字段变更 → 底部条变 `--warning` tint + 「N 项未保存」+ `保存/放弃`；离开该分组/切页时若脏 → 确认弹层。切页丢设置是现状可复现的问题（`SettingsPage` 的 `s` 是局部 state，切页即卸载 → 未保存内容静默消失）。**例外（2026-10-16 定稿）**：即时生效类不进脏计数——本地缓存统计/清理（读盘结果，不是设置草稿）与平台开关（`settings.platformSwitches` 自己走 `settings:set` 落盘）。它们改了不该让用户以为"还有东西没保存"，也不该被「放弃」撤回。
+**保存交互**：现状"底部 `保存设置` 全量提交 + `已保存 ✓` chip 2.5s"。**改为脏状态跟踪**：任一字段变更 → 底部条变 `--warning` tint + 「N 项未保存」+ `保存/放弃`；离开该分组/切页时若脏 → 确认弹层。切页丢设置是现状可复现的问题（`SettingsPage` 的 `s` 是局部 state，切页即卸载 → 未保存内容静默消失）。**例外（2026-10-16 定稿）**：即时生效类不进脏计数——本地缓存统计/清理（读盘结果，不是设置草稿）与平台开关（`settings.platformSwitches`）、引擎开关（`settings.engineSwitches`）——它们自己走 `settings:set` 落盘。它们改了不该让用户以为"还有东西没保存"，也不该被「放弃」撤回。
 
-**体检表 · 现行形态（2026-10-16 P3）**：`平台 / 提供 / Cookie / 通道` 四列。「提供」是注册表开关（`usePlatformStore.setEnabled`，乐观写 + 失败回滚 + 右上角 toast），翻转后立刻复检 `probe:engines`，「通道」徽标当场跟着变，界面说的和解析走的是同一条真相；`EngineHealth.detail`（三种真相）挂在徽标的**应用内 tooltip** 上，不再是 native `title`。
+**体检表 · 现行形态（2026-10-21）**：`平台 / 提供 / 主引擎 / Cookie` 四列。「提供」是注册表开关（`usePlatformStore.setEnabled`，乐观写 + 失败回滚 + 右上角 toast），翻转后立刻复检 `probe:engines`，界面说的和解析走的是同一条真相。
+
+**主引擎下拉（2026-10-21，取代原「通道」徽标）**：每行一个 `Select`，选项 = `EngineHealth.engineIds` 映射的引擎名（**只列今天真能解该平台的引擎**，顺序即解析试的先后）。选中项成为该平台的主引擎（`settings.platformEngines`，缺键 = `mediaget`）；改选即时落盘并复检，不进脏计数、不受「放弃」影响。原徽标上的 `EngineHealth.detail`（三种真相）保留在**没有引擎可解**时的「不可用」徽标 tooltip 上。用户挑的引擎今天不在场（被引擎开关关掉 / 无二进制）时，下拉显示当前第一可用项，但**不静默改写存档**。**平台「状态」关掉时下拉禁用**（2026-10-21 业主指令）：这一行不提供任何解析引擎能力，主进程在引擎被调用之前就回绝，所以下拉只读——不给「改个引擎就能绕开供给闸门」的错觉。**该列不挂 tooltip**（同日业主指令）：状态与后果在「状态」开关与卡片说明里已经说清，悬停说明是多余的。
+
+**回退要出声（2026-10-21，业主实测后要求）**：主引擎失败、由回退引擎解出时，结果卡只报「实际是谁解的」（如 mediaget），用户会误判成「主引擎没生效」。所以：
+- 首页解析完成时若 `attempts` 里存在「该平台配置的主引擎失败」且最终由别的引擎解出，弹 `toast.info`：「主引擎 amagi 未能解出（bot-gated），已回退 mediaget」——原因优先用 `failType`，没有就报业务码，不往 toast 里塞长文本；
+- 结果卡元数据行加一枚「回退」徽标 + info 图标，悬浮列出**完整轨迹**（`amagi：失败 502（bot-gated）— …；mediaget：成功`）。`attempts`（v32）由主进程给出，**命中缓存/mock 兜底时缺省**，所以那次根本没进选路的情况不会被误报成回退；被动关闭的主引擎同理（没被调用 ≠ 失败）。
+
+**引擎开关（2026-10-21）**：体检表上方一张「引擎开关」卡片，逐引擎一行（`mediaget` / `amagi` / `yt-dlp`，元数据来自 `shared/platforms.ts` 的 `ENGINE_INFO`），末尾一行「失败自动回退」（`settings.engineFallback`，缺省开）。语义与平台开关一致：即时落盘、不进脏计数、不受「放弃」影响，翻转后同一次复检让「主引擎」列当场变。关掉的引擎**在主进程选路与体检里同时消失**——只在界面隐藏 = 假开关；全部关掉时解析如实回 400「所有解析引擎已在设置里关闭」，不拿演示数据冒充成功。回退关掉 = 只试主引擎，它的失败就是最终答复（体检仍列出全部可选项，否则用户没法把主引擎改回来）。
 
 ---
 
@@ -864,11 +872,14 @@ button:disabled{color:var(--text-disabled);border-color:var(--line);opacity:1} /
 | 任务 / 队列 | download task | `DownloadTaskView` / `DownloadStatus` |
 | 图集（一组文件） | group | `groupId` / `EnqueueOutcome` |
 | 历史 | history | `HistoryEntry`（**不含媒体直链**，含作者快照）|
-| 本地内核 | via=`local` | `kernelMode`（app 级）与 `via`（请求级）**不同层级** |
+| 本地内核 | via=`local` | `kernelMode`（app 级）与 `via`（请求级）**不同层级**；2026-10-21 起结果卡直接报 `viaEngine` 的引擎名（mediaget / amagi / yt-dlp），只有缺 `viaEngine` 的旧快照才显示这个总称 |
 | 骨架演示 | via=`mock` | `MG_KERNEL_MODE` |
 | 随包组件完整性 | binary integrity | `BinaryStatusView.integrity`（4 态）|
 | 解析引擎 | engines probe | `probe:engines` / `EngineHealth.detail`（3 种真相）|
 | 提供（平台开关）| `usePlatformStore.setEnabled` / `isEnabled` | `settings.platformSwitches`；界面只说「提供」，代码与契约里叫 switch，供给闸门在主进程 |
+| 引擎开关 | `useEngineStore.setEnabled` / `isEngineEnabled` | `settings.engineSwitches`（缺键=开）；关掉的引擎退出选路与体检，全关时解析 400 |
+| 主引擎（通道下拉）| `usePlatformStore.setPrimary` / `primaryEngineOf` | `settings.platformEngines`（缺键=mediaget）；选中项先试，失败后由 `engineFallback` 决定是否回退 |
+| 失败自动回退 | `useEngineStore.setFallback` | `settings.engineFallback`（缺省开）；关掉只试主引擎 |
 
 ---
 
@@ -1188,7 +1199,9 @@ shadcn 的语义名与本仓角色**不能望文生义**，映射钉死如下：
 - **主按钮与「资源列表」并排靠右，挂在计数徽标那行下方**，尺寸同为 `size="sm"`（此前那枚独立的大下载按钮比首页「解析」按钮大一档，同一动作在两面不同尺寸会被读成两个层级）。文案只由清单生成（`下载 N 项` / `下载`），**入过队也不切换成「再次下载所选」**（2026-10-18 业主「不要切换成再次下载所有，固定下载按钮就行」），勾选全撤时按钮置灰。
 - **「预览」是这一行唯一的读直链的入口，且只读不回显**：链不进标题栏、不进历史、不进日志，弹窗关闭即 `setPreviewEntry(null)` 释放。图片仍走原链（C2 的 `img-src … https:` 放行，`referrerPolicy="no-referrer"`），**音视频换成 `mgpreview:` 代理链**——媒体元素改不了请求头，防盗链那对 `Referer` + 桌面 UA 只有主进程带得上，而渲染层 CSP 也不放外链媒体。业主在「只放开 CSP / 主进程代理取流 / 二者都做」三选一里点了**放开 CSP + 主进程代理取流**：CSP 只多认自家这一个 scheme（不是把 `media-src` 开成 `https:`），取流、带头、Range 转发全在主进程，机制与隐私账见 `ARCHITECTURE.md §6` 第 12 条。
 - **失败态说人话且不甩锅**：「预览加载失败：平台可能拒发，或这条直链已经过期。**下载不受影响。**」——最后那句是这条入口的立项前提（预览失败不等于下不动，v12 的 403 现场续链才是下载的真源）。`kind === "file"` 那档直接说「该类型不支持预览」，不渲染一个空白弹窗。
-- **一处已知限制，写在代码注释而不是界面上**（解释不常驻）：DASH 分轨（B 站那种 `.m4s` 视频流与音频流分开发货）在弹窗里放不出画面，是浏览器解码限制而非链错。
+- **加载态分两段说**（2026-10-21 业主「优化一下视频预览卡的加载动画，有些高质量的视频加载会慢一点」）：`<video>` 是原生的，加载反馈只能自己盖一层——`loadstart` / `waiting` / `stalled` 亮，`canplay` / `playing` 灭，盖 50% 遮罩 + `Loader2` 转圈（`animate-spin`，与首页解析按钮同一枚图标，`role="status"` 让读屏也知道在等）。**文案先说「正在加载预览…」，超过 2.5s 才解释原因**，且原因分开说：需要合流的那条链（`dashAudio`）是本地 ffmpeg 在出片，写「高质量视频要先合并音轨，可能还要十几秒…」；其余是上游没打满带宽，写「网络较慢，正在缓冲…」。一上来就写「要十几秒」等于让秒开的那一半用户白读一句技术说明。**慢的时候不是黑框，是封面在转圈**（2026-10-21 业主「复用视频封面图，在封面图上加载转圈，加载出来之后有一个渐入的动画」）：封面不走 `poster` 属性——poster 画在 `<video>` 自己的盒子里，与首帧同生共死，想「先封面、再淡入画面」就没有调节点。改成独立一层 `<img>`（同一条图片代理、`size-full object-contain`），`previewReady`（首次 `canplay`/`playing`）一到就淡出，底下那块 `opacity 0 → 100` 同时淡入，两层信箱框一致不跳尺寸；遮罩只压 25%，压太重等于白铺这张图。`previewReady` 与 `previewLoading` 必须分开：后者在播放中途卡顿时会再亮（`waiting`），而「第一次出画」只发生一次，重播/拖动不该让画面重新淡入。非主链档位没有对应封面，就只留转圈，不拿别的图冒充。
+- **DASH 分轨（B 站那种 `.m4s`）已不再是限制**（2026-10-21）：预览项带 `audioUrl` 时经主进程 `media-merge` 先并流再回给播放器，机制见 `ARCHITECTURE.md §6` 第 13 条；这条曾经写过「放不出画面，是浏览器解码限制」，合流落地后作废。
+- **预览的音频轨跟随「下载计划那一项」，不在渲染层重判扩展名**（2026-10-21 用户报「YouTube 视频在预览页调不了音量」）：判据早先只看 `.m4s`，而 YouTube 的 DASH 链长在 `googlevideo.com/videoplayback` 上、pathname 里没有扩展名可认，于是「选了高于主链的档」预览时 `<video>` 里根本没有音轨——Chromium 对无音轨的媒体**连音量按钮都不画**，症状就是「没法调音量」。现在 `dashAudio` 直接取 `previewEntry.audioUrl`，与下载共用同一份判定（`dashAudioFor`：`.m4s` **或** 非主链档位），预览与下载不会再一边有声一边没声。
 
 ## 12. 结果卡的通用骨架（2026-10-18，业主指令）
 
@@ -1200,7 +1213,7 @@ shadcn 的语义名与本仓角色**不能望文生义**，映射钉死如下：
 - **预览 = 一扇窗 + 一块固定舞台 + 一条底栏**（2026-10-18 业主「你建议怎么显示预览，最好」后定稿，取代此前并存两扇窗的做法）：入口仍两处——主视觉封面与资源清单里**每一行**（`needsRowPreview` 判据已删）；序列是 `plan` 里 `kind !== "file"` 的全部项，按清单顺序，视频、独立音轨、图片同列，从视频能一路翻到图片。**舞台**固定 `h-[64vh]`（`max-h-[calc(100dvh-10rem)]` 兜底小窗）、`flex items-center justify-center`、`bg-sunken`，媒体 `max-h-full max-w-full object-contain`——必须是 flex 而不是 grid：grid 的隐式行高是 `auto`，`max-h-full` 在不确定高度的行里会退化成「没有上限」，图片/视频按原始像素铺开再被 `overflow-hidden` 裁掉（2026-10-18 实测：640×640 的图落进 854×461 的舞台，底部被裁、视频连 controls 都被裁掉）：翻页时外框不跳，竖图吃满高度，音频与失败说明同样落在舞台中央（不再是大空框里一条细线）。**底栏**固定 `h-9`：左侧等宽字体文件名（截断 + tooltip 全名）、右侧 `2 / 5` 序号；标题/文件名不再进上方标题区，窗格尺寸不随内容长短变化（`DialogTitle`/`DialogDescription` 退成 `sr-only` 供读屏）。翻页按钮沉在舞台两侧（`left-1/right-1`，避开视频 controls），只有一条资源时不摆、尽头用 `disabled`；`←`/`→` 键同样翻页（焦点在媒体控件上时不接管，把方向键留给 seek）。**关闭按钮用内置那枚**（`top-4 right-4`，样式不动），边距由弹窗的 `p-10 pb-7` 提供：上/左/右 40px，**底部 28px**——底栏那一行 16px 文字居中在 36px 条里，`28 + 10 ≈ 38` 与上方 40 的观感对齐（2026-10-18 业主「和灰色背景重合」→「要么改按钮的位置，要么加边距」→「四个方向的边距必须统一」→「下方有一行文字，要把文字占位考虑进去，所以下边距要减小」）。内置 X 占 16~32px、舞台从 40px 起，留 8px 缝。Esc 与遮罩点击仍是另两条关闭路径。开合动效复用作者卡片的 `dialogSlideMotion`，内容等退场动画结束再释放。不支持预览的 `file` 行不挂预览（不给点了没反应的按钮）。
 - **动作条文案仍由清单生成**（`下载 N 项` / `下载`），入过队也不改成「再次下载所选」（反馈统一走 toast）。**构成摘要已于 2026-10-18 移除**（业主指令「结果卡片的 视频 1也要移除」）：按钮项数已说明「点下去会得到几颗」，`summarize` 那行「视频 2 · 图 2」是重复信息，函数随展示一并撤掉；`资源列表` 同批改靠左（`me-auto` 把清晰度与下载挤到右侧）。`embedOnly` 不给下载按钮，只给「在浏览器中打开播放」；纯文字给「复制文字 / 打开原页面」，不渲染假下载。
 - **作者层回来**：此前按「精简」撤掉的作者行，这次以「确认是不是这个人和这条作品」的理由恢复为头像 + 昵称，作者级统计仍不上卡（`buildAuthorSnapshot` 只取展示所需）。**发布日期已于 2026-10-18 移出卡面**（业主指令）：各平台的 `time` 填法三套单位、时区与「发布 vs 解析」的解释成本高于卡面收益，而解析那一刻的时刻照旧随历史与导出留档（`pickPublishedAt` 仍服务于 `history`/导出，只是结果卡不再消费）。
-- **清晰度在下载动作旁**（2026-10-18 业主「设置页配置的默认清晰度只是在用户不主动选择下的清晰度，用户依然可以再次选择」）：动作条放一枚 `w-28` 的 `Select`（`aria-label="下载清晰度"`），选项就是 `buildQualityPlan` 的 `options`，默认值取设置里的 `defaultQuality` 策略（`highest` / `lowest` / 内核主直链档）算出的 `primaryIndex`。选择器与清单共用同一份 `qualityOptions`，切换后文件名后缀与按钮项数当场跟着变；只有一项可选时不渲染这枚下拉（包括纯图集结果）。资源清单里不再重复放清晰度 chip。
+- **清晰度在下载动作旁**（2026-10-18 业主「设置页配置的默认清晰度只是在用户不主动选择下的清晰度，用户依然可以再次选择」）：动作条放一枚 `Select`（`aria-label="下载清晰度"`；宽度 `w-[5.5rem]` + `px-2`，2026-10-21 业主「清晰度下拉框宽度减小」，从 `w-28` 收窄，内边距同步收是因为固定开销已占 40px；展开列表同批收窄——`SelectContent` 加 `min-w-0` 去掉基座 `min-w-[8rem]` 地板，靠 Viewport 的 `min-w-[var(--radix-select-trigger-width)]` 与 trigger 同宽），选项就是 `buildQualityPlan` 的 `options`，默认值取设置里的 `defaultQuality` 策略（`highest` / `lowest` / 内核主直链档）算出的 `primaryIndex`。选择器与清单共用同一份 `qualityOptions`，切换后文件名后缀与按钮项数当场跟着变；只有一项可选时不渲染这枚下拉（包括纯图集结果）。资源清单里不再重复放清晰度 chip。
 - **「仅音频」是排他档**：选中它时，主视频与各分 P 视频都不进计划，计划里只剩音频那一项；否则按钮上的「下载 N 项」会与用户预期不符。
 - **测试口径**：`tests/result-card.test.ts` 覆盖作者直出、动作条无预览按钮、多档清晰度出选择器（单档不出）、视频+图片并存但**不铺缩略条/分 P 明细**、纯图集只留封面入口（`aria-label="预览图片"`）；`tests/resource-mix.test.ts` 钉住去重计数与封面优先级；`tests/download-plan.test.ts` 钉住「仅音频」排他与默认档 URL 去重。
 

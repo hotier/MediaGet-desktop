@@ -16,6 +16,8 @@
  *   renderer/public/brand/logo-lockup-*.png ← 应用内与落地页的横版字标（两份墨色，见下）
  *   renderer/public/brand/favicon.png     ← 窗口/页签图标（64）
  *   landing/public/og.png                 ← 分享卡 1200×630（落地页 og:image）
+ *   build/installerSidebar.bmp            ← NSIS 完成页侧边图 164×314（electron-builder 默认取用）
+ *   build/installerHeader.bmp             ← NSIS 内页顶部图 150×57（同上）
  *
  * 用法：
  *   node scripts/make-icons.cjs --sheet   # 只出 build/_sheet.png 对照表（16/32/48/128/256 六档），人眼挑
@@ -42,6 +44,8 @@ const SRC = {
   lockup: "01_logo_horizontal_black_white.png",
   /** 图形：白底黑墨，225×180。应用图标与托盘里的那枚 M（比 07 的大，重采样起点更干净） */
   mark: "05_icon_black_white.png",
+  /** 竖版字标：黑墨白底，267×225（图形叠字标）。安装器侧边图用它——164px 宽的窄条里横版会糊 */
+  vertical: "03_logo_vertical_black_white.png",
 };
 
 /** 图标版式：圆角方 tile + 居中图形。数值取自母版实测（见文件末尾的 --sheet 对照表） */
@@ -341,6 +345,39 @@ function encodeIco(entries) {
   return Buffer.concat([head, ...dirs, ...entries.map((e) => e.png)]);
 }
 
+/**
+ * 24 位未压缩 BMP（NSIS 的安装器图只认位图，不认 PNG）。
+ * 两个必须遵守的格式细节：像素**自下而上**、通道顺序是 **BGR**，且每行补齐到 4 字节；
+ * 尺寸也必须精确（侧边图 164×314、顶部图 150×57），MUI 不会替我们裁。
+ */
+function encodeBmp(width, height, rgba) {
+  const rowSize = Math.ceil((width * 3) / 4) * 4;
+  const pixelBytes = rowSize * height;
+  const out = Buffer.alloc(54 + pixelBytes);
+  out.write("BM", 0, "ascii");
+  out.writeUInt32LE(54 + pixelBytes, 2); // 文件总长
+  out.writeUInt32LE(54, 10); // 像素数据偏移
+  out.writeUInt32LE(40, 14); // BITMAPINFOHEADER
+  out.writeInt32LE(width, 18);
+  out.writeInt32LE(height, 22); // 正数 = 自下而上
+  out.writeUInt16LE(1, 26); // planes
+  out.writeUInt16LE(24, 28); // bpp
+  out.writeUInt32LE(0, 30); // BI_RGB
+  out.writeUInt32LE(pixelBytes, 34);
+  out.writeInt32LE(2835, 38); // ≈72 DPI
+  out.writeInt32LE(2835, 42);
+  for (let y = 0; y < height; y++) {
+    const src = (height - 1 - y) * width * 4;
+    const dst = 54 + y * rowSize;
+    for (let x = 0; x < width; x++) {
+      out[dst + x * 3] = rgba[src + x * 4 + 2];
+      out[dst + x * 3 + 1] = rgba[src + x * 4 + 1];
+      out[dst + x * 3 + 2] = rgba[src + x * 4];
+    }
+  }
+  return out;
+}
+
 // ————————————————————————————————————————————————
 // 合成：圆角 tile 上的图形 / 透明底上的字标 / 分享卡
 // ————————————————————————————————————————————————
@@ -459,6 +496,58 @@ function renderOg(lockupMask, markMask) {
   return { w: W, h: H, rgba: canvas };
 }
 
+/** 实底画布（安装器图不需要透明：MUI 直接铺位图，带 alpha 的 BMP 反而不被认） */
+function solidCanvas(w, h, rgb) {
+  const canvas = new Uint8ClampedArray(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    canvas[i * 4] = rgb[0];
+    canvas[i * 4 + 1] = rgb[1];
+    canvas[i * 4 + 2] = rgb[2];
+    canvas[i * 4 + 3] = 255;
+  }
+  return canvas;
+}
+
+/** 把 renderLockup 出来的带 alpha 墨迹叠到实底画布上（裁剪掉越界部分） */
+function blitOnto(canvas, W, H, art, ox, oy) {
+  for (let y = 0; y < art.h; y++) {
+    const dy = oy + y;
+    if (dy < 0 || dy >= H) continue;
+    for (let x = 0; x < art.w; x++) {
+      const dx = ox + x;
+      if (dx < 0 || dx >= W) continue;
+      const a = art.rgba[(y * art.w + x) * 4 + 3] / 255;
+      if (a <= 0) continue;
+      const j = (dy * W + dx) * 4;
+      const s = (y * art.w + x) * 4;
+      for (let k = 0; k < 3; k++) canvas[j + k] = Math.round(canvas[j + k] * (1 - a) + art.rgba[s + k] * a);
+    }
+  }
+}
+
+/**
+ * NSIS 安装器两图（尺寸是 MUI 写死的，改一个像素就会糊）：
+ * - 侧边图 164×314：完成页用，深底 + 白色**竖版**字标（164px 宽放横版字标会缩成一团）。
+ * - 顶部图 150×57：目录页/安装页用，白底 + 近黑**横版**字标，右对齐留 10px 呼吸
+ *   （MUI 把顶部图贴齐右边缘，白底让它与页头无缝）。
+ */
+function renderInstallerArt(verticalMask, lockupMask) {
+  const SW = 164;
+  const SH = 314;
+  const sidebar = solidCanvas(SW, SH, TILE_COLOR);
+  const markH = 108;
+  const vart = renderLockup(verticalMask, markH, MARK_COLOR);
+  blitOnto(sidebar, SW, SH, vart, Math.round((SW - vart.w) / 2), 92);
+
+  const HW = 150;
+  const HH = 57;
+  const header = solidCanvas(HW, HH, [255, 255, 255]);
+  const hart = renderLockup(lockupMask, 30, lockupMask.inkColor);
+  blitOnto(header, HW, HH, hart, HW - hart.w - 10, Math.round((HH - hart.h) / 2));
+
+  return { sidebar: { w: SW, h: SH, rgba: sidebar }, header: { w: HW, h: HH, rgba: header } };
+}
+
 // ————————————————————————————————————————————————
 // 检视表：一条命令看清 16/24/32/48/128/256 各档在浅底与深底上的样子
 // ————————————————————————————————————————————————
@@ -506,6 +595,7 @@ function buildSheet(mark) {
 function main() {
   const mark = cropMask(inkMask(decodePng(readFileSync(join(BRAND, SRC.mark)))));
   const lockup = cropMask(inkMask(decodePng(readFileSync(join(BRAND, SRC.lockup)))));
+  const vertical = cropMask(inkMask(decodePng(readFileSync(join(BRAND, SRC.vertical)))));
 
   if (process.argv.includes("--sheet")) {
     mkdirSync(BUILD, { recursive: true });
@@ -533,10 +623,17 @@ function main() {
   const og = renderOg(lockup, mark);
   writeFileSync(join(LANDING_PUBLIC, "og.png"), encodePng(og.w, og.h, og.rgba));
 
+  // 安装器两图：文件名是 electron-builder 的默认落点（buildResources 目录下），
+  // 文件名一对上它就自己接走 —— package.json 里不需要再写 installerSidebar/Header。
+  const art = renderInstallerArt(vertical, lockup);
+  writeFileSync(join(BUILD, "installerSidebar.bmp"), encodeBmp(art.sidebar.w, art.sidebar.h, art.sidebar.rgba));
+  writeFileSync(join(BUILD, "installerHeader.bmp"), encodeBmp(art.header.w, art.header.h, art.header.rgba));
+
   return {
     lockup: `${onLight.w}x${onLight.h}`,
     mark: `${mark.w}x${mark.h}`,
     icoBytes: ico.length,
+    installerArt: `${art.sidebar.w}x${art.sidebar.h} + ${art.header.w}x${art.header.h}`,
   };
 }
 

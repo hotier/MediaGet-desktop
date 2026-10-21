@@ -1,41 +1,47 @@
 name: Release
 
 # 触发方式：本地 `pnpm release`（release-it）跑完验收门 → 升版本 + 写 CHANGELOG +
-# 打 `vX.Y.Z` 附注标签 + push。标签一到 GitHub，本工作流就负责出包与发布 ——
+# 打 `vX.Y.Z` 附注标签 + push。标签一到 GitHub，本工作流负责验收、出包、发布 ——
 # 「什么时候算一版」是人敲命令决定的，「这一版是什么号」由 commit 前缀推导。
+#
+# 也支持手动干跑：Actions 里点 Run workflow（默认 dry_run=true），只跑到出包为止，
+# 不创建 Release —— 用来在真发版前确认流水线还活着。
 #
 # 落地页不在这里：Pages 部署归 landing.yml 单独负责（只改落地页就上线，不必等发版）。
 # 发版那一次 commit 会改 package.json，命中 landing.yml 的 paths，落地页顺手重建。
+#
+# 三个 job 的顺序是 verify → build → publish：验收与出包都调可复用工作流，与 ci.yml
+# 跑的是同一份实现（这里再跑一遍验收是有意的：tag 可能指向 CI 从未跑过的 commit）。
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 只验收到出包为止，不创建 Release（发版前演练）
+        type: boolean
+        default: true
+
+# Release 同一时刻只允许一个在跑：两次发布撞在一起会互相覆盖附件。
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   verify:
-    name: 发版前复检（typecheck / lint / test）
-    runs-on: windows-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      # pnpm 版本不在此硬编码：action-setup 读 package.json 的 packageManager 字段。
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
-      - run: pnpm run typecheck
-      - run: pnpm run lint
-      - run: pnpm run test
+    uses: ./.github/workflows/_verify.yml
+
+  build:
+    needs: verify
+    uses: ./.github/workflows/_build-win.yml
 
   publish:
-    name: 打包并发布该版本
-    needs: verify
+    name: 发布该版本
+    needs: build
+    # 手动触发默认只演练：分支上的 commit 与 tag/版本号断言必然对不上
+    if: github.event_name == 'push' || inputs.dry_run == false
     runs-on: windows-latest
     permissions:
       # `gh release create/upload` 要写 Release 与附件
@@ -44,15 +50,6 @@ jobs:
       TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-      # pnpm 版本不在此硬编码：action-setup 读 package.json 的 packageManager 字段。
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      # 这里不能设 ELECTRON_SKIP_BINARY_DOWNLOAD：electron-builder 要真 electron 分发件。
-      - run: pnpm install --frozen-lockfile
 
       # 防呆：release-it 先写 package.json 再打 tag，正常一定一致；不一致说明 tag 是
       # 手打的或版本被改过 —— 趁早红，别发出一个「文件名 v0.3.0 / 应用自报 0.2.0」的包。
@@ -66,16 +63,13 @@ jobs:
           fi
           echo "OK $TAG"
 
-      - name: Fetch yt-dlp / ffmpeg binaries (pinned + verified)
-        run: node scripts/fetch-binaries.cjs
-      - name: Verify binaries + manifest before packaging
-        run: node scripts/fetch-binaries.cjs --verify-only --require-all
-
-      # --publish never 是刻意的：产物此刻还不属于任何 Release。若让 electron-builder
-      # 自己 publish，它会另建一个 Release，和下面 `gh release create` 撞成两个（且
-      # 标题/说明不受控）。发布动作统一由本 job 末尾一次完成。
-      - name: Build app + installer
-        run: pnpm run build:app && pnpm exec electron-builder --win --publish never
+      # 出包在 build job 里做完了：取回它的 artifact（*.exe / latest.yml / *.blockmap），
+      # 落回 release/，下面那条 gh 命令与以前完全一致。
+      - name: Download installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: mediaget-desktop-win
+          path: release
 
       # 取 CHANGELOG 第一节（release-it 每次把新版本写在最顶）作为 Release 正文；
       # 对不上当前 tag 就退回占位文案，别把上一版的说明发出去。
@@ -103,6 +97,7 @@ jobs:
           shopt -s nullglob
           # latest.yml 是 electron-updater 的更新源清单，必须与安装包同在一个 Release；
           # 缺它则应用内「检测更新」永远查不到版本（README P6 的端到端前置）。
+          # 缺附件这件事已在 `_build-win.yml` 的断言里挡过一次，这里是上传前的最后一道。
           assets=(release/*.exe release/*.yml release/*.blockmap)
           if [ ${#assets[@]} -eq 0 ]; then
             echo "release/ 下没有可上传产物" >&2
@@ -121,4 +116,3 @@ jobs:
           fi
           gh release view "$TAG" --json tagName,name,assets \
             --jq '{tag: .tagName, name: .name, assets: [.assets[].name]}'
-

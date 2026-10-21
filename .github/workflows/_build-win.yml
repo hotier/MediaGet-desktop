@@ -1,0 +1,87 @@
+name: Build Windows installer
+
+# 可复用工作流：拉随包二进制 → 强校验 → 出 NSIS/portable → 断言产物 → 交 artifact。
+# **只打包、绝不发布**：发布是 release.yml 末尾一次 gh release create 的事。
+#
+# 为什么打包与发布必须分开：这两段以前是两份拷贝（ci.build-win 与 release.publish），
+# 已经漂移过 —— 资源落地断言与 latest.yml/blockmap 断言只长在 CI 那份上，于是
+# 「CI 绿、发出去的 Release 少一个附件」是结构上可能的。现在两边跑的是同一段。
+
+on:
+  workflow_call:
+    inputs:
+      # 下划线而非连字符：表达式里 `inputs.a-b` 会被当成减法，别赌解析器的宽容度
+      artifact_name:
+        description: 产物 artifact 名（发布侧按这个名字取回，默认值与 release.yml 对齐）
+        type: string
+        default: mediaget-desktop-win
+
+jobs:
+  build:
+    name: 出包（publish never）
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 这里不能跳过 electron 二进制：electron-builder 要真分发件。
+      - uses: ./.github/actions/setup
+        with:
+          skip_electron: "0"
+
+      # 固定 tag + 强校验 SHA-256，并产出 resources/bin/manifest.json（首启校验用）。
+      # 不要退回 `curl -sL -o .../latest/download/...`：不带 --fail 时 404 的 HTML
+      # 错误页会被原样写成 .exe，构建成功但产物是垃圾（静默投毒）。
+      - name: Fetch yt-dlp / ffmpeg binaries (pinned + verified)
+        run: node scripts/fetch-binaries.cjs
+
+      # 守门人：manifest.json 是运行时完整性校验的唯一基线，缺了它应用会静默降级成
+      # 「只定位不校验」。在打包前断言清单在位且与二进制自洽，让问题在构建期暴露。
+      - name: Verify binaries + manifest before packaging
+        run: node scripts/fetch-binaries.cjs --verify-only --require-all
+
+      # --publish never 是刻意的：package.json 的 build.publish 配了 GitHub provider，
+      # electron-builder 默认会自己上传 Release（没有 token 时报 "GitHub Personal Access
+      # Token is not set"，有 token 时会另建一个 Release 撞成两个）。所以不复用
+      # `pnpm run build`，显式 never；发布动作统一由 release.yml 完成。
+      - name: Build app + installer
+        run: pnpm run build:app && pnpm exec electron-builder --win --publish never
+
+      # 产物自检其一：安装包里必须真的带上 bin/ 与 manifest.json（extraResources 配错
+      # 时构建仍会成功，但用户机器上两个二进制都不可用）。
+      - name: Assert packaged resources landed in the installer
+        shell: pwsh
+        run: |
+          $unpacked = Get-ChildItem -Path release -Recurse -Directory -Filter 'win-unpacked' | Select-Object -First 1
+          if (-not $unpacked) { throw "release/win-unpacked 不存在：打包产物缺失" }
+          $bin = Join-Path $unpacked.FullName 'resources\bin'
+          foreach ($f in @('yt-dlp.exe','ffmpeg.exe','manifest.json')) {
+            $p = Join-Path $bin $f
+            if (-not (Test-Path $p)) { throw "安装包内缺少 resources\bin\$f" }
+            Write-Host "  OK $f ($((Get-Item $p).Length) 字节)"
+          }
+
+      # 产物自检其二：更新链路的随包件。latest.yml 缺了，应用内「检测更新」永远查不到
+      # 版本；*.blockmap 缺了，增量更新静默退化成整包下载。这两样以前只在发版那步才
+      # 发现（而且「少传一个附件」并不会让发版红），现在在打包处就断。
+      - name: Assert installer + update manifest
+        shell: pwsh
+        run: |
+          $setup = Get-ChildItem -Path release -Filter 'MediaGet-Setup-*.exe' -ErrorAction SilentlyContinue
+          if (-not $setup) { throw "release/ 下没有 NSIS 安装包（MediaGet-Setup-*.exe）：目录页/安装日志都落在它上面" }
+          $yml = Join-Path 'release' 'latest.yml'
+          if (-not (Test-Path $yml)) { throw "release/ 下缺少 latest.yml：应用内检测更新会永远查不到版本" }
+          $blockmap = Get-ChildItem -Path release -Filter '*.exe.blockmap' -ErrorAction SilentlyContinue
+          if (-not $blockmap) { throw "release/ 下缺少 *.exe.blockmap：增量更新会退化成整包下载" }
+          Write-Host "  OK $($setup[0].Name) ($($setup[0].Length) 字节) + latest.yml + $($blockmap[0].Name)"
+
+      # 只留发布所需的三类文件：win-unpacked 有几万个文件、体积数倍于安装包，
+      # 传上去既慢又没人下载。
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: |
+            release/*.exe
+            release/*.yml
+            release/*.blockmap
+          if-no-files-found: error
+          retention-days: 14

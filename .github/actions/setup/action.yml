@@ -1,0 +1,30 @@
+name: setup-workspace
+description: >-
+  pnpm + Node + 依赖安装。全仓唯一一份环境准备，六个 job 都走它 ——
+  改 Node 版本或 pnpm 策略时只动这里，不会出现「ci 升了 release 没升」。
+  checkout 必须在调用方先做：composite action 本身要先被 checkout 下来才能用。
+
+inputs:
+  # 下划线而非连字符：表达式里 `inputs.a-b` 会被当成减法
+  skip_electron:
+    description: >-
+      "1" = 跳过 Electron 二进制下载（不需要真 electron 的 job 省 ~100MB）。
+      默认跳过；出包 job 必须传 "0"，否则 electron-builder 找不到分发件。
+    default: "1"
+
+runs:
+  using: composite
+  steps:
+    # pnpm 版本不在这里硬编码：action-setup 读 package.json 的 packageManager，
+    # 于是本机与 CI 永远同一档。
+    - uses: pnpm/action-setup@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 22
+        cache: pnpm
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+      env:
+        # 空串（而不是 "0"）= 不跳过。字符串 "0" 是真值，直接透传会让出包 job 也跳过下载。
+        ELECTRON_SKIP_BINARY_DOWNLOAD: ${{ inputs.skip_electron == '1' && '1' || '' }}

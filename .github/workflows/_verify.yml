@@ -1,0 +1,23 @@
+name: Verify
+
+# 可复用工作流：typecheck + lint + test（全离线）。
+# 被 ci.yml（push main / PR）与 release.yml（tag）各调一次 —— **执行两次是有意的**
+# （tag 可能指向 CI 从未跑过的 commit，发版前自检是保险），但内容只有这一份：
+# 将来加门禁步骤不会只加一半。
+
+on:
+  workflow_call:
+
+jobs:
+  verify:
+    name: typecheck + lint + test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: Typecheck
+        run: pnpm run typecheck
+      - name: Lint
+        run: pnpm run lint
+      - name: Test (vitest, offline)
+        run: pnpm run test

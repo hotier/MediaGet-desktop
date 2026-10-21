@@ -46,15 +46,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # pnpm 版本不硬编码：action-setup 读 package.json 的 packageManager 字段
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-        env:
-          ELECTRON_SKIP_BINARY_DOWNLOAD: 1
+      # 环境准备与其余 job 共用一份（composite action）；落地页用不到 electron 二进制，
+      # 默认就跳过（pnpm 版本由 action-setup 读 package.json 的 packageManager，不硬编码）
+      - uses: ./.github/actions/setup
 
       # 离线档：构建前会先把 renderer/public 的 logos 与 brand 镜像到 landing/public。
       # 不引网络，落到 Pages 上的就是仓库此刻的页面。
