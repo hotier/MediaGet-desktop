@@ -107,6 +107,6 @@
 
 ## 8. 与 CI 的分工
 
-- CI（push / PR）跑 L0 + L3，`build-win` 再跑 L4 与 `verify:binaries:release` + 安装包内容断言。
+- CI（push / PR）跑 L0 + L3，`build-win` 再跑 L4 与 `verify:binaries:release` + 安装包内容断言。这两段各只有一份实现（`.github/workflows/_verify.yml` / `_build-win.yml`），`ci.yml` 与 `release.yml` 都只是调用方——加门禁改那两个文件，别在调用方里抄步骤。
 - 本地按本文件选档，**把 L3 之外的兜底交给 CI**：单 PR 里出现「CI 红、本地绿」时，
   先对齐档位差异（多半是漏了 L2 或 L4），而不是给本地加跑更多遍。
