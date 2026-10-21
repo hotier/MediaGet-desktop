@@ -19,26 +19,6 @@ jobs:
   test:
     uses: ./.github/workflows/_verify.yml
 
-  landing:
-    name: 落地页构建（离线档 + 产物自检）
-    # 只在 PR 上跑：push 到 main 由 landing.yml 负责，它构建完同一份产物直接发 Pages，
-    # 这里不必把同一件事再做一遍。
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      # 落地页只有 build + verify 两步，不值得为它再抽一层可复用工作流
-      # （那要多一次 artifact 中转）；环境准备仍走同一个 composite。
-      - uses: ./.github/actions/setup
-      # 离线档：不碰 GitHub 也要能构建（版本取 package.json）。这里验的是页面本身
-      # （astro.config / index.astro / 图标镜像）没坏。
-      - run: pnpm run landing:build
-      # 自检与 landing.yml 共用一份脚本：五页齐备、资源引用文档相对、每个本地引用
-      # 都真的落盘、平台卡数量与页内「支持 N 个平台」自洽。构建成功但线上是坏的那类
-      # 静默失败都在这里变红。
-      - name: Verify artifact
-        run: node scripts/verify-landing.cjs
-
   build-win:
     # 只在 main 上出包（PR 上出包没有消费者，还白烧 Windows runner 的分钟数）
     needs: test

@@ -169,7 +169,7 @@
   - `.github/actions/setup/action.yml`（composite）：pnpm + Node + `pnpm install` 的唯一一份环境准备，六个 job 共用；输入 `skip_electron`（默认 `"1"`，出包 job 必须传 `"0"`，否则 electron-builder 找不到分发件）。**checkout 留在各工作流**——composite 自己要先被 checkout 下来才能 `uses`。
   - `_verify.yml`（`workflow_call`）：typecheck + lint + vitest（全离线）。
   - `_build-win.yml`（`workflow_call`）：拉固定版本二进制并强校验 → `electron-builder --win --publish never` → 断言安装包内 `resources/bin` 的 `yt-dlp.exe`/`ffmpeg.exe`/`manifest.json` 齐备 → 断言 `MediaGet-Setup-*.exe` + `MediaGet-*.7z` + `latest.yml` + `*.exe.blockmap` 都在 → 只把这四类文件交 artifact（`win-unpacked` 不传）。
-  - `ci.yml`（push `main` / PR）：`test` → `_verify`；`build-win`（仅 main）→ `_build-win`；`landing`（仅 PR）跑落地页构建 + `verify-landing.cjs`。
+  - `ci.yml`（push `main` / PR）：`test` → `_verify`；`build-win`（仅 main）→ `_build-win`。落地页不在 CI 里验——构建与产物自检只在 `landing.yml` 部署链路跑（2026-10-21 移除 PR 上的重复构建）。
   - `release.yml`（push `v*` 标签，或手动 `workflow_dispatch` 干跑）：`verify` → `_verify`（tag 可能指向 CI 从未跑过的 commit，故复检一次）；`build` → `_build-win`；`publish` 取回 artifact、断言 tag 与 `package.json` 一致、用 `gh release create` 把 `*.exe` + `*.7z` + `latest.yml` + `*.blockmap` 传到同一个 Release。`latest.yml` 与安装包不同 Release，应用内「检测更新」就永远查不到版本。手动触发默认 `dry_run=true`：只跑到出包为止，用来在真发版前确认流水线还活着。
   - `landing.yml`（push `main` 且命中 paths / 手动）与 `binaries-watch.yml`（每周一 cron）职责独立，不参与上面两条链路。
   - 内核腐化告警不再靠并列检出冒烟（`smoke:kernel` 已随 2982811 拆桥删除）：`tests/kernel-sync.test.ts` 直接对工件 `dist/index.d.ts` 断言契约面，装不上依赖即红。
