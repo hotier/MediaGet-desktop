@@ -38,6 +38,22 @@ overrides:
   # 上游修好（声明改为 ^3.1.0 或更高）后可删本 override。
   "@electron/get@^3.0.0": "3.1.0"
 
+# app-builder-lib@26.15.3 的 pnpm 收集器在 hoisted 布局下打错包，补丁修两处：
+# 1) 它用 `pnpm config list` 判断是否 hoisted，只认 `node-linker=hoisted`，而 pnpm 11
+#    输出 JSON（"nodeLinker": "hoisted"），于是误判成隔离布局并关掉向下搜索；
+# 2) 即便判定正确，`pnpm list` 仍报 `.pnpm/<pkg>@<ver>/node_modules/<pkg>` 虚拟路径，
+#    收集器先按它查、向上搜到根上同名包后经「接受范围外版本」兜底返回，永远回不到
+#    rootDir 做向下搜索。
+# 两者叠加的后果：把 dev 链的 https-proxy-agent@9.1.0 当成 axios 要的 5.0.1、把 amagi
+# 要的 zod@4.6.5 换成根上的 zod@3.25.76 打进 asar（启动即 ERR_MODULE_NOT_FOUND /
+# schema.meta is not a function）。补丁同时识别 JSON 与旧格式、并跳过不存在的 parent
+# 路径；上游能识别 pnpm 11 输出与 hoisted 虚拟路径后可删。
+# 3) 另附一处产品口径：NSIS「安装选项」页检测到已有安装时会写「已经存在一个安装到当前
+#    用户的安装.(路径) / 即将重新安装/升级.」（multiUserUi.nsh 的 InstModeChange），业主
+#    不要这行提示，安装态标签改为留空；卸载器那一支不动。
+patchedDependencies:
+  app-builder-lib@26.15.3: patches/app-builder-lib@26.15.3.patch
+
 # 注意：不要在这里写死 storeDir 绝对路径（如 D:\dsh_store\.pnpm-store）——
 # 那是开发机专属路径，泄漏进共享配置后换机器/CI 会失效。需要自定义 store
 # 位置时用环境变量 PNPM_STORE_DIR 或 `pnpm config set store-dir`，属本机配置。

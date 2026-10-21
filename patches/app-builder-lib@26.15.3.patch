@@ -1,0 +1,62 @@
+diff --git a/out/node-module-collector/nodeModulesCollector.js b/out/node-module-collector/nodeModulesCollector.js
+index eb7914fead5762fbbf40ae836d9429d51daddfc6..e49f20206d3b4a18e39fcad255616bee97ab03d7 100644
+--- a/out/node-module-collector/nodeModulesCollector.js
++++ b/out/node-module-collector/nodeModulesCollector.js
+@@ -27,8 +27,14 @@ class NodeModulesCollector {
+                 builder_util_1.log.debug({ manager }, "unable to determine node-linker setting; assuming non-hoisted (virtual store) layout");
+                 return false;
+             }
+-            const lines = Object.fromEntries(config.split("\n").map(line => line.split("=").map(s => s.trim())));
+-            if (lines["node-linker"] === "hoisted") {
++            // pnpm 11 prints `config list` as JSON (`"nodeLinker": "hoisted"`), while older
++            // releases printed `node-linker=hoisted`. Accept both, otherwise hoisted layouts
++            // are misdetected and nested conflicting versions are silently replaced by the
++            // hoisted root version (e.g. amagi's zod@4 swapped for the app's zod@3).
++            const hoisted =
++                /"nodeLinker"\s*:\s*"hoisted"/.test(config) ||
++                /(^|\n)\s*node-linker\s*[=:]\s*["']?hoisted["']?/.test(config);
++            if (hoisted) {
+                 builder_util_1.log.debug({ manager }, "node_modules are hoisted");
+                 return true;
+             }
+diff --git a/out/node-module-collector/pnpmNodeModulesCollector.js b/out/node-module-collector/pnpmNodeModulesCollector.js
+index 8853912e013d3769f3e763d06720a94091a7ffaa..9cf45a74e3ae73f69b78c7b3dbe7d0fedb727013 100644
+--- a/out/node-module-collector/pnpmNodeModulesCollector.js
++++ b/out/node-module-collector/pnpmNodeModulesCollector.js
+@@ -76,7 +76,13 @@ class PnpmNodeModulesCollector extends nodeModulesCollector_1.NodeModulesCollect
+         // land at `<root>/node_modules/A/node_modules/B` — downward BFS is needed to find them.
+         const skipDownwardSearch = !(await this.isHoisted.value);
+         const promise = (async () => {
+-            const fromDep = parentPath ? await this.cache.locatePackageVersion({ pkgName, parentDir: parentPath, requiredRange, skipDownwardSearch }) : null;
++            // pnpm keeps reporting `.pnpm/<pkg>@<ver>/node_modules/<pkg>` paths even with
++            // `nodeLinker: hoisted`, where that virtual store does not exist on disk. Searching
++            // from such a phantom parent only walks upward into the hoisted root copy and returns
++            // it through the "accept installed version outside the declared range" pass, so the
++            // rootDir downward search never runs (e.g. amagi's zod@4 swapped for the root zod@3).
++            const usableParent = parentPath && (await this.cache.exists[parentPath]) ? parentPath : null;
++            const fromDep = usableParent ? await this.cache.locatePackageVersion({ pkgName, parentDir: usableParent, requiredRange, skipDownwardSearch }) : null;
+             if (fromDep) {
+                 return fromDep;
+             }
+diff --git a/templates/nsis/multiUserUi.nsh b/templates/nsis/multiUserUi.nsh
+index 52a83df6f654d3634be226db36010545bab9467f..37a4118a98a858e1142a696d663526aabfbe7627 100644
+--- a/templates/nsis/multiUserUi.nsh
++++ b/templates/nsis/multiUserUi.nsh
+@@ -200,7 +200,7 @@ Var isForceCurrentInstall
+ 		${if} "$1" == "0" ; current user
+ 			${if} $hasPerUserInstallation == "1"
+ 				!ifndef BUILD_UNINSTALLER
+-					StrCpy $7 "$(perUserInstallExists)($perUserInstallationFolder)$\r$\n$(reinstallUpgrade)"
++					StrCpy $7 ""
+ 				!else
+ 					StrCpy $7 "$(perUserInstall)($perUserInstallationFolder)$\r$\n$(uninstall)"
+ 				!endif
+@@ -211,7 +211,7 @@ Var isForceCurrentInstall
+ 		${else} ; all users
+ 			${if} $hasPerMachineInstallation == "1"
+ 				!ifndef BUILD_UNINSTALLER
+-					StrCpy $7 "$(perMachineInstallExists)($perMachineInstallationFolder)$\r$\n$(reinstallUpgrade)"
++					StrCpy $7 ""
+ 				!else
+ 					StrCpy $7 "$(perMachineInstall)($perMachineInstallationFolder)$\r$\n$(uninstall)"
+ 				!endif
