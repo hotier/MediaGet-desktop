@@ -134,7 +134,8 @@
         "nsis",
         "portable",
         "7z"
-      ]
+      ],
+      "artifactName": "${productName}-${version}.${ext}"
     },
     "nsis": {
       "oneClick": false,
@@ -150,9 +151,6 @@
         "en_US"
       ],
       "artifactName": "${productName}-Setup-${version}.${ext}"
-    },
-    "7z": {
-      "artifactName": "${productName}-${version}.${ext}"
     },
     "portable": {
       "artifactName": "${productName}-Portable-${version}.${ext}"

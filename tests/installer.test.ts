@@ -17,9 +17,9 @@ const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 const PKG = JSON.parse(readFileSync(`${ROOT}package.json`, "utf8")) as {
   build: {
-    nsis: Record<string, unknown>;
-    win: { target: string[] };
-    "7z": { artifactName: string };
+    nsis: { artifactName: string; [key: string]: unknown };
+    portable: { artifactName: string };
+    win: { target: string[]; artifactName: string };
   };
 };
 const NSIS = PKG.build.nsis;
@@ -87,14 +87,24 @@ describe("NSIS 安装器：安装位置与安装日志", () => {
 });
 
 /**
- * 事故回归（2026-10-21 首次加 7z target）：`"7z": { artifactName }` 曾被写成
- * build 顶层的裸 `"artifactName"`——JSON 依然合法、typecheck/lint/vitest 全绿，
- * 但 7z 吃的是全局默认名、且日后任何 target 都会继承它。编译器管不到配置结构，
- * 只能钉在这里。
+ * 事故回归（2026-10-21 首次加 7z target）：两种写法都踩过，且都是「本地全绿、
+ * CI 出包才炸」——
+ *  1. `"7z": { artifactName }` 被写成 build 顶层的裸 `"artifactName"`：JSON 合法、
+ *     typecheck/lint/vitest 全绿，但名字成了全局默认值。
+ *  2. 补成真正的 `build["7z"]` 块：electron-builder 26.15.3 的**配置 schema 不认**
+ *     这个键（ArchiveTarget 代码里读 `config["7z"]`，但校验层没登记），出包直接
+ *     `configuration has an unknown property '7z'`。命名只能走 `win.artifactName`。
+ * 校验发生在 electron-builder 启动时，编译器和单测都看不见，只能钉在这里。
  */
 describe("发布产物：7z 绿色归档", () => {
-  it("win.target 含 7z，且 7z 有自己的 artifactName 而不是 build 顶层默认值", () => {
+  it("win.target 含 7z，且没有 schema 不认的 build['7z'] 专属块", () => {
     expect(PKG.build.win.target).toContain("7z");
-    expect(PKG.build["7z"].artifactName).toBe("${productName}-${version}.${ext}");
+    expect(PKG.build).not.toHaveProperty("7z");
+  });
+
+  it("7z 的命名来自 win.artifactName（nsis/portable 各有覆盖，不受影响）", () => {
+    expect(PKG.build.win.artifactName).toBe("${productName}-${version}.${ext}");
+    expect(PKG.build.nsis.artifactName).toBe("${productName}-Setup-${version}.${ext}");
+    expect(PKG.build.portable.artifactName).toBe("${productName}-Portable-${version}.${ext}");
   });
 });

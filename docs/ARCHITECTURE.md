@@ -153,7 +153,7 @@
 
 ## 7. 构建与发布
 
-- `electron-builder`：`nsis`（assisted 安装、桌面/开始菜单快捷方式、卸载器）+ `portable`（单文件免安装，内测分发）+ `7z`（win-unpacked 归档，绿色解压分发；产物 `MediaGet-x.y.z.7z`，命名刻意不带 `Portable` 字样，避免与 portable 自解压 exe 混淆）。产物目录 `release/`。
+- `electron-builder`：`nsis`（assisted 安装、桌面/开始菜单快捷方式、卸载器）+ `portable`（单文件免安装，内测分发）+ `7z`（win-unpacked 归档，绿色解压分发；产物 `MediaGet-x.y.z.7z`，命名刻意不带 `Portable` 字样，避免与 portable 自解压 exe 混淆）。产物目录 `release/`。**7z 没有专属配置块**：`ArchiveTarget` 代码里读 `build["7z"]`，但 26.15.3 的配置 schema 不认这个键（写了直接 `unknown property '7z'`，出包才炸），命名只能走 `build.win.artifactName`——nsis/portable 各自的 `artifactName` 优先级更高，不受影响。`tests/installer.test.ts` 钉住这一条。
 - **安装体验的四处开关都在配置里，别改回模板默认**（业主 2026-10-21「安装时不能选择安装位置 / 不能显示安装日志」）：
   - `nsis.allowToChangeInstallationDirectory: true`——不开就只有「当前位置装下去」，用户改不了盘（默认 per-user 落到 `%LOCALAPPDATA%\Programs\MediaGet`）。
   - `nsis.perMachine: false` + `oneClick: false`——保留安装范围选择页（仅当前用户 / 所有用户），选「所有用户」才走 UAC 提权。
