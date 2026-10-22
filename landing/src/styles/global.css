@@ -9,7 +9,8 @@
  *   上一版 h1 是放大的字标，整屏只有一个品牌名，第一屏读不到任何产品信息。
  * - 整页只有一块底色，首屏下面紧接一扇真窗口；分层靠窗体的描边与投影，不靠色带。
  *   深色主题里首屏有一层极淡的紫/青光，只为把窗口从背景里托起来，不承载信息。
- * - 明暗节奏：01 平台 / 02 问答（业主 2026-10-20 删掉了差异 / 隐私 / 下载三段）。
+ * - 明暗节奏：平台 / 问答两段（业主 2026-10-20 删掉了差异 / 隐私 / 下载三段；
+ *   段头序号 2026-10-22 删掉，不再给段落编号）。
  * - 段头左列、内容右列，左列在滚动时 sticky：长页面里读者始终知道自己在哪一段。
  * - 全站只有一份外部文件：首屏的京华老宋体子集（14 KB），同源自托管。正文与界面文案
  *   全部走系统字体栈（2026-10-22 业主定调：正文不值得为子集维护付钱）。除此之外不引
@@ -24,7 +25,7 @@
   --text: #0e1116;
   --muted: #525b68;
   /* 2026-10-22 无障碍体检：原 #868d99 在页底 #f7f7f8 上只有 3.12:1，不到 WCAG AA 的
-     4.5:1（.section-index 与文档页 doc-meta 都吃这一档）。提到 #6b7280 → 4.52:1。 */
+     4.5:1（文档页 doc-meta 吃这一档）。提到 #6b7280 → 4.52:1。 */
   --faint: #6b7280;
   --accent: #2563eb;
   --on-accent: #ffffff;
@@ -215,46 +216,49 @@ img[data-ink="on-light"] {
 
 /* —— 首屏 ——
    一块「反色带」：导航、标题、描述与动作都在这一块里，窗体的顶边紧接在下面。
-   底色与墨色全部走 --hero-*，所以切主题时整块跟着翻（浅色主题下是比正文略深一档的浅灰）。
-   那层光两个主题都有，但不同配方：深色用亮墨 + 较高 alpha 把窗口从纯黑里托起来；
-   浅底上亮墨会隐形、高 alpha 会糊成脏色，所以浅色换更深的色相并把 alpha 压到个位数——
-   读起来是纸面上极淡的一层冷光，而不是一块色斑（业主 2026-10-20「亮色也要有」）。 */
+   墨色走 --hero-*，切主题时整块跟着翻。底色与背景光晕不再属于首屏：全站共享
+   （body::before，见下），文档页与 404 因此和首页是同一张背景。 */
 /* 底部留白是「首屏 ↔ 下面那扇窗」之间唯一的间距（.tour 没有上内边距）。
    轨迹：20–36px（窗顶几乎贴住流程线）→ 44–88px → 现在 72–140px，串成一条带子而不是一块板。
    四步流程线删掉之后首屏下部本来就空，这段留白要自己撑住「这一屏说完了、下面是证据」的停顿。
-   这里**不能**用 overflow: hidden：首屏的光晕（.hero::before）顶端本来就要越过首屏边界
-   铺到导航条那一条上去，裁了就会在导航下沿留出一道平色的横缝，右侧光最强的地方最明显
-   （业主 2026-10-22 指出「导航栏右边没有和整体背景统一」）。
-   也不能只是放开 overflow：光晕左右各溢出 -8%，会撑出横向滚动范围。所以只裁横向：
-   overflow-x: clip 不建立滚动容器、也不影响纵轴，光晕往上的那一截照常铺到导航条上。 */
+   .hero 不再自绘底色与 overflow 裁剪：背景光晕已上移到 body::before 全站共享
+   （见下），hero 自绘一页不透明底色反而会把它盖住。 */
 .hero {
   position: relative;
-  overflow-x: clip;
-  background: var(--bg);
   color: var(--hero-ink);
   padding-bottom: clamp(72px, 10vh, 140px);
 }
 
-.hero::before {
+/* —— 全站背景光晕（2026-10-22 业主定调：所有页面共享同一张背景） ——
+   原来是 .hero::before：三束径向渐变只画在首屏里、随页面滚走，文档页与 404
+   于是永远只有一页平色（业主：「背景应该是一样的，首页有渐变，其他页怎么没有」）。
+   现在画在 body::before 上：inset:0 贴住文档顶部（等价于原来「首屏那一块」的位置，
+   随页面滚走），首页、文档页、404 拿到完全相同的背景。
+   两档配方不变：深色用亮墨 + 较高 alpha 把内容从纯黑里托起来；浅底上亮墨会隐形、
+   高 alpha 会糊成脏色，所以浅色换更深的色相并把 alpha 压到个位数——读起来是纸面上
+   极淡的一层冷光，而不是一块色斑（业主 2026-10-20「亮色也要有」）。
+   实现要点：
+   - z-index:-1：画在全部内容之下、画布底色之上。body 的 background 会传播到画布，
+     这一层因此盖得住底色、又遮不了任何内容；顶栏滚动态的玻璃（backdrop-filter）
+     会把这层光晕一起模糊进去，导航条与背景仍是同一张光。
+   - 浅色是默认档（不挂属性选择器）：任何漏设 data-theme 的页面也不会退回平色。 */
+body::before {
   content: "";
   position: absolute;
-  inset: -12% -8% auto;
-  height: 78%;
+  inset: 0;
+  z-index: -1;
   pointer-events: none;
-}
-
-[data-theme="dark"] .hero::before {
-  background:
-    radial-gradient(560px 340px at 78% 4%, rgb(139 107 255 / 34%), transparent 72%),
-    radial-gradient(480px 300px at 94% 34%, rgb(94 231 255 / 16%), transparent 72%),
-    radial-gradient(420px 260px at 56% -8%, rgb(255 122 200 / 14%), transparent 72%);
-}
-
-[data-theme="light"] .hero::before {
   background:
     radial-gradient(560px 340px at 78% 4%, rgb(124 92 255 / 12%), transparent 72%),
     radial-gradient(480px 300px at 94% 34%, rgb(38 173 220 / 9%), transparent 72%),
     radial-gradient(420px 260px at 56% -8%, rgb(235 92 168 / 7%), transparent 72%);
+}
+
+[data-theme="dark"] body::before {
+  background:
+    radial-gradient(560px 340px at 78% 4%, rgb(139 107 255 / 34%), transparent 72%),
+    radial-gradient(480px 300px at 94% 34%, rgb(94 231 255 / 16%), transparent 72%),
+    radial-gradient(420px 260px at 56% -8%, rgb(255 122 200 / 14%), transparent 72%);
 }
 
 .hero > .shell {
@@ -392,10 +396,14 @@ img[data-ink="on-light"] {
   background: color-mix(in srgb, var(--hero-ink) 8%, transparent);
 }
 
+/* GitHub 图标（住在 .nav-links 里）与主题钮同属右侧的图标按钮组：flex 的 24px
+    gap 是给文字锚点留的呼吸，两枚 34px 圆盒之间只需要 8px。主题钮 2026-10-22
+   全站常驻后，未收紧时这里出现过 24px 的大空档（业主：「间距怎么这么大」）。 */
 .nav-actions {
   display: flex;
   align-items: center;
   gap: 2px;
+  margin-left: -16px;
 }
 
 .theme-toggle,
@@ -708,13 +716,6 @@ img[data-ink="on-light"] {
   top: 32px;
 }
 
-.section-index {
-  color: var(--faint);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  letter-spacing: 0.2em;
-}
-
 .section-head h2 {
   margin-top: 12px;
   font-size: clamp(26px, 3vw, 34px);
@@ -723,7 +724,7 @@ img[data-ink="on-light"] {
   letter-spacing: -0.03em;
 }
 
-/* —— 01 平台：图标 + 名字；名字只从注册表取，图标只从 public/logos 取 —— */
+/* —— 平台：图标 + 名字；名字只从注册表取，图标只从 public/logos 取 —— */
 .platform-group + .platform-group {
   margin-top: 26px;
 }
@@ -863,6 +864,14 @@ img[data-ink="on-light"] {
   gap: 10px;
 }
 
+/* 免责声明是法律小字：行宽收到 30em（约 30 个全角字一行），不跟着 .footer-brand
+   的 1.6fr 列宽拉满——满宽下 60 字只折两行，扫读时句读挤成一片
+   （业主 2026-10-22：「这个容器太宽了，改窄了一点」）。列宽本身不动，
+   窄屏（<900px）列变窄后这条自然失效。 */
+.footer-brand p {
+  max-width: 30em;
+}
+
 .footer h4 {
   margin-bottom: 12px;
   color: var(--text);
@@ -931,17 +940,13 @@ html.js .reveal.in > * {
 @media (max-width: 720px) {
   /* 导航只留品牌、主题与 GitHub：文字锚点在这个宽度上也会把品牌挤掉。
      GitHub 图标已并入链接组（业主定调放更新日志右边），这里只藏文字锚点、
-     容器保持成组，配 .nav-actions 的 margin 复原「图标 + 主题钮」在右侧的原位。 */
+     容器保持成组；两枚图标的 8px 间距沿用 .nav-actions 的负边距，不在此复原。 */
   .nav-links {
     display: flex;
   }
 
   .nav-links a:not(.nav-github) {
     display: none;
-  }
-
-  .nav-actions {
-    margin-left: 0;
   }
 
   .hero-title {
