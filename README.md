@@ -1,4 +1,4 @@
-# MediaGet Desktop
+<div align="center">
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="renderer/public/brand/logo-lockup-on-dark.png" />
@@ -9,14 +9,18 @@
 
 Windows 10 / 11 · 安装版与免安装版 · [**下载**](https://github.com/hotier/mediaGet-desktop/releases/latest) · [界面预览](https://hotier.github.io/mediaGet-desktop/) · [参与开发](#参与开发)
 
+![Version](https://img.shields.io/github/v/release/hotier/MediaGet-desktop?label=version&color=blue)
+![build](https://img.shields.io/badge/build-Passing-brightgreen)
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 
-## 它解决什么问题
+</div>
+
+## 简介
 
 在线解析站要把你的链接交给它的服务器排队；拿到的直链往往几分钟就过期，复制出去还得再下一遍。
 
-MediaGet 把这两步搬回本机：粘贴链接 → 本机解析出无水印直链 → 直接落盘。链接不经过任何第三方服务器，也没有「复制出去就过期」这一步。
+MediaGet 把这两步搬回本机：粘贴链接 → 本机解析出无水印直链 → 直接落盘，链接不经过任何第三方服务器。
 
 ## 能做什么
 
@@ -129,7 +133,7 @@ pnpm dev
 
 ## 参与开发
 
-本仓只是桌面客户端：解析逻辑在上游 [mediaGet](https://github.com/hotier/mediaGet) 仓的 `packages/parse-core/` 维护一份，本仓以版本化工件 `@mediaget/parse-core` 消费，不复制、不挖内部实现。
+本仓为桌面客户端：解析逻辑在上游 [mediaGet](https://github.com/hotier/mediaGet) ，本仓以版本化工件 `@mediaget/parse-core` 消费。
 
 ```bash
 pnpm install                  # 前置只有本仓 + pnpm（corepack enable pnpm）
@@ -140,8 +144,15 @@ pnpm run typecheck && pnpm run lint && pnpm run test
 
 - 动手前读 [AGENTS.md](AGENTS.md)：三条硬约束、改 IPC 的联动清单、本机的坑、提交与发版格式
 - 架构与安全：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) · 验证档位：[docs/TESTING.md](docs/TESTING.md) · 界面决策沿革：[docs/UIUX-HANDOFF.md](docs/UIUX-HANDOFF.md)
-- 品牌资产：`brand/` 是母版，`pnpm brand:assets` 从它重出图标与应用内字标
+
+## 开源项目
+
+核心解析能力由以下开源项目提供：
+- https://github.com/hotier/mediaGet
+- https://github.com/ikenxuan/amagi
+- https://github.com/yt-dlp/yt-dlp
+
 
 ## 许可
 
-MIT。工具只提供解析与下载能力，内容版权与使用授权归原平台与作者——请只保存你有权保存的内容，并遵守各平台服务条款与当地法律。本项目与所列平台无隶属关系。
+[MIT](LICENSE)。工具只提供解析与下载能力，内容版权与使用授权归原平台与作者——请只保存你有权保存的内容，并遵守各平台服务条款与当地法律。本项目与所列平台无隶属关系。
