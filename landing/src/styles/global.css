@@ -11,9 +11,9 @@
  *   深色主题里首屏有一层极淡的紫/青光，只为把窗口从背景里托起来，不承载信息。
  * - 明暗节奏：01 平台 / 02 问答（业主 2026-10-20 删掉了差异 / 隐私 / 下载三段）。
  * - 段头左列、内容右列，左列在滚动时 sticky：长页面里读者始终知道自己在哪一段。
- * - 全站只有三份外部文件：正文两段（Noto Sans latin 35 KB + 思源黑体子集 107 KB）与首屏的
- *   京华老宋体（14 KB），全部同源自托管。除此之外不引任何第三方字节——没有 WebFont CDN、
- *   没有分析脚本、没有外部图床。
+ * - 全站只有一份外部文件：首屏的京华老宋体子集（14 KB），同源自托管。正文与界面文案
+ *   全部走系统字体栈（2026-10-22 业主定调：正文不值得为子集维护付钱）。除此之外不引
+ *   任何第三方字节——没有 WebFont CDN、没有分析脚本、没有外部图床。
  */
 
 @import "./app-mock.css";
@@ -39,10 +39,10 @@
   --hero-faint: #687280;
   --hero-line: rgb(14 17 22 / 12%);
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
-  /* 正文：英文/数字走 Noto Sans（Google Fonts 的 latin 分包），汉字走思源黑体（Noto Sans SC），
-     都是本地打包的子集；后面几项是 woff2 加载失败时的系统兜底，别再往前插本地字体名。 */
-  --font-body: "Noto Sans", "Noto Sans SC", "Segoe UI Variable Text", "Segoe UI",
-    "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  /* 正文全走系统字体（2026-10-22 业主定调，正文不再带 webfont）：
+     苹方/雅黑按平台各归各，中文界面语这已经是最稳的选择。 */
+  --font-body: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+    "PingFang SC", system-ui, sans-serif;
   --font-display: Bahnschrift, "DIN Alternate", "Segoe UI Variable Display", "Segoe UI",
     system-ui, sans-serif;
   --font-mono: "Cascadia Mono", "Consolas", "Microsoft YaHei Mono", monospace;
@@ -69,49 +69,12 @@
   color-scheme: dark;
 }
 
-/* 字体全部自托管，构建产物里只有 public/fonts/ 这几份 woff2，运行期不向任何 CDN 发请求。
- *
- * 正文两段（OFL 1.1；来源、版本与「做了哪些改动」见 fonts/OFL-NotoSans.txt）：
- *   · Noto Sans     —— 英文与数字，Google Fonts 的 latin 分包，可变字重 400-600，35 KB；
- *                      不重裁：拉丁字符集小、文案里随时会长出新产品名。
- *   · Noto Sans SC  —— 中文，即思源黑体（Source Han Sans 的 Google 版），按整页实际用字
- *                      （537 个汉字与全角标点，清单在 noto-sans-sc-body.chars.txt）裁的子集，
- *                      可变字重 100-900，107 KB。
- *                      这份是**按当前文案定死的**：页面文案一改就得重裁，否则新字静默回落到
- *                      系统雅黑——不报错、不漏白，只是那一个字长得不一样。tests/landing-fonts
- *                      那条守卫会在源码出现新汉字时变红，别关掉它。
- *   unicode-range 让两者分工：拉丁字符归前者，汉字与全角标点归后者（思源子集的 cmap 里
- *   只有汉字，所以它不声明 range 也不会抢拉丁字符）。
- *
- * 首屏标题一款（作者声明授权，非 OFL，见 fonts/KingHwaOldSong-LICENSE.txt）：
+/* 首屏标题一款（作者声明授权，非 OFL，见 fonts/KingHwaOldSong-LICENSE.txt）：
  *   京华老宋体 v3.0（KingHwa OldSong，特里王），按 h1 那 20 个码位裁的子集，14 KB，
  *   含全角逗号句号。子集未改字形，只删多余码位。
- *
- * 路径写 `../fonts/` 而不是 `./fonts/`：产物把本文件抽成 dist/_astro/*.css，那一级的上一级
- * 才是 dist 根（public/fonts 原样拷到 dist/fonts）。写成 `./fonts/` 时浏览器会去
- * dist/_astro/fonts/ 找，而 Vite 在这种「public 目录 + 相对路径」上只警告一句
- * “remain unchanged to be resolved at runtime”，构建照样绿——线上静默回落到系统字体，
- * dev 里还看不出来（dev 的 CSS 是内联进文档的，`./fonts/` 恰好对）。
- * 改这几行前先读这段；tests/landing-fonts.test.ts 会按产物落点把它算一遍。 */
-@font-face {
-  font-family: "Noto Sans";
-  src: url("../fonts/noto-sans-latin-body.woff2") format("woff2");
-  font-weight: 400 600;
-  font-style: normal;
-  font-display: swap;
-  /* 与 Google Fonts 给 latin 分包声明的范围一致（中文由下一族接管） */
-  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304,
-    U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
-}
-
-@font-face {
-  font-family: "Noto Sans SC";
-  src: url("../fonts/noto-sans-sc-body.woff2") format("woff2");
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}
-
+ * 正文与界面文案不再有 webfont（2026-10-22 业主定调换系统字体栈），fonts/ 里其余
+ * 字体文件已删除；改这几行前先读这段；tests/landing-fonts.test.ts 会按产物落点把
+ * 剩下的引用算一遍。 */
 @font-face {
   font-family: "KingHwa OldSong";
   src: url("../fonts/kinghwa-oldsong-h1.woff2") format("woff2");

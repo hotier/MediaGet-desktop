@@ -14,9 +14,8 @@
  *   3. 版本号来自 version.json（构建时由 build-landing.cjs 写入；仓库内保留一份本地默认值，
  *      未执行脚本也不会拿到空值白屏）。安装包体积与发布日期不抄进页面，那两个数在 Release 那页。
  *
- * 字体全部自托管在 landing/public/fonts（正文 Noto Sans + 思源黑体子集、首屏京华老宋体），
- * 不引任何 WebFont CDN：整页零第三方请求，file:// 打开也不缺字。改文案要重裁思源那份子集，
- * tests/landing-fonts.test.ts 会在出现新汉字时变红。
+ * 字体只有首屏京华老宋体一份自托管在 landing/public/fonts（2026-10-22 业主定调：
+ * 正文全走系统字体栈，不再带 webfont），不引任何 WebFont CDN：整页零第三方请求。
  */
 import "../styles/global.css";
 import SiteNav from "../components/SiteNav.astro";

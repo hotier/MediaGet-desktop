@@ -2,32 +2,23 @@
  * 文档页（用户协议 / 隐私政策 / 权利通知）的样式。
  *
  * 只做两件事，不重画一套设计语言：
- *   1. 给条款三篇单独挂一份思源子集——协议用字与首页宣传语几乎不重叠，混在一起会让首页
- *      白白多下载几十 KB，所以这里用独立的 family 名（同名 face 只会有一份生效）；
- *      更新日志页的骨架文案在两套子集里都已覆盖，动态正文不参与裁剪（见下方日志体那段的说明）；
+ *   1. 文档页正文走系统字体栈（2026-10-22 业主定调：全站正文不再带 webfont，
+ *      曾经单独挂的思源文档子集已删除）；
  *   2. 正文排版（标题层级、行宽、列表），只有这些是文档页独有的。
  *
  * 页面骨架（配色 token、顶栏、页脚）全部来自 global.css：文档页与首页共用
  * components/SiteNav.astro 与 components/SiteFooter.astro，所以这里不再有导航胶囊那套样式。
  *
- * 为什么不把这份直接并进 global.css：首页不该为「一年看一次的几页」付字体与样式的钱。
+ * 为什么不把这份直接并进 global.css：首页不该为「一年看一次的几页」付样式的钱。
  * 代价是这几页会连带下载首页那些 hero / mock 样式——实测整份 CSS 29 KB（gzip 6.9 KB），
  * 其中文档排版本身只占 2 KB 出头，其余是 @import 进来的全局与窗体样式。反过来拆成两套
  * tokens 会让墨色分两处维护，那才是更难还的账，所以宁可多下这 27 KB。
  */
 @import "./global.css";
 
-@font-face {
-  font-family: "Noto Sans SC Doc";
-  src: url("../fonts/noto-sans-sc-doc.woff2") format("woff2");
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}
-
 body.doc {
-  --font-body: "Noto Sans", "Noto Sans SC Doc", "Segoe UI Variable Text", "Segoe UI",
-    "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+  --font-body: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
+    "PingFang SC", system-ui, sans-serif;
   color-scheme: light;
   font: 400 16px/1.85 var(--font-body);
 }
