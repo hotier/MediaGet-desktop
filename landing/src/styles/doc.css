@@ -1,5 +1,5 @@
 /**
- * 文档页（用户协议 / 隐私政策 / 权利通知）的样式。
+ * 文档页（用户协议 / 隐私政策 / DMCA 侵权通知）的样式。
  *
  * 只做两件事，不重画一套设计语言：
  *   1. 文档页正文走系统字体栈（2026-10-22 业主定调：全站正文不再带 webfont，
@@ -34,6 +34,96 @@ body.doc {
   /* 顶栏是 sticky、自己占一行（见 SiteNav），标题不必再为它垫高度；
      上内边距比下留白少一点，避免整页看起来往下坠 */
   padding-block: clamp(36px, 5vw, 56px) clamp(56px, 8vw, 88px);
+}
+
+/* —— 两栏骨架：正文 + 可选目录栏（DocPage 传了 toc 才渲染）——
+   无目录时 grid 只有一列，靠 justify-content 居中，与旧的单栏居中一致。 */
+.doc-layout {
+  display: grid;
+  grid-template-columns: minmax(0, calc(46em + 2 * var(--gutter))) 180px;
+  gap: 40px;
+  justify-content: center;
+}
+
+/* 目录栏：右侧常驻、跟随滚动（sticky 让开吸顶导航的 84px）；
+   超长目录（版本多的更新日志）在栏内自己滚，不撑破视口。 */
+.doc-toc {
+  position: sticky;
+  top: 84px;
+  align-self: start;
+  max-height: calc(100vh - 108px);
+  overflow-y: auto;
+  padding-block: 4px;
+  font-size: 12.5px;
+}
+
+.doc-toc-title {
+  margin: 0 0 10px;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+.doc-toc ol {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.doc-toc a {
+  display: block;
+  padding: 4px 10px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  transition:
+    color 0.2s var(--ease),
+    background 0.2s var(--ease);
+}
+
+.doc-toc a:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+/* 当前节：由 DocPage 页尾的 IntersectionObserver 挂 aria-current + .is-active */
+.doc-toc a[aria-current="true"],
+.doc-toc a.is-active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+/* 窄屏：目录退到正文上方，变成一排横滚的版本 chips——不占竖高，
+   也避免「为了看目录先滚过三屏」。order:-1 只改视觉顺序，DOM 里正文仍在目录前。 */
+@media (max-width: 1120px) {
+  .doc-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+
+  .doc-toc {
+    position: static;
+    order: -1;
+    max-height: none;
+    margin-inline: var(--gutter);
+    padding-top: 20px;
+  }
+
+  .doc-toc ol {
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+
+  .doc-toc a {
+    white-space: nowrap;
+    border: 1px solid var(--line);
+  }
 }
 
 /* 标题直接起页（业主 2026-10-20 去掉了那行「条款 / 隐私 / 权利」小字：
@@ -78,7 +168,10 @@ body.doc {
   font-weight: 600;
 }
 
-.doc-main a {
+/* 正文链接用强调蓝；.cta-primary 必须排除——它自带墨块配色（深底 + 页面底色字），
+   而本选择器（0,1,1）压得过 .cta-primary（0,1,0），不排除就会把按钮文字染成强调蓝：
+   2026-10-22 下载页复用首页按钮后暴露过这个「同款按钮两个色」的问题。 */
+.doc-main a:not(.cta-primary) {
   color: var(--accent);
   text-underline-offset: 3px;
 }
@@ -153,4 +246,10 @@ body.doc {
 .changelog-scope {
   margin-right: 8px;
   color: var(--text);
+}
+
+/* commit 哈希链接：与摘要之间留一个空格位——Astro 模板里相邻的表达式不含
+   空白字符，不加这条会渲染成「摘要6ff7198」黏在一起（2026-10-22 业主指出）。 */
+.changelog-list a {
+  margin-left: 6px;
 }

@@ -1,13 +1,13 @@
 ---
 /**
- * 文档页外壳（更新日志 / 用户协议 / 隐私政策 / 权利通知）。
+ * 文档页外壳（更新日志 / 用户协议 / 隐私政策 / DMCA 侵权通知）。
  *
  * 四页共用这一层，页面文件里只写正文；导航与页脚与首页是同一套组件
  * （components/SiteNav.astro / components/SiteFooter.astro），
  * 所以「加了新页只改了首页」这种错在结构上就不可能发生。
  *
- * 三条约定：
- *   1. 只引 doc.css（它自己 @import global.css），所以四页与首页共用同一套 token。
+ * 四条约定：
+ *   1. 只引 doc.css（它自己 @import global.css），所以各页与首页共用同一套 token。
  *      顶栏 2026-10-22 起恢复共用（业主点名「所有子页面共享导航栏和页脚」，覆盖
  *      2026-10-20「条款页不挂顶栏」的旧决定）：锚点带回首页的前缀。
  *      主题色 2026-10-22 起也全站共享（业主定调），初值与开关走 ThemeInit——
@@ -16,6 +16,10 @@
  *      的按页目录（/terms/index.html），URL 不带 .html（业主 2026-10-22 定）；
  *      前缀按页深度经 lib/rel 算，塞进任意子路径托管都要能跳。
  *   3. 导航与页脚都传 pagePath：那几列锚点属于首页，文档页上没有那些 id。
+ *   4. 目录栏可选：调用方传 toc（[{ id, label }]，id 与本页锚点对应）才渲染
+ *      （2026-10-22 业主「给更新日志页添加动态目录」）。目录由页面数据生成、不手抄
+ *      第二份；滚动高亮靠页尾那支 is:inline 脚本（IntersectionObserver，file:// 下
+ *      同样执行）。条款页不传——它们没有「跳着读」的需求。
  */
 import "../styles/doc.css";
 import SiteNav from "../components/SiteNav.astro";
@@ -25,15 +29,17 @@ import { pageRel } from "../lib/rel";
 
 interface Props {
   /** 本页在产物里的目录名，用于 canonical、页面路径与当前项标记 */
-  current: "changelog" | "terms" | "privacy" | "notice";
+  current: "changelog" | "terms" | "privacy" | "dmca";
   title: string;
   /** 「最后更新」用的日期，YYYY-MM-DD */
   updated: string;
   /** meta description，不写就会在搜索结果里截正文第一句 */
   description: string;
+  /** 目录项：传了才在正文右侧渲染目录栏（当前只有更新日志页传） */
+  toc?: { id: string; label: string }[];
 }
 
-const { current, title, updated, description } = Astro.props;
+const { current, title, updated, description, toc } = Astro.props;
 const pagePath = `/${current}/`;
 const rel = pageRel(pagePath);
 
@@ -61,12 +67,74 @@ const canonical = new URL(`${current}/`, site).href;
   <body class="doc">
     <SiteNav pagePath={pagePath} current={current} />
 
-    <main class="doc-main" id="main">
-      <h1>{title}</h1>
-      <p class="doc-meta">最后更新日期：{updated} · 适用于 Windows 桌面客户端</p>
-      <slot />
-    </main>
+    <!-- 两栏：正文 + 可选目录栏。目录缺省时 grid 只有一列，居中行为与旧版一致 -->
+    <div class="doc-layout">
+      <main class="doc-main" id="main">
+        <h1>{title}</h1>
+        <p class="doc-meta">最后更新日期：{updated}</p>
+        <slot />
+      </main>
+
+      {toc && toc.length > 0 && (
+        <nav class="doc-toc" aria-label="目录">
+          <p class="doc-toc-title">目录</p>
+          <ol>
+            {toc.map((item) => (
+              <li>
+                <a href={`#${item.id}`}>{item.label}</a>
+              </li>
+            ))}
+          </ol>
+        </nav>
+      )}
+    </div>
 
     <SiteFooter pagePath={pagePath} />
+
+    <!-- 滚动高亮：当前节对应的目录项挂 aria-current + .is-active。
+         为什么是 is:inline 而不是模块：file:// 下模块脚本被 CORS 拦掉，目录就成了
+         一堆不跳亮的死链——与站点其余内联脚本同一条理由。
+         rootMargin 把「当前节」定义为穿过导航下沿（84px）后、进入视口上三分之一
+         的那一条；没有 IntersectionObserver 的老浏览器整段不跑，目录仍可点可跳。 -->
+    {toc && toc.length > 0 && (
+      <script is:inline>
+        (function () {
+          var box = document.querySelector(".doc-toc");
+          if (!box || !("IntersectionObserver" in window)) return;
+          var links = Array.prototype.slice.call(box.querySelectorAll('a[href^="#"]'));
+          var byId = {};
+          var targets = [];
+          links.forEach(function (link) {
+            var el = document.getElementById(link.getAttribute("href").slice(1));
+            if (!el) return;
+            byId[el.id] = link;
+            targets.push(el);
+          });
+          if (!targets.length) return;
+          function activate(id) {
+            links.forEach(function (link) {
+              link.removeAttribute("aria-current");
+              link.classList.remove("is-active");
+            });
+            var link = byId[id];
+            if (link) {
+              link.setAttribute("aria-current", "true");
+              link.classList.add("is-active");
+            }
+          }
+          var observer = new IntersectionObserver(
+            function (entries) {
+              entries.forEach(function (entry) {
+                if (entry.isIntersecting) activate(entry.target.id);
+              });
+            },
+            { rootMargin: "-84px 0px -66% 0px", threshold: 0 }
+          );
+          targets.forEach(function (el) {
+            observer.observe(el);
+          });
+        })();
+      </script>
+    )}
   </body>
 </html>

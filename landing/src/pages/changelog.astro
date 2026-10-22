@@ -5,11 +5,19 @@
  * CHANGELOG.md 是 pnpm release 的产物，抄第二份必然过期，同步链在
  * verify-landing.cjs 里有守卫（产物里必须有 CHANGELOG 最新那个版本号）。
  *
- * 字体说明：正文是动态内容（每个版本都在加新字），不参与思源子集裁剪——
- * 子集缺的字回落系统字体，属预期；页面骨架文案（更新日志 / 当前版本 / 发布于）
- * 在两套子集里都已覆盖，tests/landing-fonts.test.ts 会盯着新增的静态文案。
+ * 字体说明：正文是动态内容（每个版本都在加新字），2026-10-22 起全站正文走系统
+ * 字体栈，不再有子集裁剪这一说；页面骨架文案（更新日志 / 当前版本 / 发布于）
+ * 同样走系统字体。
  *
  * commit 链接只放行 https:// 外链（与页脚的 GitHub 入口同一档），target=_blank。
+ *
+ * 目录（2026-10-22 业主「给更新日志页添加动态目录」）：由 releases 数据现场生成
+ * 版本清单传给 DocPage 的 toc，与各节 h2 的 id（v{version}）对应——不手抄第二份，
+ * 加版本时目录自动跟上。锚点跳转靠 html 的 scroll-padding-top 让开吸顶导航。
+ *
+ * 条目格式（2026-10-22 业主定调）：`✨ feat(scope): 摘要`。type 与 emoji 由
+ * scripts/build-landing.cjs 按小节名反向映射（真源 = .release-it.json 的 types 表），
+ * 随 changelog.json 下发；本文件只负责渲染。
  */
 import DocPage from "../layouts/DocPage.astro";
 import changelog from "../../changelog.json";
@@ -25,10 +33,11 @@ const updated = releases[0]?.date || "";
   title="更新日志"
   updated={updated}
   description="MediaGet 更新日志：与仓库 CHANGELOG 同源的版本记录。"
+  toc={releases.map((rel) => ({ id: `v${rel.version}`, label: `v${rel.version}` }))}
 >
   {releases.map((rel) => (
     <section class="changelog-release">
-      <h2>
+      <h2 id={`v${rel.version}`}>
         v{rel.version}
         {rel.date && <span class="changelog-date">发布于 {rel.date}</span>}
         {rel.version === release.version && <span class="changelog-current">当前版本</span>}
@@ -40,7 +49,17 @@ const updated = releases[0]?.date || "";
           <ul class="changelog-list">
             {section.items.map((item) => (
               <li>
-                {item.scope && <strong class="changelog-scope">{item.scope}</strong>}
+                {/* 条目格式（2026-10-22 业主定调）：`✨ feat: 摘要`——type 前不加
+                   作用域（(build)/(app) 这种不要）。type 与 emoji 由 build-landing.cjs
+                   按小节名反向映射（真源是 .release-it.json 的 types 表）；认不出的
+                   小节退回只有 scope 的旧渲染。 */}
+                {section.type ? (
+                  <strong class="changelog-scope">
+                    {section.emoji} {section.type}:
+                  </strong>
+                ) : (
+                  item.scope && <strong class="changelog-scope">{item.scope}</strong>
+                )}
                 {item.text}
                 {item.url && item.url.startsWith("https://") && (
                   <a href={item.url} target="_blank" rel="noopener">{item.hash}</a>

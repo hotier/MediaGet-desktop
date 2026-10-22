@@ -155,6 +155,24 @@ function fromLocal() {
 }
 
 /**
+ * 小节标题 → 常规提交类型与 emoji（2026-10-22 业主定调：更新日志条目规范为
+ * `✨ feat(scope): 摘要` 这种形式）。
+ *
+ * 真源是 .release-it.json 里 conventional-changelog 插件的 types 表：
+ * 每个进 CHANGELOG 的 type 在那里声明了中文小节名（feat→新增、fix→修复、
+ * perf→性能、revert→回退），这里是那张表的反向映射——改一边就要同步另一边。
+ * emoji 取 gitmoji 口径：✨ 新功能 / 🐛 修复 / ⚡ 性能 / ⏪ 回退。
+ * 认不出的标题（types 表加了新 type 却没同步这里）：type/emoji 留空并播报，
+ * 页面退回旧渲染（只有 scope 加粗），不会静默丢信息。
+ */
+const SECTION_TYPES = {
+  新增: { type: "feat", emoji: "✨" },
+  修复: { type: "fix", emoji: "🐛" },
+  性能: { type: "perf", emoji: "⚡" },
+  回退: { type: "revert", emoji: "⏪" },
+};
+
+/**
  * 解析 CHANGELOG.md（conventional-changelog 的产出格式）为结构化数据。
  *
  * 只认三样东西，其余跳过并播报：
@@ -162,6 +180,8 @@ function fromLocal() {
  *     第二个版本起 conventional-changelog 会自动包上方括号形式，两种都要接住；
  *   - `### 小节标题`（新增 / 修复 / …）；
  *   - `* **scope:** 摘要 ([hash](commit-url))` —— scope 与尾部的 commit 链接都可缺省。
+ * 每个小节按 SECTION_TYPES 反向映射出 type 与 emoji，随 sections 一起进
+ * changelog.json——页面据此渲染「✨ feat(scope): 摘要」。
  * `# 更新日志` 大标题与开头那段给维护者的说明（「本文件由 pnpm release …」）不是用户文案，
  * 从首个 `## ` 起截断丢掉。文本不在这里转 HTML：changelog 页用 Astro 渲染，插值自动转义。
  */
@@ -206,7 +226,12 @@ function parseChangelog(md) {
       const line = raw.trim();
       if (!line) continue;
       if (line.startsWith("### ")) {
-        section = { title: line.slice(4).trim(), items: [] };
+        const title = line.slice(4).trim();
+        const meta = SECTION_TYPES[title];
+        if (!meta) {
+          log(`changelog：v${version} 的小节「${title}」不在 SECTION_TYPES 里（.release-it.json 加了新 type？），条目退回无 type 渲染`);
+        }
+        section = { title, type: meta ? meta.type : null, emoji: meta ? meta.emoji : null, items: [] };
         release.sections.push(section);
       } else if (line.startsWith("* ")) {
         if (!section) {

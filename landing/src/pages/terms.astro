@@ -33,7 +33,7 @@ const link = (slug) => dirSlug(pageRel("/terms/"), slug);
   <p>
     （一）用户下载、安装或以其他方式使用本软件的，视为已阅读并同意本协议全部内容；不同意本协议的，不得使用本软件。
   </p>
-  <p>（二）本协议与《隐私政策》《权利通知》共同构成本软件的使用条件。</p>
+  <p>（二）本协议与<a href={link("privacy")}>《隐私政策》</a><a href={link("dmca")}>《权利通知》</a>共同构成本软件的使用条件。</p>
 
   <h2>第三条 协议变更</h2>
   <p>
@@ -118,6 +118,6 @@ const link = (slug) => dirSlug(pageRel("/terms/"), slug);
       href="https://github.com/hotier/mediaGet-desktop/issues"
       target="_blank"
       rel="noopener">项目仓库的问题反馈渠道</a
-    >提出。涉及权利主张的，依照<a href={link("notice")}>《权利通知》</a>提交。
+    >提出。涉及权利主张的，依照<a href={link("dmca")}>《权利通知》</a>提交。
   </p>
 </DocPage>

@@ -32,7 +32,7 @@ const { execFileSync } = require("node:child_process");
 
 const DIST = path.join(__dirname, "..", "landing", "dist");
 // 产物是 build.format="directory"（URL 不带 .html，业主 2026-10-22 定）：
-// 七页各在自己的目录（guide/download/changelog/terms/privacy/notice，首页在根），
+// 七页各在自己的目录（guide/download/changelog/terms/privacy/dmca，首页在根），
 // 404 是唯一保留 .html 的文件（GitHub Pages 按根下这个文件名接管未命中路径）。
 const PAGES = [
   { file: "index.html", dir: "" },
@@ -41,7 +41,7 @@ const PAGES = [
   { file: "changelog/index.html", dir: "changelog" },
   { file: "terms/index.html", dir: "terms" },
   { file: "privacy/index.html", dir: "privacy" },
-  { file: "notice/index.html", dir: "notice" },
+  { file: "dmca/index.html", dir: "dmca" },
   { file: "404.html", dir: "" },
 ];
 
