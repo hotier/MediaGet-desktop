@@ -24,19 +24,19 @@
 * **build:** 安装器可选目录/安装日志/品牌图，CI 收拢为可复用工作流 ([3b21457](https://github.com/hotier/mediaGet-desktop/commit/3b214576a0a829754bd10507786a29ff3a04348c))
 * **landing:** 落地页重做版式并补齐用户协议/隐私政策/权利通知 ([2c0dd1f](https://github.com/hotier/mediaGet-desktop/commit/2c0dd1f869c7b37c99b8b2f5cfafc9a4110f6686))
 * **landing:** 新增 Astro 落地页与 Pages 发布链——两档构建、产物自检、描线字标 ([2907681](https://github.com/hotier/mediaGet-desktop/commit/290768148c0ad00da834a19c0d740739b312ed69))
-* **landing:** add changelog page generated from CHANGELOG.md, upgrade astro to 7 ([d4750d9](https://github.com/hotier/mediaGet-desktop/commit/d4750d929e57cceb9ebebddb51288cb537284e21))
+* **landing:** 新增更新日志页（由 CHANGELOG.md 生成）并升级 astro 至 7 ([d4750d9](https://github.com/hotier/mediaGet-desktop/commit/d4750d929e57cceb9ebebddb51288cb537284e21))
 * **shell:** 侧栏收起偏好的持久化纯函数 ([052d2f9](https://github.com/hotier/mediaGet-desktop/commit/052d2f93e809cea2918eb4280b09428e250c72bd))
 * **shell:** 侧栏收起状态与品牌行切换按钮 ([4b95436](https://github.com/hotier/mediaGet-desktop/commit/4b95436e9fdac1865369ef9e23ec37cee64bf775))
 * **shell:** 导航项与设置钮的收起态渲染 ([109b0e9](https://github.com/hotier/mediaGet-desktop/commit/109b0e9457f45dd4647fc0ea0ecd8d6d5ac199ab))
-* **stats:** persist queryable statistical events ([6ff7198](https://github.com/hotier/mediaGet-desktop/commit/6ff7198282990c0b2ad1e505bcb10770baa2c5b3))
-* **storage:** add sqlite database foundation ([f09a4f1](https://github.com/hotier/mediaGet-desktop/commit/f09a4f178506857d72249c1223591c7930896b88))
-* **storage:** migrate json state into sqlite ([5796446](https://github.com/hotier/mediaGet-desktop/commit/579644650dc8f463527878fab1ec62b5ed7bb8ae))
-* **storage:** page unlimited queue and history, scope stats by date range ([e386625](https://github.com/hotier/mediaGet-desktop/commit/e38662591c2bc71566d77d26e9bdc2180f246b06))
+* **stats:** 统计事件落库为可查询的结构化记录 ([6ff7198](https://github.com/hotier/mediaGet-desktop/commit/6ff7198282990c0b2ad1e505bcb10770baa2c5b3))
+* **storage:** sqlite 数据库基础落地 ([f09a4f1](https://github.com/hotier/mediaGet-desktop/commit/f09a4f178506857d72249c1223591c7930896b88))
+* **storage:** 历史状态迁移进 sqlite ([5796446](https://github.com/hotier/mediaGet-desktop/commit/579644650dc8f463527878fab1ec62b5ed7bb8ae))
+* **storage:** 队列与历史改无限分页，统计按日期范围过滤 ([e386625](https://github.com/hotier/mediaGet-desktop/commit/e38662591c2bc71566d77d26e9bdc2180f246b06))
 
 ### 修复
 
 * **shell:** 收起态品牌行按钮压缩与宽度过渡溢出 ([8bfcf91](https://github.com/hotier/mediaGet-desktop/commit/8bfcf91e504a01dcb50c201337e15da626a8a1d1))
-* **shell:** start nav glyph animation on click, restore default icon motion, move settings back button down ([1036745](https://github.com/hotier/mediaGet-desktop/commit/10367458cc1de8798bc0e193a56268a130642dd3))
+* **shell:** 导航字形动画改点击触发，恢复默认图标动效，设置返回按钮下移 ([1036745](https://github.com/hotier/mediaGet-desktop/commit/10367458cc1de8798bc0e193a56268a130642dd3))
 
 ## 0.1.0 (2026-10-19)
 
