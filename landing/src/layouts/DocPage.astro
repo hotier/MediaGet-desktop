@@ -2,22 +2,27 @@
 /**
  * 文档页外壳（更新日志 / 用户协议 / 隐私政策 / 权利通知）。
  *
- * 四页共用这一层，页面文件里只写正文；页脚与首页是同一个组件（components/SiteFooter.astro），
+ * 四页共用这一层，页面文件里只写正文；导航与页脚与首页是同一套组件
+ * （components/SiteNav.astro / components/SiteFooter.astro），
  * 所以「加了新页只改了首页」这种错在结构上就不可能发生。
  *
  * 三条约定：
  *   1. 只引 doc.css（它自己 @import global.css），所以四页与首页共用同一套 token。
- *      文档页没有顶栏（业主 2026-10-20 定：条款不该再复制一份导航），
- *      各页之间的切换入口只有一个——页脚的「资源」与「条款」两列。
- *   2. 链接一律写成 `./xxx.html` 而不是 `/xxx`：产物是 build.format="file" 的平铺 HTML，
- *      双击 dist/index.html 与塞进 Pages 子路径都要能跳。
- *   3. 页脚传 hrefBase="./index.html"：页脚里那几列锚点属于首页，文档页上没有那些 id。
+ *      顶栏 2026-10-22 起恢复共用（业主点名「所有子页面共享导航栏和页脚」，覆盖
+ *      2026-10-20「条款页不挂顶栏」的旧决定）：锚点带回首页的前缀，主题开关不给——
+ *      这四页钉死浅色，摆一颗死键不如不摆。
+ *   2. 链接一律写成目录式（`./terms/`）而不是 `/terms`：产物是 build.format="directory"
+ *      的按页目录（/terms/index.html），URL 不带 .html（业主 2026-10-22 定）；
+ *      前缀按页深度经 lib/rel 算，塞进任意子路径托管都要能跳。
+ *   3. 导航与页脚都传 pagePath：那几列锚点属于首页，文档页上没有那些 id。
  */
 import "../styles/doc.css";
+import SiteNav from "../components/SiteNav.astro";
 import SiteFooter from "../components/SiteFooter.astro";
+import { pageRel } from "../lib/rel";
 
 interface Props {
-  /** 本页在产物里的文件名（不含扩展名），只用于拼 canonical */
+  /** 本页在产物里的目录名，用于 canonical、页面路径与当前项标记 */
   current: "changelog" | "terms" | "privacy" | "notice";
   title: string;
   /** 「最后更新」用的日期，YYYY-MM-DD */
@@ -27,10 +32,12 @@ interface Props {
 }
 
 const { current, title, updated, description } = Astro.props;
+const pagePath = `/${current}/`;
+const rel = pageRel(pagePath);
 
 /* 站地址只写在 astro.config 的 site 里，页面不写死域名（换宿主改一行） */
 const site = Astro.site ?? new URL("https://hotier.github.io/mediaGet-desktop/");
-const canonical = new URL(`${current}.html`, site).href;
+const canonical = new URL(`${current}/`, site).href;
 ---
 
 <!doctype html>
@@ -44,16 +51,18 @@ const canonical = new URL(`${current}.html`, site).href;
     <meta name="description" content={description} />
     <meta name="theme-color" content="#f7f7f8" />
     <link rel="canonical" href={canonical} />
-    <link rel="icon" type="image/png" href="./brand/favicon.png" />
+    <link rel="icon" type="image/png" href={`${rel}brand/favicon.png`} />
   </head>
 
   <body class="doc">
+    <SiteNav pagePath={pagePath} current={current} />
+
     <main class="doc-main" id="main">
       <h1>{title}</h1>
       <p class="doc-meta">最后更新日期：{updated} · 适用于 Windows 桌面客户端</p>
       <slot />
     </main>
 
-    <SiteFooter hrefBase="./index.html" />
+    <SiteFooter pagePath={pagePath} />
   </body>
 </html>

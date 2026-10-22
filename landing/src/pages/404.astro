@@ -1,0 +1,321 @@
+---
+/**
+ * 404：GitHub Pages 在任意未命中路径下自动回落到产物根的 404.html。
+ *
+ * 存在的意义就一句：默认 Pages 404 是灰底英文、没有回首页的路。这里复用共享顶栏
+ * 与页脚（SiteNav / SiteFooter），口径与文档页一致：钉死浅色、不挂主题开关。
+ *
+ * 「404」本体是一块**点阵粒子**（2026-10-22 业主点名，参照 www.feishu.cn/404 的做法，
+ * 其组件源码已完整读出）：离屏画布用超粗字体把 404 画成剪影 → 每 6px 采样一格生成
+ * 一颗粒子（字形即布局）→ 每帧要么向原位弹性回归、要么被指针斥力推开。零依赖、
+ * 约 60 行，全部走这页的 is:inline 脚本（file:// 下模块脚本被 CORS 拦，同首页规矩）。
+ * 配色不抄飞书的蓝紫青，换成站点的墨色 → 强调蓝两档（--text / --accent）。
+ *
+ * 降级三档，都守「宁可不动，不能白屏」：
+ *   1. JS 不跑：canvas 空着，但 .missing-code 那句静态「404」文本仍在原位（脚本
+ *      初始化成功才把它隐藏）——错误页最不该出现的就是整块空白；
+ *   2. prefers-reduced-motion：只画一帧静态点阵，不挂 rAF、不监听指针；
+ *   3. 2D 上下文拿不到（极端环境）：同 1，停在静态文本。
+ *
+ * 锚点前缀按页算（pagePath="/"）：「平台 / 问答」的 id 在首页，这页上没有。
+ * 一个已知边界：Pages 对**深层**未命中路径（/mediaGet-desktop/a/b）也会回吐这份
+ * 404.html，而产物按「文档相对路径」设计（AGENTS 的 file:// 与子路径约束），届时
+ * 相对链接会解析到不存在的深层目录。绝大多数 404 流量是根下一层（打错一个文件名），
+ * 那种场合站点根下的目录链接恰好解析正确——为小概率的深层路径改绝对路径会把
+ * 双击打开的降级一起赔进去，不划算，写在这里备查。
+ *
+ * robots noindex：错误页不进索引。
+ *
+ * 地址栏规范化：Pages 把 404.html 回吐给未命中路径时，URL 仍显示那个错地址。
+ * 页尾脚本用 history.replaceState 把它改写成站点根下的 404.html——基准不猜、
+ * 不硬编码域名，从本页实际加载的那份 _astro CSS 反推（CSS 能加载 = 这一层的
+ * ./ 解析是对的，与「文档相对路径」的产物设计同一条根）。file:// 与非 http 协议
+ * 直接跳过；深层路径（相对 CSS 本来就 404 的那种）同样跳过，与上面那条已知边界一致。
+ */
+import "../styles/global.css";
+import SiteNav from "../components/SiteNav.astro";
+import SiteFooter from "../components/SiteFooter.astro";
+import { pageRel, dirSlug } from "../lib/rel";
+
+const pagePath = "/"; /* 404 在产物根 */
+const rel = pageRel(pagePath);
+---
+
+<!doctype html>
+<html lang="zh-CN" data-theme="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>404 · 抱歉，这里什么都没有 — MediaGet</title>
+    <meta name="description" content="MediaGet：抱歉，这里什么都没有。回首页，或者把工具下载回去。" />
+    <meta name="robots" content="noindex" />
+    <meta name="theme-color" content="#f7f7f8" />
+    <link rel="icon" type="image/png" href={`${rel}brand/favicon.png`} />
+  </head>
+
+  <body>
+    <SiteNav pagePath={pagePath} />
+
+    <main id="main">
+      <section class="missing">
+        <div class="shell">
+          <!-- 点阵图：canvas 是动效本体，静态文本是它的降级替身（脚本接手后隐藏）。
+               两者只留一个可见，读屏拿到的是同一个「404」。 -->
+          <div class="missing-code" id="dotField">
+            <canvas id="dotCanvas" role="img" aria-label="404"></canvas>
+            <span class="missing-code-text mono" aria-hidden="false">404</span>
+          </div>
+          <h1>抱歉，这里什么都没有</h1>
+          <p class="missing-actions">
+            <a class="cta-primary" href={dirSlug(rel, "") || "./"}>带我回首页</a>
+            <a class="cta-ghost" href="https://github.com/hotier/mediaGet-desktop/releases/latest" target="_blank" rel="noopener"
+              >下载 Windows 版</a
+            >
+          </p>
+        </div>
+      </section>
+    </main>
+
+    <SiteFooter pagePath={pagePath} />
+  </body>
+</html>
+
+<style>
+  /* 只加这一页独有的排版，其余（.shell / .cta-* / 顶栏页脚）全部走 global.css 现值 */
+  .missing {
+    padding: clamp(72px, 13vh, 140px) 0 clamp(96px, 18vh, 180px);
+  }
+
+  /* 点阵场：高度随视口走，宽度吃满 shell；canvas 与静态文本叠在同一格 */
+  .missing-code {
+    position: relative;
+    display: grid;
+    place-items: center;
+    height: clamp(150px, 24vw, 240px);
+    margin-bottom: 18px;
+  }
+
+  .missing-code canvas {
+    display: none; /* JS 接手后才亮 */
+    width: 100%;
+    height: 100%;
+  }
+
+  /* 降级替身：超大号的裸「404」，与点阵同档字重（900） */
+  .missing-code-text {
+    font-size: clamp(110px, 20vw, 190px);
+    font-weight: 900;
+    line-height: 1;
+    letter-spacing: -0.02em;
+    color: var(--text);
+  }
+
+  .missing-code.is-live canvas {
+    display: block;
+  }
+
+  .missing-code.is-live .missing-code-text {
+    display: none;
+  }
+
+  .missing h1 {
+    margin: 0 0 28px;
+    font-size: clamp(22px, 3.2vw, 30px);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    text-align: center;
+  }
+
+  .missing-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 12px;
+    margin: 0;
+  }
+
+  /* 次级按钮：global.css 只有 .cta-primary 一档，这里补一个描边档（scoped，不外溢） */
+  .cta-ghost {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 48px;
+    padding: 0 26px;
+    border: 1px solid var(--line-strong);
+    border-radius: 999px;
+    color: var(--text);
+    font-size: 15px;
+    font-weight: 600;
+    transition:
+      border-color 0.18s var(--ease),
+      background 0.18s var(--ease);
+  }
+
+  .cta-ghost:hover {
+    border-color: var(--text);
+    background: color-mix(in srgb, var(--text) 5%, transparent);
+  }
+</style>
+
+<script is:inline>
+  (function () {
+    var host = document.getElementById("dotField");
+    var cv = document.getElementById("dotCanvas");
+    if (!host || !cv || !cv.getContext) return;
+    var ctx = cv.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return;
+
+    /* 站点两档墨色（与 CSS 的 --text / --accent 同值，写死在脚本里：
+       is:inline 读不到构建期的 CSS 变量，两处同值靠下方注释钉住，改 token 记得同步）。 */
+    var STOPS = [
+      [14, 17, 22],   /* --text  #0e1116 */
+      [37, 99, 235],  /* --accent #2563eb */
+    ];
+    var STEP = 6;        /* 采样步长：字形每 6px 一颗粒子 */
+    var BASE = 1.8;      /* 粒子半径 */
+    var PUSH_R = 60;     /* 指针斥力半径 */
+    var SKEW = (20 * Math.PI) / 180; /* 渐变轴倾角 */
+
+    var parts = [];
+    var mouse = { x: null, y: null };
+    var raf = 0;
+    var W = 0;
+    var H = 0;
+    var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    /* 沿倾了 SKEW 的轴投影归一化，在 STOPS 间线性插值。
+       分母是画布在该轴上的投影长度（常量），不是粒子坐标——抄漏这个渐变就只染一角
+       （2026-10-22 首版移植就抄错了，对照参照页源码修正）。 */
+    function colorAt(x, y) {
+      var cs = Math.cos(SKEW);
+      var sn = Math.sin(SKEW);
+      var k = x * cs + y * sn;
+      var span = W * cs + H * sn;
+      var t = span === 0 ? 0 : Math.max(0, Math.min(k / span, 0.9999));
+      var pos = t * (STOPS.length - 1);
+      var i = Math.floor(pos);
+      var j = Math.min(i + 1, STOPS.length - 1);
+      var f = pos - i;
+      var a = STOPS[i];
+      var b = STOPS[j];
+      return "rgb(" + Math.round(a[0] + (b[0] - a[0]) * f) + "," + Math.round(a[1] + (b[1] - a[1]) * f) + "," + Math.round(a[2] + (b[2] - a[2]) * f) + ")";
+    }
+
+    /* 字形 → 粒子：离屏画「404」剪影，alpha>128 的采样点各成一粒 */
+    function build() {
+      parts = [];
+      var off = document.createElement("canvas");
+      var oa = off.getContext("2d", { willReadFrequently: true });
+      if (!oa) return;
+      off.width = W;
+      off.height = H;
+      oa.font = '900 ' + H + 'px "Arial Black", "Segoe UI", sans-serif';
+      oa.fillStyle = "#000";
+      oa.textAlign = "center";
+      oa.textBaseline = "middle";
+      oa.fillText("404", W / 2, H / 2);
+      var img = oa.getImageData(0, 0, W, H);
+      for (var y = 0; y < img.height; y += STEP) {
+        for (var x = 0; x < img.width; x += STEP) {
+          if (img.data[y * 4 * img.width + x * 4 + 3] > 128) {
+            parts.push({ baseX: x, baseY: y, x: x, y: y, size: BASE, color: colorAt(x, y), density: Math.random() * 20 + 1 });
+          }
+        }
+      }
+    }
+
+    function home(p) {
+      p.x -= (p.x - p.baseX) / 10;
+      p.y -= (p.y - p.baseY) / 10;
+      p.size -= (p.size - BASE) / 10;
+    }
+
+    function frame() {
+      ctx.clearRect(0, 0, W, H);
+      for (var i = 0; i < parts.length; i++) {
+        var p = parts[i];
+        if (mouse.x === null) {
+          home(p);
+        } else {
+          var dx = mouse.x - p.x;
+          var dy = mouse.y - p.y;
+          var d = Math.sqrt(dx * dx + dy * dy) || 1;
+          if (d < PUSH_R) {
+            var s = (PUSH_R - d) / PUSH_R;
+            p.x -= (dx / d) * s * p.density;
+            p.y -= (dy / d) * s * p.density;
+            p.size = BASE * 0.82;
+          } else {
+            home(p);
+          }
+        }
+        /* 主珠 + 左上 18% 白高光：同一套珠子画法，静态帧也有立体感 */
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "rgba(255,255,255,0.18)";
+        ctx.beginPath();
+        ctx.arc(p.x - p.size * 0.18, p.y - p.size * 0.18, Math.max(p.size * 0.38, 0.7), 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (!reduce) raf = requestAnimationFrame(frame);
+    }
+
+    /* 尺寸：吃满容器宽，DPR 用 setTransform 折进变换，粒子逻辑全在 CSS 像素里 */
+    function resize() {
+      var dpr = window.devicePixelRatio || 1;
+      W = host.clientWidth;
+      H = host.clientHeight;
+      if (!W || !H) return;
+      cv.width = W * dpr;
+      cv.height = H * dpr;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      build();
+      if (reduce) frame(); /* 静态档：重建后补画一帧就收工 */
+    }
+
+    function point(e) {
+      var r = cv.getBoundingClientRect();
+      mouse.x = e.clientX - r.left;
+      mouse.y = e.clientY - r.top;
+    }
+
+    function release() {
+      mouse.x = null;
+      mouse.y = null;
+    }
+
+    resize();
+    host.classList.add("is-live");
+    if (!reduce) {
+      frame();
+      window.addEventListener("resize", resize);
+      cv.addEventListener("mousemove", point);
+      cv.addEventListener("mouseleave", release);
+      cv.addEventListener("touchmove", function (e) {
+        if (e.touches[0]) point(e.touches[0]);
+      }, { passive: true });
+      cv.addEventListener("touchend", release);
+    }
+  })();
+
+  /* 地址栏规范化：Pages 未命中时把 404.html 的内容回吐给原错误地址，URL 不换就
+     一直挂着那个错地址。replaceState 只改地址栏、不触发导航与请求，安全。
+     站点根从本页实际加载的 _astro CSS 反推（见文件头注释），不硬编码域名；
+     推不出（file://、非 http、深层路径下 CSS 本来就没加载）就放弃——地址栏留着
+     错地址，也远好过跳到一个猜错的地方。 */
+  (function () {
+    if (!/^https?:$/.test(location.protocol)) return;
+    var css = Array.from(document.querySelectorAll('link[rel="stylesheet"]')).map(function (l) { return l.href; }).find(function (u) { return /_astro\//.test(u); });
+    if (!css) return;
+    var root = css.slice(0, css.indexOf("_astro/"));
+    var target = root + "404.html";    if (location.href !== target) {
+      try {
+        history.replaceState(null, "", target);
+      } catch (error) {
+        /* 个别浏览器对非同源 replaceState 抛 SecurityError：留着错地址即可 */
+      }
+    }
+  })();
+</script>

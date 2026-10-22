@@ -1,0 +1,75 @@
+---
+/**
+ * 下载页（/download/）：唯一的持续转化入口——首页 hero 那颗按钮之外，
+ * 子页面上从此也有地方放「下载」这件事本身。
+ *
+ * 内容纪律同指南页：三种包对应 electron-builder 的三个真实 target（nsis / portable /
+ * 7z，见根 package.json 的 build.win），版本号与日期来自 version.json（build-landing.cjs
+ * 产出，离线档 source=local 时 date 为空——空就不渲染「发布于」，不编日期）。
+ * SmartScreen 一段是真实存在的首启体验：安装包当前未做代码签名，Windows 会拦一次，
+ * 与其让用户自己慌，不如这里讲清楚。
+ * 文体要求（2026-10-22 业主定）：正式、书面语，操作指示以「用户可……」句式陈述，
+ * 不用对话体；标题也随文体改为「安装包类型」「下载失败的处理」等。
+ */
+import DocPage from "../layouts/DocPage.astro";
+import release from "../../version.json";
+import { pageRel, dirSlug } from "../lib/rel";
+
+const version = release.version || "0.1.0";
+const releasesLatest = `https://github.com/${release.repo || "hotier/mediaGet-desktop"}/releases/latest`;
+/* 站内链接按页深度算（本页在 /download/，兄弟页 ../privacy）——同 terms.astro 的教训 */
+const link = (slug) => dirSlug(pageRel("/download/"), slug);
+---
+
+<DocPage
+  current="download"
+  title="下载与安装"
+  updated="2026-10-22"
+  description="MediaGet 下载与安装：安装包类型、系统要求，以及首次启动的安全提示。"
+>
+  <h2>获取安装包</h2>
+  <p>
+    当前版本 <strong>v{version}</strong>
+    {release.date && <span>（发布于 {release.date}）</span>}。安装包仅通过本仓库的
+    <a href={releasesLatest} target="_blank" rel="noopener">GitHub Releases 页</a>分发。同名仿冒站点是此类工具的主要风险来源，请勿通过其他渠道下载。
+  </p>
+  <p class="dl-cta">
+    <a class="cta-primary" href={releasesLatest} target="_blank" rel="noopener">前往 Releases 页下载</a>
+  </p>
+
+  <h2>安装包类型</h2>
+  <p>
+    <strong>安装版</strong>（Setup.exe）：提供安装向导，可自定义安装目录，自动创建桌面与开始菜单快捷方式，适用于日常使用。
+  </p>
+  <p>
+    <strong>便携版</strong>（Portable.exe）：单文件形态，不写入注册表、不创建快捷方式。适用于便携设备，或无安装权限的环境。
+  </p>
+  <p>
+    <strong>7z 归档</strong>：解压后的完整目录形态，适用于自行管理版本更替，或在固定目录中长期使用。
+  </p>
+  <p>三种包内的程序本体完全一致，仅分发形态不同；更换形态无需迁移任何数据。</p>
+
+  <h2>下载失败的处理</h2>
+  <p>
+    下载失败时，队列会给出文件名、失败原因与当前的媒体直链。平台侧直链均设有有效期，下载中途失败多为直链过期所致；软件会自动重新获取直链并重试。仍失败的，可依据队列中的失败原因排查，或重新解析一次以更新直链。
+  </p>
+  <p>
+    断点续传默认启用：任务中断后重新打开软件，未完成任务将自断点继续，已下载部分无需重新获取，无需额外设置。
+  </p>
+
+  <h2>系统要求</h2>
+  <p>Windows 10 或 11（64 位）。软件运行所需的解析内核运行时由安装包按需自动获取，无需手动配置。</p>
+
+  <h2>首次启动的安全提示</h2>
+  <p>
+    安装包当前未进行代码签名，Windows 首次运行时将显示 SmartScreen 提示。此为未签名程序的正常行为，不代表软件存在安全问题；选择「更多信息」→「仍要运行」即可继续安装。如对这一步骤有所顾虑，可先行使用便携版验证，或长期使用便携版。
+  </p>
+  <p>软件以 MIT 许可开源，源码公开可审。关于软件数据处理方式的说明，见<a href={link("privacy")}>《隐私政策》</a>：全部数据保存在本机，不设用户账号，不进行任何形式的上报。</p>
+</DocPage>
+
+<style>
+  /* 下载页独有的 CTA 段：.cta-primary 来自 global.css，这里只管间距 */
+  .dl-cta {
+    margin: 0 0 clamp(26px, 4vw, 38px);
+  }
+</style>

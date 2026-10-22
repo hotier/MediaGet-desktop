@@ -1,0 +1,118 @@
+---
+/**
+ * 顶部导航：五页共用这一份（与 SiteFooter 同一套做法）。
+ *
+ * 为什么是一个组件而不是两段 markup：导航里有品牌位、三个入口与 GitHub；抄第二份之后
+ * 「改了首页导航、条款页还是旧的」不会报错，只会让某一页慢慢长出第二套样子。
+ *
+ * 锚点归属与页脚同一个约定：「平台 / 问答」的 id 只存在于首页，其余页上必须回到首页去。
+ * 调用方传 pagePath（本页相对站点根的路径），前缀经 lib/rel 按深度算——产物是
+ * directory 格式（URL 不带 .html），页面层级不统一，手写 ../ 就是第二份真源。
+ * 漏了这个前缀就是两条死链而页面看起来完全正常。
+ *
+ * 主题开关只有首页有（themeToggle）：文档页与 404 由各自布局钉死浅色（业主
+ * 2026-10-20 定），没有主题机件，摆一颗按钮就是颗死键——宁缺毋假。
+ *
+ * 滚动收拢（顶部融合 ↔ 玻璃胶囊）的样式在 global.css 的 .nav-shell 段；这里的内联脚本
+ * 只切一个类。为什么 is:inline 而不是模块：file:// 下模块脚本被 CORS 拦掉，双击产物
+ * 导航就永远停在顶部态——与首页其余内联脚本同一条理由。
+ */
+import release from "../../version.json";
+import { pageRel, dirSlug } from "../lib/rel";
+
+interface Props {
+  /** 本页相对站点根的路径：首页 "/"，文档页 "/changelog/" ……（与 SiteFooter 同义） */
+  pagePath?: string;
+  /** 只有首页传 true：锚点走页内 #id、品牌位回 #top。404 也在产物根但不是首页 */
+  isHome?: boolean;
+  /** 首页才挂主题开关 */
+  themeToggle?: boolean;
+  /** 当前页 slug，给对应导航项挂 aria-current（首页不传） */
+  current?: "guide" | "download" | "changelog" | "terms" | "privacy" | "notice" | "";
+}
+
+const { pagePath = "/", isHome = false, themeToggle = false, current = "" } = Astro.props;
+const rel = pageRel(pagePath);
+
+const repo = release.repo || "hotier/mediaGet-desktop";
+/* 回首页的相对段：首页上为空（锚点就在本文档），其余页指到首页文件。
+   锚点链接必须带 index.html（../#faq 会被解析成父目录本身，file:// 直接破；
+   目录式链接则刻意不带 —— Pages 把目录解析成首页，地址栏干净）。 */
+const home = isHome ? "" : `${rel}index.html`;
+const at = (hash: string) => `${home}${hash}`;
+/* 品牌位回首页：首页上是页内锚点，其余页上是目录链接（与页脚 homeHref 同一算法） */
+const homeHref = isHome ? "#top" : rel;
+---
+
+<a class="skip-link" href="#main">跳到主要内容</a>
+
+<!-- 两种态由下方脚本按滚动位置切换（阈值 80px，参照 deepseek.com/harness 的触发档）：
+     - 页面最顶部：透明、全宽，和整页底色融合，没有横杠把首屏切开。
+     - 滚过阈值：向中间收成居中胶囊（max-width 86%、全圆角），背后淡入一层液态玻璃
+       （62% 页面色 + 14px 磨砂 + 1px 描边，画在 ::before 上只淡入 opacity）。
+     JS 不跑时停在「融合」态，不会有白字压白底的降级坑。 -->
+<header class="nav-shell">
+  <div class="shell">
+    <div class="nav">
+      <!-- 品牌位与界面模拟窗顶带**同一份资产**的位图锁合（两份墨色，按主题二选一）。
+           位图没有可读文本，所以另给一句 sr-only 名字；两张图里被 display:none 的那张
+           不进可访达树（换墨的全局规则 img[data-ink] 对首页与文档页同时生效）。 -->
+      <a class="brand" href={homeHref}>
+        <img class="brand-lockup" data-ink="on-dark" src={`${rel}brand/logo-lockup-on-dark.png`} alt="" width="347" height="80" />
+        <img class="brand-lockup" data-ink="on-light" src={`${rel}brand/logo-lockup-on-light.png`} alt="" width="347" height="80" />
+        <span class="sr-only">MediaGet</span>
+      </a>
+
+      <nav class="nav-links" aria-label="页面导航">
+        <!-- 使用指南与下载：2026-10-22 业主定，替换掉原来的「平台 / 问答」两颗页内锚点
+             （锚点适合页内滚动，不适合当全局导航；平台网格与 FAQ 仍留在首页）。
+             三颗页面链接全走 dirSlug 无斜杠目录式。 -->
+        <a href={dirSlug(rel, "guide")} aria-current={current === "guide" ? "page" : undefined}>使用指南</a>
+        <a href={dirSlug(rel, "download")} aria-current={current === "download" ? "page" : undefined}>下载</a>
+        <!-- 更新日志是站内另一页而非锚点：新标签打开，滚动位置不打断（业主 2026-10-20 定）。
+             站内页面链接用 dirSlug 拼成无斜杠目录式（../changelog，Pages 301 补斜杠，
+             业主 2026-10-22 点名的形态），同步链由 verify-landing 守卫。
+             例外：本页就是更新日志时不再 target=_blank——点「当前页」弹出一个重复标签是
+             2026-10-22 共享顶栏后暴露的 bug（aria-current 与 _blank 同体自相矛盾）。 -->
+        <a href={dirSlug(rel, "changelog")} target={current === "changelog" ? undefined : "_blank"} rel="noopener" aria-current={current === "changelog" ? "page" : undefined}>更新日志</a>
+        <!-- GitHub 图标并入链接组（业主 2026-10-20「放到更新日志右边」）：
+             窄屏断点只藏文字锚点、这枚图标跟着留在右侧（见 global.css 的 720px 段）。 -->
+        <a class="nav-github" href={`https://github.com/${repo}`} aria-label="GitHub 仓库" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 6v-3.5c0-1 .1-1.4-.5-2 2.8-.3 5.5-1.4 5.5-6a4.6 4.6 0 0 0-1.3-3.2 4.2 4.2 0 0 0-.1-3.2s-1.1-.3-3.5 1.3a12.3 12.3 0 0 0-6.2 0C6.5 2.8 5.4 3.1 5.4 3.1a4.2 4.2 0 0 0-.1 3.2A4.6 4.6 0 0 0 4 9.5c0 4.6 2.7 5.7 5.5 6-.6.6-.6 1.2-.5 2V21" />
+          </svg>
+        </a>
+      </nav>
+
+      {
+        themeToggle && (
+          <div class="nav-actions">
+            <button class="theme-toggle" id="themeToggle" type="button" aria-label="切换到深色主题">
+              <svg class="icon-sun" viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="4" />
+                <path d="M12 2v2m0 16v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" />
+              </svg>
+              <svg class="icon-moon" viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20.5 14.2A8.5 8.5 0 0 1 9.8 3.5 8.5 8.5 0 1 0 20.5 14.2Z" />
+              </svg>
+            </button>
+          </div>
+        )
+      }
+    </div>
+  </div>
+</header>
+
+<script is:inline>
+  (function () {
+    document.addEventListener("DOMContentLoaded", function () {
+      var navShell = document.querySelector(".nav-shell");
+      if (!navShell) return;
+      var syncNav = function () {
+        navShell.classList.toggle("is-scrolled", window.scrollY > 80);
+      };
+      syncNav();
+      window.addEventListener("scroll", syncNav, { passive: true });
+    });
+  })();
+</script>

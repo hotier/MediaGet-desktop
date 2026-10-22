@@ -23,7 +23,9 @@
   --card: #ffffff;
   --text: #0e1116;
   --muted: #525b68;
-  --faint: #868d99;
+  /* 2026-10-22 无障碍体检：原 #868d99 在页底 #f7f7f8 上只有 3.12:1，不到 WCAG AA 的
+     4.5:1（.section-index 与文档页 doc-meta 都吃这一档）。提到 #6b7280 → 4.52:1。 */
+  --faint: #6b7280;
   --accent: #2563eb;
   --on-accent: #ffffff;
   --line: rgb(14 17 22 / 10%);
@@ -32,7 +34,9 @@
      这五个变量只表达首屏的墨色；页面别处不再直接写首屏的黑/白，否则切主题时会有几处跟不上。 */
   --hero-ink: #0e1116;
   --hero-muted: #4f5866;
-  --hero-faint: #78818d;
+  /* 2026-10-22 无障碍体检：原 #78818d 在页底上 3.68:1（.hero-eyebrow .mono 与 .hero-hint
+     两处 11.5–12.5px 小字都吃这一档）。提到 #687280 → 4.55:1。深色档 5.15:1 本来就够，不动。 */
+  --hero-faint: #687280;
   --hero-line: rgb(14 17 22 / 12%);
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
   /* 正文：英文/数字走 Noto Sans（Google Fonts 的 latin 分包），汉字走思源黑体（Noto Sans SC），
@@ -52,7 +56,8 @@
   --card: #16181e;
   --text: #eceef1;
   --muted: #a2a9b4;
-  --faint: #767d89;
+  /* 深色档同步提一档：原 #767d89 是 4.68:1（已过线但余量小），#7a818d → 4.95:1 */
+  --faint: #7a818d;
   --accent: #5b8cff;
   --on-accent: #07080b;
   --line: rgb(255 255 255 / 9%);
@@ -70,7 +75,7 @@
  *   · Noto Sans     —— 英文与数字，Google Fonts 的 latin 分包，可变字重 400-600，35 KB；
  *                      不重裁：拉丁字符集小、文案里随时会长出新产品名。
  *   · Noto Sans SC  —— 中文，即思源黑体（Source Han Sans 的 Google 版），按整页实际用字
- *                      （416 个汉字与全角标点，清单在 noto-sans-sc-body.chars.txt）裁的子集，
+ *                      （537 个汉字与全角标点，清单在 noto-sans-sc-body.chars.txt）裁的子集，
  *                      可变字重 100-900，107 KB。
  *                      这份是**按当前文案定死的**：页面文案一改就得重裁，否则新字静默回落到
  *                      系统雅黑——不报错、不漏白，只是那一个字长得不一样。tests/landing-fonts
@@ -253,10 +258,15 @@ img[data-ink="on-light"] {
    读起来是纸面上极淡的一层冷光，而不是一块色斑（业主 2026-10-20「亮色也要有」）。 */
 /* 底部留白是「首屏 ↔ 下面那扇窗」之间唯一的间距（.tour 没有上内边距）。
    轨迹：20–36px（窗顶几乎贴住流程线）→ 44–88px → 现在 72–140px，串成一条带子而不是一块板。
-   四步流程线删掉之后首屏下部本来就空，这段留白要自己撑住「这一屏说完了、下面是证据」的停顿。 */
+   四步流程线删掉之后首屏下部本来就空，这段留白要自己撑住「这一屏说完了、下面是证据」的停顿。
+   这里**不能**用 overflow: hidden：首屏的光晕（.hero::before）顶端本来就要越过首屏边界
+   铺到导航条那一条上去，裁了就会在导航下沿留出一道平色的横缝，右侧光最强的地方最明显
+   （业主 2026-10-22 指出「导航栏右边没有和整体背景统一」）。
+   也不能只是放开 overflow：光晕左右各溢出 -8%，会撑出横向滚动范围。所以只裁横向：
+   overflow-x: clip 不建立滚动容器、也不影响纵轴，光晕往上的那一截照常铺到导航条上。 */
 .hero {
   position: relative;
-  overflow: hidden;
+  overflow-x: clip;
   background: var(--bg);
   color: var(--hero-ink);
   padding-bottom: clamp(72px, 10vh, 140px);
@@ -288,24 +298,91 @@ img[data-ink="on-light"] {
   position: relative;
 }
 
-/* 导航：吸顶玻璃条。
-   底色是页面色降到 78% 不透明度，再叠 18px 的 backdrop-filter：静止在顶部时它和背景同色，
-   滚动时下面过去的标题与窗体会糊成一层毛玻璃——因此不需要「滚过多少像素才加背景」的状态机，
-   也就不存在 file:// 下 JS 不执行时白字压白底的降级问题。 */
+/* 导航「顶部融合 ↔ 滚动玻璃胶囊」（2026-10-22 业主指定，参照 deepseek.com/harness 的收拢动效）：
+   - 页面最顶部：.nav 透明、全宽，和整页底色融成一片，读起来是「标题直接顶到屏幕顶」，
+     没有一条横杠把首屏切开。
+   - 滚过 80px：JS 挂 .is-scrolled，.nav 向中间收成居中的全圆角胶囊（max-width 100%→86%、
+     高度微缩、内边距补出来），同时一层「液态玻璃」淡入垫在胶囊背后。
+   两条实现约定（都是这类动效踩过的坑，别再改回去）：
+   1. 玻璃画在 .nav::before 伪元素上、只淡入这一层的 opacity——backdrop-filter 本身做不了
+      平滑过渡（浏览器按离散值跳变），淡入 opacity 才是顺滑的；inset:-1px 让玻璃比胶囊外扩
+      一圈，描边正好压在胶囊边缘上。
+   2. 收拢动画走 max-width / padding / height 的 transition，不动 width:100%，
+      .shell 的居中机制原样保留。
+   降级：file:// 下 JS 不跑时停在「融合」态（透明、全宽），不会出现白字压白底。 */
 .nav-shell {
   position: sticky;
   top: 0;
   z-index: 50;
-  background: color-mix(in srgb, var(--bg) 78%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--text) 7%, transparent);
-  backdrop-filter: blur(18px) saturate(1.6);
-  -webkit-backdrop-filter: blur(18px) saturate(1.6);
+  background: transparent;
 }
 
-/* 不支持 backdrop-filter 的浏览器退回实底：半透明但没有模糊，会让滚过的文字在条下发花 */
+.nav-shell .nav {
+  position: relative;
+  max-width: 100%;
+  margin-inline: auto;
+  padding-inline: 0;
+  border-radius: 999px;
+  transition:
+    max-width 0.32s var(--ease),
+    padding 0.32s var(--ease),
+    height 0.32s var(--ease),
+    translate 0.32s var(--ease);
+}
+
+/* 液态玻璃层：半透页面色 + 14px 磨砂提饱和 + 1px 描边 + 软投影，默认整层不可见 */
+.nav-shell .nav::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--bg) 62%, transparent);
+  /* 带前缀的在前、标准属性在后：压缩器按「后者覆盖前者」只留一份时，留下的必须是标准的 */
+  -webkit-backdrop-filter: blur(14px) saturate(1.5);
+  backdrop-filter: blur(14px) saturate(1.5);
+  border: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+  box-shadow: 0 10px 30px rgb(10 12 16 / 8%);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.4s var(--ease),
+    visibility 0s 0.4s;
+}
+
+.nav-shell.is-scrolled .nav {
+  max-width: 86%;
+  height: clamp(48px, 6vh, 56px);
+  padding-inline: 16px 6px;
+  /* 悬浮感只在滚动态用 translate 补（独立属性，不占布局、可与收拢同拍过渡）：
+     最顶部不留占位空白（业主 2026-10-22 点名去掉），滚动态胶囊离屏顶 8px。 */
+  translate: 0 8px;
+}
+
+.nav-shell.is-scrolled .nav::before {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 0.4s var(--ease),
+    visibility 0s;
+}
+
+/* 不支持 backdrop-filter 的浏览器：胶囊底色提浓成实底，
+   保证滚过的文字不会在胶囊下发花；顶部态仍是透明，不受影响。 */
 @supports not (backdrop-filter: blur(1px)) {
-  .nav-shell {
+  .nav-shell .nav::before {
     background: var(--bg);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+/* 减动偏好：收拢与淡入全部瞬切，状态语义保留 */
+@media (prefers-reduced-motion: reduce) {
+  .nav-shell .nav,
+  .nav-shell .nav::before {
+    transition: none;
   }
 }
 
@@ -909,7 +986,21 @@ html.js .reveal.in > * {
   }
 
   .hero-row {
+    flex-direction: column;
     align-items: flex-start;
+    justify-content: flex-start;
+    gap: 12px;
+  }
+
+  /* 小屏下副文案允许换行，不再以单行 nowrap 撑开宽度把右侧 CTA 挤到下一行；
+     按钮不再随文案长度左右漂移，但也不强撑整行，保持合理的自然宽度。 */
+  .hero-sub {
+    white-space: normal;
+    max-width: none;
+  }
+
+  .hero-action-col {
+    width: max-content;
   }
 
   .platforms {

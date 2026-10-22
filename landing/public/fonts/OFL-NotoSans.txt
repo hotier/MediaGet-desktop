@@ -14,14 +14,14 @@
    家族：Noto Sans SC，即思源黑体（Source Han Sans）的 Google 版本
    字重：可变 100-900（原为 Version 2.004 可变字重 TTF）
    来源：https://github.com/notofonts/noto-cjk  Sans/Variable/TTF/Subset/NotoSansSC-VF.ttf
-   改动：用 fontTools 按落地页首页实际用到的 429 个汉字与全角标点裁掉其余码位，
+   改动：用 fontTools 按落地页首页实际用到的 537 个汉字与全角标点裁掉其余码位（2026-10-22 新增使用指南与下载两页后扩裁，同日两页文体转正式再补一批，含 FAQ、404 文案改动），
          字重轴保留、字形轮廓未改。覆盖了哪些字，逐字写在同目录
          noto-sans-sc-body.chars.txt（tests/landing-fonts.test.ts 拿它跟源码对账）。
 
 3. noto-sans-sc-doc.woff2
    家族：同上，同一个源文件裁出的第二份子集（CSS 里另起名 "Noto Sans SC Doc"）
    字重：可变 100-900
-   改动：按三篇文档页（用户协议 / 隐私政策 / 权利通知）与共用页脚的 502 个汉字及全角标点裁成。
+   改动：按三篇文档页（用户协议 / 隐私政策 / 权利通知）与共用页脚、共用顶栏的 508 个汉字及全角标点裁成（2026-10-22 顶栏并入文档页后补裁「跳航答切深色」，同日导航改版再补「南」——指南页的链接文案进了共用顶栏）。
          与第 2 份分开是省钱而不是洁癖：条款用字与首页宣传语几乎不重叠，合并成一份
          会让每个只读首页的人多下载几十 KB 永远用不到的字。清单在同目录
          noto-sans-sc-doc.chars.txt，守卫按「这份文件属于哪一页」分别对账。
