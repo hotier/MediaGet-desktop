@@ -4,20 +4,22 @@ import { defineConfig } from "astro/config";
 /* global URL */
 
 /**
- * 把产物里的资源引用改成「相对当前文档」。
+ * 把产物里的资源引用改成「相对当前文档」，且**按页面所在目录算层级**。
  *
  * 为什么需要这一步：Astro 只认站点根绝对路径（`/_astro/xxx.css`），配置里没有
- * relativeLinks 这类开关（本仓 astro@5.18.2 全包搜不到这个键，写了也只是静不生效）。
+ * relativeLinks 这类开关（本仓 astro@7.4.1 全包搜不到这个键，写了也只是静默不生效）。
  * 根绝对路径的产物因此有三个打不开的场合——双击 dist/index.html（解析到磁盘根）、
  * 部署到 Pages 项目子路径（解析到域名根）、以及放进任意一层目录里托管。
  *
- * 前提是 build.format = "file"：每页都平铺在 dist 根（terms.html / privacy.html …），
- * 所以 `./_astro/` 对每一页都指向 dist/_astro/。目录格式（terms/index.html）下这条改写
- * 会把资源指到 dist/terms/_astro/，那种组合要么改成按层级算前缀，要么别用目录格式——
- * 别把 format 改回去却留着这里的 `./`。
+ * 产物形态是 build.format = "directory"（业主 2026-10-22 点名：URL 不带 .html）：
+ * 首页与 404 在产物根（index.html / 404.html），其余四页在各自目录里
+ * （changelog/index.html …）。所以前缀不能一刀切 `./`——changelog/ 下的页面写
+ * `./_astro/` 会指到 dist/changelog/_astro/，样式全 404（旧注释预言过的坑）。
+ * 层级从文件相对 dist 的深度算：根页 `./`，一层目录 `../`。页面里的站内链接
+ * 同理走 src/lib/rel.ts，两边共用「深度 → 前缀」这一条规则。
  *
- * 逐份 HTML 改写而不是只改 index.html：内页有四份，只改首页等于让内页在
- * 双击打开与子路径部署两种场合下裸奔（构建是绿的，线上是没样式的）。
+ * 逐份 HTML 改写而不是只改 index.html：五份内页 + 一份 404，漏一页就是那一页裸奔
+ * （构建是绿的，点开是没样式的）。
  *
  * 只动 `"/_astro/`：外链（github.com）、data: URI 与正文锚点一律不碰。
  * 一处都没改到就抛错——那说明 Astro 改了输出形态，静默放行等于把降级悄悄丢掉。
@@ -34,8 +36,11 @@ function relativeOutput() {
 
         let rewritten = 0;
         for (const page of pages) {
+          // dist 根 = 0 层 → "./"；changelog/index.html = 1 层 → "../"
+          const depth = page.pathname.slice(dir.pathname.length).split("/").filter(Boolean).length - 1;
+          const prefix = depth === 0 ? "./" : "../".repeat(depth);
           const html = readFileSync(page, "utf8");
-          const next = html.split('"/_astro/').join('"./_astro/');
+          const next = html.split('"/_astro/').join(`"${prefix}_astro/`);
           if (next === html) continue;
           writeFileSync(page, next, "utf8");
           rewritten += 1;
@@ -50,11 +55,17 @@ function relativeOutput() {
 }
 
 // 静态输出。产物在 dist/，与主仓 dist-renderer / dist-electron 互不相干。
-// build.format = "file"：五页（index / changelog / terms / privacy / notice）都平铺在产物根，
-// 页面之间的链接于是可以写成 `./terms.html` —— 双击打开与 Pages 子路径都能跳。
+// build.format = "directory"（业主 2026-10-22 定：路径不带 .html）：
+// 首页落在 /，更新日志落在 /changelog/ …… 站内链接写成 `./changelog/` 这种目录式
+// （前缀一律经 src/lib/rel.ts 按页算，页面里不手写 ../）。
+// 404 是唯一保留 .html 扩展名的产物（GitHub Pages 按文件名接管未命中路径），
+// 且必须留在产物根——Pages 只认根下那份。
+// 一个如实的边界：不带扩展名的 URL 与「双击 dist/index.html 预览」在原理上不可
+// 兼得——file:// 没有服务器补 index.html，点向 /changelog/ 会被当成本地目录列表。
+// 首页自身与其资源照常能开；上线形态（Pages）没有这个问题。
 // 端口避开主仓 dev server 的 5433。
 export default defineConfig({
-  build: { format: "file" },
+  build: { format: "directory" },
   server: { port: 5174 },
   devToolbar: { enabled: false },
   // Pages 项目站地址：只喂 canonical / og:url 这类「我是谁」的绝对链接，不参与资源路径

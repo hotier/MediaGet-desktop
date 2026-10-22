@@ -56,6 +56,9 @@ Downloads/
 # superpowers 技能的会话产物（头脑风暴原型 / SDD 进度账本 / 审查包，机器本地产物）
 .superpowers/
 
+# ego-browser 工具的自动产物（浏览器探针脚本；eslint.config 的 ignores 同步排除了它）
+.ego/
+
 # 本机 Python 运行时（pythoncore-3.15-64，非本仓源码也非构建产物，勿入仓）
 Python/
 

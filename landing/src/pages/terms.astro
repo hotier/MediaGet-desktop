@@ -10,6 +10,12 @@
  * 内容依据：MIT 许可、解析与下载均在本机、不提供 DRM 绕过、更新不静默安装。
  */
 import DocPage from "../layouts/DocPage.astro";
+import { pageRel, dirSlug } from "../lib/rel";
+
+/* 条款互链按页深度算（本页在 /terms/，兄弟页 ../privacy）——目录格式下
+   手写 ./privacy 会解析成 /terms/privacy，这正是 verify-landing 第 3 条要抓的。
+   无斜杠目录式（业主 2026-10-22 点名，Pages 301 补斜杠）。 */
+const link = (slug) => dirSlug(pageRel("/terms/"), slug);
 ---
 
 <DocPage
@@ -63,7 +69,7 @@ import DocPage from "../layouts/DocPage.astro";
 
   <h2>第七条 个人信息保护</h2>
   <p>
-    本软件对个人信息的处理规则见<a href="./privacy.html">《隐私政策》</a>。该政策为本协议的组成部分。
+    本软件对个人信息的处理规则见<a href={link("privacy")}>《隐私政策》</a>。该政策为本协议的组成部分。
   </p>
 
   <h2>第八条 知识产权与开源许可</h2>
@@ -112,6 +118,6 @@ import DocPage from "../layouts/DocPage.astro";
       href="https://github.com/hotier/mediaGet-desktop/issues"
       target="_blank"
       rel="noopener">项目仓库的问题反馈渠道</a
-    >提出。涉及权利主张的，依照<a href="./notice.html">《权利通知》</a>提交。
+    >提出。涉及权利主张的，依照<a href={link("notice")}>《权利通知》</a>提交。
   </p>
 </DocPage>

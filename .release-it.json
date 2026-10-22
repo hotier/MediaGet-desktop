@@ -1,7 +1,8 @@
 {
   "$schema": "https://unpkg.com/release-it/schema/release-it.json",
   "hooks": {
-    "before:init": ["pnpm typecheck", "pnpm lint", "pnpm test"]
+    "before:init": ["pnpm typecheck", "pnpm lint", "pnpm test"],
+    "after:bump": ["node scripts/build-landing.cjs", "git add landing/version.json"]
   },
   "git": {
     "requireBranch": "main",

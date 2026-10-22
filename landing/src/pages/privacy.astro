@@ -7,6 +7,10 @@
  * 与媒体直链、渲染层异常截 2000 字符且单会话 50 条、直链不入历史、不监听剪贴板。
  */
 import DocPage from "../layouts/DocPage.astro";
+import { pageRel, dirSlug } from "../lib/rel";
+
+/* 条款互链按页深度算（本页在 /privacy/，兄弟页 ../terms）——理由同 terms.astro */
+const link = (slug) => dirSlug(pageRel("/privacy/"), slug);
 ---
 
 <DocPage
@@ -18,7 +22,7 @@ import DocPage from "../layouts/DocPage.astro";
   <h2>一、适用范围</h2>
   <p>
     本政策说明 MediaGet 桌面客户端（含安装版与便携版）对个人信息的处理方式，是本软件<a
-      href="./terms.html">《用户协议》</a
+      href={link("terms")}>《用户协议》</a
     >的组成部分。
   </p>
 
