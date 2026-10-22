@@ -20,6 +20,7 @@
 import "../styles/global.css";
 import SiteNav from "../components/SiteNav.astro";
 import SiteFooter from "../components/SiteFooter.astro";
+import ThemeInit from "../components/ThemeInit.astro";
 import { PLATFORMS } from "../../../shared/platforms";
 import { WORK_STAT_SLOTS } from "../../../shared/work-stat";
 import { COOKIE_LOGIN_KEYS, COOKIE_LOGIN_TARGETS } from "../../../shared/cookie-login";
@@ -149,99 +150,15 @@ const version = release.version || "0.1.0";
     <meta name="twitter:card" content="summary_large_image" />
     <!-- 页签图标与应用同一个资产（scripts/make-icons.cjs 产出，build-landing 镜像到 public/brand） -->
     <link rel="icon" type="image/png" href="./brand/favicon.png" />
-    <script is:inline>
-      /* 主题：head 里定初值，并把开关也挂在这里。
-         ?theme=light|dark 可强制预览某一主题（不写入存储）。
-         开关必须活在内联脚本里：file:// 下 <script type="module"> 会被 CORS 拦掉，
-         挂进模块的监听器不会注册，按钮就成了死键。
-         同一条理由也限制了这里能做什么——初值要在 CSS 与正文之前定下来，而 html.js 这个
-         「入场动画的开关」绝不能在这里打：head 执行时正文还没解析，标记一打、内容就按 CSS
-         藏进 opacity:0，后面那支负责揭示的脚本一旦出问题就是整页空白。标记打在 body 末尾。 */
-      (function () {
-        var root = document.documentElement;
-
-        /* 优先级：?theme= 强制预览 > 用户点过的档 > 系统偏好 > 页面默认（浅色）。
-           系统偏好这一档必须有：否则系统在深色的人会先看到一帧浅色再翻档。 */
-        function applySavedTheme() {
-          try {
-            var forced = new URLSearchParams(location.search).get("theme");
-            if (forced === "light" || forced === "dark") {
-              root.dataset.theme = forced;
-              return;
-            }
-            var saved = localStorage.getItem("mg-landing-theme");
-            if (saved === "light" || saved === "dark") root.dataset.theme = saved;
-          } catch (error) {
-            /* 存储不可用（隐私模式 / file:// 限制）时退回系统偏好 */
-          }
-          if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
-            root.dataset.theme = "dark";
-          }
-        }
-
-        /* 按钮文案、tooltip 与浏览器 UI 的 theme-color 跟着主题走；
-           head 阶段正文还没出来，所以只在 DOM 就绪后调用 */
-        function syncChrome(theme) {
-          var toLight = theme !== "light";
-          var label = toLight ? "切换到浅色主题" : "切换到深色主题";
-          var toggle = document.getElementById("themeToggle");
-          if (toggle) {
-            toggle.setAttribute("aria-label", label);
-            toggle.setAttribute("title", label);
-          }
-          /* 首屏是整页最上面那一块，浏览器 UI 跟着它的底色走（与 --hero-bg 同值） */
-          var meta = document.querySelector('meta[name="theme-color"]');
-          if (meta) meta.setAttribute("content", toLight ? "#f7f7f8" : "#0c0d11");
-        }
-
-        applySavedTheme();
-
-        document.addEventListener("DOMContentLoaded", function () {
-          var toggle = document.getElementById("themeToggle");
-          var fadeTimer = null;
-          syncChrome(root.dataset.theme);
-          if (!toggle) return;
-          toggle.addEventListener("click", function () {
-            var theme = root.dataset.theme === "light" ? "dark" : "light";
-            var apply = function () {
-              root.dataset.theme = theme;
-              try {
-                localStorage.setItem("mg-landing-theme", theme);
-              } catch (error) {
-                /* 隐私模式禁用存储时仅本次会话生效 */
-              }
-              syncChrome(theme);
-              /* 首屏 WebGL island 在跑，靠这个事件换粒子配色 */
-              document.dispatchEvent(new CustomEvent("mg:theme", { detail: { theme: theme } }));
-            };
-            /* 主路线 View Transitions：整页新旧快照一次交叉溶解，全页同一拍——
-               逐元素过渡各区域重绘节奏不一，mock 窗先亮、四周慢半拍，像被切开。
-               不支持的浏览器退回 .theme-fading 逐元素渐变（global.css），再不行瞬翻。 */
-            var reduce =
-              window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-            if (!reduce && document.startViewTransition) {
-              document.startViewTransition(apply);
-            } else if (!reduce) {
-              root.classList.add("theme-fading");
-              clearTimeout(fadeTimer);
-              fadeTimer = window.setTimeout(function () {
-                root.classList.remove("theme-fading");
-              }, 340);
-              apply();
-            } else {
-              apply();
-            }
-          });
-        });
-      })();
-    </script>
+    <!-- 主题初值与开关全站共享：必须在 head 里、赶在首帧前定档（原因见组件注释） -->
+    <ThemeInit />
   </head>
 
   <body>
     <!-- 导航与页脚由 components/SiteNav.astro / SiteFooter.astro 提供：
          文档页与 404 用的是同两个组件，只是锚点前缀与主题开关不同。
          skip-link 在 SiteNav 组件里。 -->
-    <SiteNav pagePath="/" isHome themeToggle />
+    <SiteNav pagePath="/" isHome />
 
     <!-- 首屏是一块与正文同色的画布：承诺、一句轮换的宣传语、动作按钮都在这里，窗体的顶边接在下面（见 .tour）。
          原来还有一条四步解析线（01 粘贴链接…04 选择下载），2026-10-20 业主删掉——首屏只留读得完的东西。
@@ -252,9 +169,9 @@ const version = release.version || "0.1.0";
           <span class="mono">v{version}</span>
         </p>
 
-        <!-- 首屏的主视觉就是这句承诺本身，纯中文、三行。字体全在 public/fonts/ 自托管
-             （正文两段 + 这一句的宋体，见 global.css），运行期不向任何 CDN 发请求，
-             file:// 打开也不缺字。改这句文案要同时重裁京华那份子集。 -->
+        <!-- 首屏的主视觉就是这句承诺本身，纯中文、三行。标题字体是京华老宋体子集，
+             自托管在 public/fonts/（见 global.css），运行期不向任何 CDN 发请求。
+             改这句文案要同时重裁老宋那份子集。 -->
         <h1 class="hero-title">
           <span class="hero-title-cn">粘贴一条链接，<br />从解析到下载，<br />都在这台电脑上。</span>
         </h1>

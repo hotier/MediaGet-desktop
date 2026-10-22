@@ -1,0 +1,97 @@
+---
+/**
+ * 全站主题初值与开关的唯一实现（2026-10-22 业主定调：landing 所有页面共享主题色）。
+ *
+ * 为什么抽成组件还非要放在各页 <head> 里：初值必须赶在 CSS 与正文之前定下来，
+ * 否则系统深色的人会先看到一帧浅色再翻档。Astro 组件若在 body 里被引用，脚本
+ * 就会落到 body 末尾，失去「首帧前定档」的意义——所以调用方都在 <head> 里引它，
+ * 脚本本体只有这一份。
+ *
+ * 优先级：?theme= 强制预览 > 用户点过的档（localStorage）> 系统偏好 > 页面默认（浅色）。
+ * 开关必须活在内联脚本里：file:// 下 <script type="module"> 会被 CORS 拦掉，
+ * 挂进模块的监听器不会注册，按钮就成了死键。
+ * 同一条理由也限制了这里能做什么——入场动画的开关（html.js）绝不能在这里打：
+ * head 执行时正文还没解析，标记一打、内容就按 CSS 藏进 opacity:0，后面那支负责
+ * 揭示的脚本一旦出问题就是整页空白。标记打在 body 末尾（index.astro）。
+ *
+ * 主题切换广播 mg:theme 事件：页面里按主题重算颜色的 island（如 404 的点阵）
+ * 靠它换色，不依赖两边共享变量。
+ */
+---
+
+<script is:inline>
+  (function () {
+    var root = document.documentElement;
+
+    function applySavedTheme() {
+      try {
+        var forced = new URLSearchParams(location.search).get("theme");
+        if (forced === "light" || forced === "dark") {
+          root.dataset.theme = forced;
+          return;
+        }
+        var saved = localStorage.getItem("mg-landing-theme");
+        if (saved === "light" || saved === "dark") root.dataset.theme = saved;
+      } catch (error) {
+        /* 存储不可用（隐私模式 / file:// 限制）时退回系统偏好 */
+      }
+      if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+        root.dataset.theme = "dark";
+      }
+    }
+
+    /* 按钮文案、tooltip 与浏览器 UI 的 theme-color 跟着主题走；
+       head 阶段正文还没出来，所以只在 DOM 就绪后调用 */
+    function syncChrome(theme) {
+      var toLight = theme !== "light";
+      var label = toLight ? "切换到浅色主题" : "切换到深色主题";
+      var toggle = document.getElementById("themeToggle");
+      if (toggle) {
+        toggle.setAttribute("aria-label", label);
+        toggle.setAttribute("title", label);
+      }
+      /* 首屏是整页最上面那一块，浏览器 UI 跟着它的底色走（与 --bg 同值） */
+      var meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute("content", toLight ? "#f7f7f8" : "#0c0d11");
+    }
+
+    applySavedTheme();
+
+    document.addEventListener("DOMContentLoaded", function () {
+      var toggle = document.getElementById("themeToggle");
+      var fadeTimer = null;
+      syncChrome(root.dataset.theme);
+      if (!toggle) return;
+      toggle.addEventListener("click", function () {
+        var theme = root.dataset.theme === "light" ? "dark" : "light";
+        var apply = function () {
+          root.dataset.theme = theme;
+          try {
+            localStorage.setItem("mg-landing-theme", theme);
+          } catch (error) {
+            /* 隐私模式禁用存储时仅本次会话生效 */
+          }
+          syncChrome(theme);
+          document.dispatchEvent(new CustomEvent("mg:theme", { detail: { theme: theme } }));
+        };
+        /* 主路线 View Transitions：整页新旧快照一次交叉溶解，全页同一拍——
+           逐元素过渡各区域重绘节奏不一，mock 窗先亮、四周慢半拍，像被切开。
+           不支持的浏览器退回 .theme-fading 逐元素渐变（global.css），再不行瞬翻。 */
+        var reduce =
+          window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if (!reduce && document.startViewTransition) {
+          document.startViewTransition(apply);
+        } else if (!reduce) {
+          root.classList.add("theme-fading");
+          clearTimeout(fadeTimer);
+          fadeTimer = window.setTimeout(function () {
+            root.classList.remove("theme-fading");
+          }, 340);
+          apply();
+        } else {
+          apply();
+        }
+      });
+    });
+  })();
+</script>

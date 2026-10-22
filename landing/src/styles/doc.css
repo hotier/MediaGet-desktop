@@ -19,8 +19,9 @@
 body.doc {
   --font-body: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei",
     "PingFang SC", system-ui, sans-serif;
-  color-scheme: light;
   font: 400 16px/1.85 var(--font-body);
+  /* 主题色与首页完全共享（2026-10-22 业主定调）：墨色全部来自 global.css 的两套
+     token，本文件不再钉 color-scheme——钉了会压掉深色档的系统控件配色。 */
 }
 
 /* —— 正文：单栏、46em 行宽（中文一行约 46 字，比首页的段落更窄，读条款不串行） ——

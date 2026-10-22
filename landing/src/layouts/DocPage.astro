@@ -9,8 +9,9 @@
  * 三条约定：
  *   1. 只引 doc.css（它自己 @import global.css），所以四页与首页共用同一套 token。
  *      顶栏 2026-10-22 起恢复共用（业主点名「所有子页面共享导航栏和页脚」，覆盖
- *      2026-10-20「条款页不挂顶栏」的旧决定）：锚点带回首页的前缀，主题开关不给——
- *      这四页钉死浅色，摆一颗死键不如不摆。
+ *      2026-10-20「条款页不挂顶栏」的旧决定）：锚点带回首页的前缀。
+ *      主题色 2026-10-22 起也全站共享（业主定调），初值与开关走 ThemeInit——
+ *      文档页不再钉死浅色，深色档的墨色同样来自 global.css 的那两套 token。
  *   2. 链接一律写成目录式（`./terms/`）而不是 `/terms`：产物是 build.format="directory"
  *      的按页目录（/terms/index.html），URL 不带 .html（业主 2026-10-22 定）；
  *      前缀按页深度经 lib/rel 算，塞进任意子路径托管都要能跳。
@@ -19,6 +20,7 @@
 import "../styles/doc.css";
 import SiteNav from "../components/SiteNav.astro";
 import SiteFooter from "../components/SiteFooter.astro";
+import ThemeInit from "../components/ThemeInit.astro";
 import { pageRel } from "../lib/rel";
 
 interface Props {
@@ -41,8 +43,8 @@ const canonical = new URL(`${current}/`, site).href;
 ---
 
 <!doctype html>
-<!-- 文档页固定浅色：它们讲的是条款，不是产品门面，没有主题开关也不跟随系统偏好。
-     固定在这里，样式里的 color-mix 与墨色才只有一档（doc.css 的 body.doc 也钉了 color-scheme）。 -->
+<!-- 默认浅色，深色由 head 里的 ThemeInit 按「用户点过的档 > 系统偏好」在首帧前翻档；
+     与首页同一套机制、同一个 localStorage 键，全站共享主题色。 -->
 <html lang="zh-CN" data-theme="light">
   <head>
     <meta charset="UTF-8" />
@@ -52,6 +54,8 @@ const canonical = new URL(`${current}/`, site).href;
     <meta name="theme-color" content="#f7f7f8" />
     <link rel="canonical" href={canonical} />
     <link rel="icon" type="image/png" href={`${rel}brand/favicon.png`} />
+    <!-- 必须在 head 里、赶在首帧前定档（原因见组件注释） -->
+    <ThemeInit />
   </head>
 
   <body class="doc">
