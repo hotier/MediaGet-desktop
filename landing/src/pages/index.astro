@@ -21,14 +21,12 @@ import "../styles/global.css";
 import SiteNav from "../components/SiteNav.astro";
 import SiteFooter from "../components/SiteFooter.astro";
 import ThemeInit from "../components/ThemeInit.astro";
+import DownloadCta from "../components/DownloadCta.astro";
 import { PLATFORMS } from "../../../shared/platforms";
 import { WORK_STAT_SLOTS } from "../../../shared/work-stat";
 import { COOKIE_LOGIN_KEYS, COOKIE_LOGIN_TARGETS } from "../../../shared/cookie-login";
 import release from "../../version.json";
 
-const REPO_FALLBACK = "hotier/mediaGet-desktop";
-const repo = release.repo || REPO_FALLBACK;
-const releasesLatest = `https://github.com/${repo}/releases/latest`;
 
 /* 分享卡是绝对链接（爬虫不解析相对路径）：相对那个文件走出去取，域名仍只写在 astro.config 的 site */
 const ogImage = new URL("og.png", Astro.site ?? "https://hotier.github.io/mediaGet-desktop/").href;
@@ -186,14 +184,8 @@ const version = release.version || "0.1.0";
           </p>
           <div class="hero-action-col">
             <div class="hero-actions">
-              <a class="cta-primary" href={releasesLatest} target="_blank" rel="noopener">
-                <svg viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <path d="m7 10 5 5 5-5" />
-                  <path d="M12 15V3" />
-                </svg>
-                下载 Windows 版
-              </a>
+              <!-- 「下载 Windows 版」主按钮：与下载页共用 components/DownloadCta.astro -->
+              <DownloadCta />
             </div>
             <p class="hero-hint">
               <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -800,9 +792,9 @@ const version = release.version || "0.1.0";
       <section class="section reveal" id="platforms">
         <div class="shell section-inner">
           <div class="section-head">
-            <p class="section-index">01</p>
             <!-- 业主 2026-10-20 定：这一块只写「支持平台」，不再拿数量与「一个入口」当卖点。
-                 数量仍出现在 meta description 里，且跟着注册表走，不再由这里手写。 -->
+                 数量仍出现在 meta description 里，且跟着注册表走，不再由这里手写。
+                 业主 2026-10-22 定：段头序号（01/02）删掉，不再给段落编号。 -->
             <h2>支持平台</h2>
           </div>
 
@@ -851,12 +843,13 @@ const version = release.version || "0.1.0";
       <section class="section reveal" id="faq">
         <div class="shell section-inner">
           <div class="section-head">
-            <p class="section-index">02</p>
             <h2>常见问题</h2>
           </div>
 
           <div class="section-body faq">
-            <details open>
+            <!-- 一律收起，不给任何一条加 open：首条展开会让「问答」段在首屏外先露出一段
+                 长文本，和其他五条的扫读节奏不一致（业主 2026-10-22 指出）。 -->
+            <details>
               <summary>和在线解析网站有什么区别？</summary>
               <p>
                 在线站点先把链接提交到它的服务器排队解析；MediaGet
@@ -886,7 +879,7 @@ const version = release.version || "0.1.0";
             <!-- 2026-10-22 无障碍与内容体检补的两问：下载器用户最本能的两条异议
                  （安全吗 / 我的系统有没有）此前只在条款页与文案缝里，FAQ 这个扫读入口没接住。
                  口径全部对齐既有承诺：MIT 开源、本机运行、不静默安装（用户协议第九条）、
-                 仅 Windows（各文档页的「适用于 Windows 桌面客户端」）。不写未实现的承诺。 -->
+                 仅 Windows。不写未实现的承诺。 -->
             <details>
               <summary>它安全吗？会不会带毒或偷偷常驻？</summary>
               <p>

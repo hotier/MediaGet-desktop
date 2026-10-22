@@ -2,14 +2,23 @@
 /**
  * 页脚：首页、四篇文档页与 404 共用这一份。
  *
- * 为什么是一个组件而不是两段 markup：页脚里有 4 个入口列和一段免责，抄第二份之后
+ * 为什么是一个组件而不是两段 markup：页脚里有 3 个入口列和一段免责，抄第二份之后
  * 「加了条款页却只给首页加入口」这种错不会报错，只会让某一页的页脚慢慢变成旧版。
  *
- * 唯一的差异是锚点归属与页面深度：首页的「平台支持 / 常见问题 / 回到顶部」指向本页
+ * 收录口径（2026-10-22 业主「页脚有很多无用或者重复的链接」后收紧）：
+ * 只放**导航里没有的**入口。导航 2026-10-22 起吸顶且常驻（使用指南 / 下载 /
+ * 更新日志 / GitHub 图标），页脚再各给一遍就是纯重复——曾按「导航不吸顶」的旧前提
+ * 把 GitHub、更新日志也抄在页脚，那条前提已失效。字标本身就是回首页的链接，
+ * 「回到顶部 / 返回首页」因此一并删除。现在三列是：
+ *   资源 —— 发布版本、解析内核（导航没有的站外入口）
+ *   页面 —— 平台支持、常见问题（首页锚点，导航改版后只剩这里进得去）
+ *   条款 —— 用户协议、隐私政策、DMCA 侵权通知（导航是产品门面，条款不该占一格）
+ *
+ * 唯一的差异是锚点归属与页面深度：首页的「平台支持 / 常见问题」指向本页
  * 的 #id，其余页上这些 id 并不存在，必须回首页去。所以调用方传 pagePath（本页相对
  * 站点根的路径，如 "/" 或 "/changelog/"），前缀一律经 lib/rel 按深度算——
  * 产物是 directory 格式（URL 不带 .html），页面层级不再统一，手写 ../ 就是第二份真源。
- * 漏了这个前缀就是三列死链，而页面看起来完全正常。
+ * 漏了这个前缀就是两列死链，而页面看起来完全正常。
  */
 import release from "../../version.json";
 import { pageRel, dirSlug } from "../lib/rel";
@@ -34,12 +43,12 @@ const kernelRepo = "https://github.com/hotier/mediaGet";
    解析成首页，地址栏干净。 */
 const home = isHome ? "" : `${rel}index.html`;
 const at = (hash: string) => `${home}${hash}`;
-/* 首页的「顶部」是页内锚点；其余页回到首页目录 */
+/* 字标即回首页入口：首页上是页内锚点，其余页回到首页目录（不再单列一条链接） */
 const homeHref = isHome ? "#top" : rel;
-const homeLabel = isHome ? "回到顶部" : "返回首页";
 ---
 
-<!-- 导航不吸顶，所以 GitHub、发布版本、解析内核这些入口在页脚再给一遍 -->
+<!-- 只放导航没有的入口（收录口径见文件头）：导航 2026-10-22 起吸顶常驻，
+     GitHub 与更新日志不再在页脚重复 -->
 <footer class="footer">
   <div class="shell">
     <div class="footer-grid">
@@ -54,18 +63,19 @@ const homeLabel = isHome ? "回到顶部" : "返回首页";
       </a>
         <p>本地工具，不托管、不分发任何内容。请仅下载你有权保存的作品，并遵守各平台服务条款与当地法律。本项目与所列平台无隶属关系。</p>
       </div>
+      <!-- 资源列只放导航没有的站外入口：GitHub 与更新日志在导航里（图标 / 文字链），
+           页脚再各给一遍就是纯重复（2026-10-22 业主清理）。 -->
       <nav aria-label="资源">
         <h4>资源</h4>
-        <a href={`https://github.com/${repo}`} target="_blank" rel="noopener">GitHub</a>
         <a href={releasesLatest} target="_blank" rel="noopener">发布版本</a>
-        <a href={dirSlug(rel, "changelog")}>更新日志</a>
         <a href={kernelRepo} target="_blank" rel="noopener">解析内核</a>
       </nav>
+      <!-- 页面列只剩首页锚点：导航 2026-10-22 改版后「平台 / 问答」两段从导航退场，
+           这两条是仅剩的入口。字标本身就是回首页链接，不再单列「回到顶部」。 -->
       <nav aria-label="页面">
         <h4>页面</h4>
         <a href={at("#platforms")}>平台支持</a>
         <a href={at("#faq")}>常见问题</a>
-        <a href={homeHref}>{homeLabel}</a>
       </nav>
       <!-- 三篇条款页的入口只在页脚出现：导航是产品门面，条款不该占一格。
            站内页面链接用 dirSlug 拼成无斜杠目录式（../terms，Pages 301 补斜杠，
@@ -74,7 +84,7 @@ const homeLabel = isHome ? "回到顶部" : "返回首页";
         <h4>条款</h4>
         <a href={dirSlug(rel, "terms")}>用户协议</a>
         <a href={dirSlug(rel, "privacy")}>隐私政策</a>
-        <a href={dirSlug(rel, "notice")}>权利通知</a>
+        <a href={dirSlug(rel, "dmca")}>权利通知</a>
       </nav>
     </div>
   </div>

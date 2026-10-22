@@ -12,6 +12,7 @@
  * 不用对话体；标题也随文体改为「安装包类型」「下载失败的处理」等。
  */
 import DocPage from "../layouts/DocPage.astro";
+import DownloadCta from "../components/DownloadCta.astro";
 import release from "../../version.json";
 import { pageRel, dirSlug } from "../lib/rel";
 
@@ -33,8 +34,10 @@ const link = (slug) => dirSlug(pageRel("/download/"), slug);
     {release.date && <span>（发布于 {release.date}）</span>}。安装包仅通过本仓库的
     <a href={releasesLatest} target="_blank" rel="noopener">GitHub Releases 页</a>分发。同名仿冒站点是此类工具的主要风险来源，请勿通过其他渠道下载。
   </p>
+  <!-- 下载按钮与首页 hero 同一颗（components/DownloadCta.astro，2026-10-22 业主定调复用）；
+       段落只提供间距，样式与文案都在组件与 global.css 里，本页不再写第二份。 -->
   <p class="dl-cta">
-    <a class="cta-primary" href={releasesLatest} target="_blank" rel="noopener">前往 Releases 页下载</a>
+    <DownloadCta />
   </p>
 
   <h2>安装包类型</h2>
@@ -68,7 +71,8 @@ const link = (slug) => dirSlug(pageRel("/download/"), slug);
 </DocPage>
 
 <style>
-  /* 下载页独有的 CTA 段：.cta-primary 来自 global.css，这里只管间距 */
+  /* 下载页 CTA 段：只管间距。按钮本体（图标/文案/href）在 components/DownloadCta.astro，
+     配色与 hover 在 global.css 的 .cta-primary——本页不碰按钮本身。 */
   .dl-cta {
     margin: 0 0 clamp(26px, 4vw, 38px);
   }

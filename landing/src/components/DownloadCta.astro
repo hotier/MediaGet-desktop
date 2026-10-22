@@ -1,0 +1,30 @@
+---
+/**
+ * 「下载 Windows 版」主按钮：首页 hero 与下载页共用这一颗。
+ *
+ * 2026-10-22 业主定调：下载页的下载按钮直接复用首页的。此前两页各写一颗同款
+ * <a class="cta-primary">——样式同源（global.css）但文案与图标各写一份，改一处
+ * 漏一页不会报错。抽成组件后图标、文案、href 算法只有这一份。
+ *
+ * href 来自 version.json 的 repo（build-landing 离线档也写这一份），指向
+ * Releases/latest；target=_blank + rel=noopener 与站点其余外链同规矩。
+ */
+import release from "../../version.json";
+
+interface Props {
+  /** 按钮文案；默认与首页一致（业主：直接复用首页那颗） */
+  label?: string;
+}
+
+const { label = "下载 Windows 版" } = Astro.props;
+const releasesLatest = `https://github.com/${release.repo || "hotier/mediaGet-desktop"}/releases/latest`;
+---
+
+<a class="cta-primary" href={releasesLatest} target="_blank" rel="noopener">
+  <svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 0 0-2v-4" />
+    <path d="m7 10 5 5 5-5" />
+    <path d="M12 15V3" />
+  </svg>
+  {label}
+</a>

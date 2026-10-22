@@ -26,7 +26,7 @@ interface Props {
   /** 只有首页传 true：锚点走页内 #id、品牌位回 #top。404 也在产物根但不是首页 */
   isHome?: boolean;
   /** 当前页 slug，给对应导航项挂 aria-current（首页不传） */
-  current?: "guide" | "download" | "changelog" | "terms" | "privacy" | "notice" | "";
+  current?: "guide" | "download" | "changelog" | "terms" | "privacy" | "dmca" | "";
 }
 
 const { pagePath = "/", isHome = false, current = "" } = Astro.props;
@@ -67,12 +67,12 @@ const homeHref = isHome ? "#top" : rel;
              三颗页面链接全走 dirSlug 无斜杠目录式。 -->
         <a href={dirSlug(rel, "guide")} aria-current={current === "guide" ? "page" : undefined}>使用指南</a>
         <a href={dirSlug(rel, "download")} aria-current={current === "download" ? "page" : undefined}>下载</a>
-        <!-- 更新日志是站内另一页而非锚点：新标签打开，滚动位置不打断（业主 2026-10-20 定）。
-             站内页面链接用 dirSlug 拼成无斜杠目录式（../changelog，Pages 301 补斜杠，
-             业主 2026-10-22 点名的形态），同步链由 verify-landing 守卫。
-             例外：本页就是更新日志时不再 target=_blank——点「当前页」弹出一个重复标签是
-             2026-10-22 共享顶栏后暴露的 bug（aria-current 与 _blank 同体自相矛盾）。 -->
-        <a href={dirSlug(rel, "changelog")} target={current === "changelog" ? undefined : "_blank"} rel="noopener" aria-current={current === "changelog" ? "page" : undefined}>更新日志</a>
+        <!-- 更新日志是站内另一页而非锚点：站内页面链接用 dirSlug 拼成无斜杠目录式
+             （../changelog，Pages 301 补斜杠，业主 2026-10-22 点名的形态），同步链由
+             verify-landing 守卫。
+             不开新标签页（2026-10-22 业主定，覆盖 10-20「新标签打开不打断滚动」的
+             旧决定）：站内导航就地跳转，读者用浏览器返回即可回到原来的滚动位置。 -->
+        <a href={dirSlug(rel, "changelog")} aria-current={current === "changelog" ? "page" : undefined}>更新日志</a>
         <!-- GitHub 图标并入链接组（业主 2026-10-20「放到更新日志右边」）：
              窄屏断点只藏文字锚点、这枚图标跟着留在右侧（见 global.css 的 720px 段）。 -->
         <a class="nav-github" href={`https://github.com/${repo}`} aria-label="GitHub 仓库" target="_blank" rel="noopener">
