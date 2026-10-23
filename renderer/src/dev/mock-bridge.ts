@@ -661,7 +661,14 @@ function mockStatsQuery(range: StatsDateRange): StatsQueryResult {
     }
     const name = event.type === "cancel" ? undefined : event.author?.trim();
     if (!name) continue;
-    const author = authorRows.get(name) ?? { name, parsedWorks: 0, downloadedFiles: 0, downloadedBytes: 0 };
+    const author = authorRows.get(name) ?? {
+      name,
+      // 平台随作者一起报出（v38）：dev 预览里那一列才有东西可看
+      ...(event.platform ? { platform: event.platform } : {}),
+      parsedWorks: 0,
+      downloadedFiles: 0,
+      downloadedBytes: 0,
+    };
     const work = event.type === "cancel" ? "" : event.workKey;
     if (event.type === "parse" && event.ok && !parsedWorks.has(`${name}\u0000${work}`)) {
       parsedWorks.add(`${name}\u0000${work}`);
@@ -990,7 +997,8 @@ function mockCacheStatus(): CacheStatus {
 }
 
 const mockBridge: MgBridge = {
-  getMeta: async () => ok<AppMeta>({ version: "0.1.0", electron: "34.0.0 (mock)", kernelMode: "local" }),
+  getMeta: async () =>
+    ok<AppMeta>({ version: "0.1.0", electron: "34.0.0 (mock)", kernelMode: "local", kernel: "1.1.1" }),
 
   identify: async ({ text }) => {
     const platform = detectPlatform(text);

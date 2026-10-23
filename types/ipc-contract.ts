@@ -65,7 +65,7 @@ export const ParsedVideoItemSchema = z.object({
    * 这一条是第几 P（1 起，B站 `pages[].page`）。
    *
    * 不能用数组下标代替：某一 P 取流失败时它会整条缺席（内核与 amagi 都是 `filter(Boolean)`），
-   * 下标就整体前移——「分 P 2」标签与 `_P2` 文件名会贴到真正的第三 P 上，
+   * 下标就整体前移——「分 P 2」标签与 `P2-` 文件名前缀会贴到真正的第三 P 上，
    * 用户按名字找片找到的是另一条。缺键（其他平台、单 P）才退回下标。
    */
   page: z.number().int().min(1).optional(),
@@ -531,6 +531,13 @@ export const AppMetaSchema = z.object({
   version: STR,
   electron: STR,
   kernelMode: z.enum(["local", "mock"]),
+  /**
+   * 随包解析内核的版本号（v37）：`@mediaget/parse-core` 自己报的 `PARSE_CORE_VERSION`。
+   *
+   * 从主进程传，不让渲染层 `import` 内核包 —— 那会把整棵解析器打进 renderer bundle
+   * （与 `types/ipc-contract.ts` 零运行时的同一条纪律）。设置页「内核版本」直接显示它。
+   */
+  kernel: STR,
   // v6 起不再带 `platforms`：平台清单的真源是本仓 `shared/platforms.ts`，
   // 两进程 import 同一模块即可，过 IPC 复制一张表正是这次要消灭的并行真源
 });
@@ -929,6 +936,11 @@ export const StatsQueryResultSchema = z.object({
     name: STR.max(100),
     /** 作者头像（取该作者范围内最新一条历史行的快照）；老记录与匿名行为缺省 */
     avatar: STR.max(2000).optional(),
+    /**
+     * 平台契约键（v38，业主 2026-10-23 作者卡加平台列）：取该作者范围内最新一条历史行。
+     * 可选是因为老记录与匿名行可能没有归属；缺省时界面那一格写「—」，不猜一个平台。
+     */
+    platform: STR.max(40).optional(),
     parsedWorks: COUNT,
     downloadedFiles: COUNT,
     downloadedBytes: COUNT,

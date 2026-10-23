@@ -142,7 +142,8 @@ export interface IpcRegistryDeps {
   settingsRepository: SettingsRepository;
   historyRepository: HistoryRepository;
   queueRepository: QueueRepository;
-  getAppMeta: () => { version: string; electron: string };
+  /** `kernel` = 随包 parse-core 的版本号（engine 报出，见 `engine.kernelVersion`） */
+  getAppMeta: () => { version: string; electron: string; kernel: string };
   kernelMode: () => AppMeta["kernelMode"];
   /**
    * 设置写入后的副作用钩子（index.ts 注入 = publishKernelEnv）。
@@ -266,6 +267,7 @@ export function registerIpc(deps: IpcRegistryDeps): void {
       version: meta.version,
       electron: meta.electron,
       kernelMode: deps.kernelMode(),
+      kernel: meta.kernel,
     };
   });
 

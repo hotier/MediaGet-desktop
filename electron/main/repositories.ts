@@ -498,7 +498,7 @@ export function createStatsRepository(database: DatabaseHandle): StatsRepository
         startAt,
         endAt
       );
-      const authorByWork = new Map<string, { name: string; avatar?: string }>();
+      const authorByWork = new Map<string, { name: string; avatar?: string; platform?: string }>();
       for (const row of database.all<{ work_key: string; payload_json: string }>(
         `SELECT h.work_key, h.payload_json FROM history_entries h
          JOIN (SELECT DISTINCT work_key FROM stats_events WHERE event_at >= ? AND event_at < ? AND work_key IS NOT NULL) e
@@ -509,11 +509,15 @@ export function createStatsRepository(database: DatabaseHandle): StatsRepository
       )) {
         if (authorByWork.has(row.work_key)) continue;
         try {
-          const entry = JSON.parse(row.payload_json) as { author?: { name?: unknown; avatar?: unknown } };
+          const entry = JSON.parse(row.payload_json) as {
+            author?: { name?: unknown; avatar?: unknown };
+            platform?: unknown;
+          };
           if (typeof entry.author?.name === "string" && entry.author.name.trim()) {
-            // 行按 created_at DESC 遍历：这里取到的是该作品**最新**快照的头像
+            // 行按 created_at DESC 遍历：这里取到的是该作品**最新**快照的头像与平台
             const avatar = typeof entry.author.avatar === "string" && entry.author.avatar ? entry.author.avatar : undefined;
-            authorByWork.set(row.work_key, { name: entry.author.name.trim(), avatar });
+            const platform = typeof entry.platform === "string" && entry.platform ? entry.platform : undefined;
+            authorByWork.set(row.work_key, { name: entry.author.name.trim(), avatar, platform });
           }
         } catch {
           // A corrupt historical payload has no author attribution; its event totals still count.
@@ -525,8 +529,9 @@ export function createStatsRepository(database: DatabaseHandle): StatsRepository
         const info = authorByWork.get(row.work_key);
         if (!info) continue;
         const author = authorTotals.get(info.name) ?? { name: info.name, parsedWorks: 0, downloadedFiles: 0, downloadedBytes: 0 };
-        // 头像取这位作者**最新**一条作品快照的；此后不再覆盖，同作者多作品不会来回跳
+        // 头像与平台取这位作者**最新**一条作品快照的；此后不再覆盖，同作者多作品不会来回跳
         if (author.avatar === undefined && info.avatar) author.avatar = info.avatar;
+        if (author.platform === undefined && info.platform) author.platform = info.platform;
         if (row.event_type === "parse" && row.outcome === "success" && !parsedWorks.has(row.work_key)) {
           author.parsedWorks += 1;
           parsedWorks.add(row.work_key);

@@ -3,7 +3,7 @@
  * 每个 fmtCreated 用例都显式传 now —— 相对日（今天/昨天）不能依赖测试运行的当天，否则明天就红。
  */
 import { describe, expect, it } from "vitest";
-import { avgSpeed, fmtCreated, fmtEta, fmtFileStamp } from "../renderer/src/lib/format";
+import { avgSpeed, fmtBytes, fmtCreated, fmtEta, fmtFileStamp } from "../renderer/src/lib/format";
 
 const at = (y: number, m: number, d: number, h = 0, mi = 0, s = 0): number =>
   new Date(y, m - 1, d, h, mi, s).getTime();
@@ -65,6 +65,23 @@ describe("fmtFileStamp（导出文件名里的紧凑时刻）", () => {
 
   it("到秒：同一分钟内的两次导出不再撞名", () => {
     expect(fmtFileStamp(at(2026, 10, 19, 13, 5, 1))).not.toBe(fmtFileStamp(at(2026, 10, 19, 13, 5, 59)));
+  });
+});
+
+describe("fmtBytes（字节口径）", () => {
+  it("小于 1 的刻度不许产出 undefined 单位（图表坐标轴会给出 0.2 / 0.8 这类值）", () => {
+    // 曾被渲染成「204.8 undefined」「819.2 undefined」：log 为负 → units[-1]
+    expect(fmtBytes(0.2)).toBe("0 B");
+    expect(fmtBytes(0.8)).toBe("1 B");
+    expect(fmtBytes(819.2)).toBe("819 B");
+  });
+
+  it("量级换算与 0 值", () => {
+    expect(fmtBytes(0)).toBe("0 B");
+    expect(fmtBytes(1024)).toBe("1.0 KB");
+    expect(fmtBytes(1.5 * 1024 * 1024)).toBe("1.5 MB");
+    expect(fmtBytes(-1)).toBe("0 B");
+    expect(fmtBytes(Number.NaN)).toBe("0 B");
   });
 });
 

@@ -157,12 +157,12 @@ export function queryTrend(result: StatsQueryResult): TrendPoint[] {
 
 /**
  * 年视图热力的连续日序列：**整段范围逐日出格**，不向覆盖起点收缩。
- * 覆盖起点之前的日子标 `missing`（那里没有事件可查，画成空格而不是 0 ——
- * 与 queryTrend 的「不补零」是同一条语义，只是格子保留在轴上撑满一年）。
+ * 覆盖起点之前的日子标 `missing`（那里没有事件可查：tooltip 说「暂无记录」）。
+ * 格子照样出——热力图要的是整年矩阵，空着不画会让最近几天像浮在坐标里（2026-10-23）。
  * 库里还没有任何事件时返回空数组。
  */
 export interface TrendCell extends TrendPoint {
-  /** true = 覆盖起点之前，无账可查：热力图画空格 */
+  /** true = 覆盖起点之前、无账可查：格子仍在，tooltip 说「暂无记录」 */
   missing?: boolean;
 }
 

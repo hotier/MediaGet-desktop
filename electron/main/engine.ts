@@ -501,5 +501,12 @@ export function createEngine(deps: EngineDeps) {
     config,
     cache,
     analytics,
+    /**
+     * 随包内核的版本号（`app:getMeta` 报给设置页「内核版本」）。
+     *
+     * 只有 engine 敢碰内核模块：`index.ts` 拿它而不是自己 `import` 一次 —— 内核的加载点
+     * 留在这里，进程启动顺序与「谁先求值 parse-core」不会因为一处展示需求多出第二条路。
+     */
+    kernelVersion: PARSE_CORE_VERSION,
   };
 }

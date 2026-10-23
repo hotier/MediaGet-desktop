@@ -75,7 +75,11 @@ type RowIndexParam = { dataIndex: number } | { dataIndex: number }[];
 const rowIndexOf = (params: RowIndexParam): number =>
   (Array.isArray(params) ? params[0] : params).dataIndex;
 
-/** 按日趋势用折线呈现变化；失败只属于下载账，解析次数单独切换展示。 */
+/**
+ * 按日趋势用柱状呈现（业主 2026-10-23：由折线改柱）。每天的量是各自独立的账，
+ * 柱高比折线落差更好读、也不靠连线去暗示「中间那天存在」——缺口径的日子就该是空柱。
+ * 失败只属于下载账，解析次数单独切换展示。
+ */
 export function trendOption(points: TrendPoint[], p: ChartPalette, metric: TrendMetric): EChartsOption {
   const bytes = metric === "bytes";
   const values = points.map((pt) => (bytes ? pt.bytes : metric === "parses" ? pt.parses : pt.downloads));
@@ -109,23 +113,19 @@ export function trendOption(points: TrendPoint[], p: ChartPalette, metric: Trend
       },
     },
     xAxis: categoryAxis(p, { data: points.map((pt) => pt.label), axisLabel: { color: p.textMuted, fontSize: p.fontSize - 1, hideOverlap: true } }),
+    // 三档统一锁整数刻度：字节也是整数语义，撤掉 `minInterval` 会让全 0 的轴冒出
+    // 0.2 / 0.4 / 0.8 这类小数刻度，字节轴因此显示成「204.8 undefined」（2026-10-23 实测）。
     yAxis: valueAxis(p, {
       axisLabel: { color: p.textMuted, fontSize: p.fontSize - 1, formatter: (v: number) => fmt(v) },
-      // 字节档不是整数语义：minInterval 得撤成自动，否则「至少隔 1 才一格」会把 KB 轴顶成无意义的小整数分档
-      ...(bytes ? { minInterval: undefined } : {}),
     }),
     series: [
       {
         name: primaryName,
-        type: "line",
+        type: "bar" as const,
         data: values,
-        showSymbol: points.length <= 31,
-        symbol: "circle",
-        symbolSize: 6,
-        smooth: false,
-        lineStyle: { color: bytes || metric === "parses" ? p.primary : p.ok, width: 2 },
-        itemStyle: { color: bytes || metric === "parses" ? p.primary : p.ok },
-        areaStyle: { color: bytes || metric === "parses" ? p.primary : p.ok, opacity: 0.08 },
+        // 柱宽封顶：跨度短（7 天）时不至于胖成方块，长（365 天）时由 ECharts 自己收细
+        barMaxWidth: 18,
+        itemStyle: { color: bytes || metric === "parses" ? p.primary : p.ok, borderRadius: 4 },
         markLine: {
           symbol: "none",
           silent: true,
@@ -137,14 +137,10 @@ export function trendOption(points: TrendPoint[], p: ChartPalette, metric: Trend
       ...(metric === "downloads"
         ? [{
             name: "失败",
-            type: "line" as const,
+            type: "bar" as const,
             data: failures,
-            showSymbol: points.length <= 31,
-            symbol: "circle",
-            symbolSize: 5,
-            smooth: false,
-            lineStyle: { color: p.err, width: 2 },
-            itemStyle: { color: p.err },
+            barMaxWidth: 18,
+            itemStyle: { color: p.err, borderRadius: 4 },
           }]
         : []),
     ],
@@ -294,7 +290,14 @@ export function heatOption(cells: number[], p: ChartPalette): EChartsOption {
   };
 }
 
-/** 日历热力图：每个格子对应一个自然日，整年逐日出格；`missing` 的日子（覆盖起点前）画成空格。 */
+/**
+ * 日历热力图：每个格子对应一个自然日，整年逐日出格。
+ *
+ * 没有账的日子（含覆盖起点之前的 `missing`）**也画方框**（业主 2026-10-23）：热力图读的是
+ * 「一年 365 格的矩阵」，空着不画会让最近几天看起来像凭空浮在坐标里，也分不出「那天没有下载」
+ * 与「那格根本不存在」。绘图值统一落 0 并走 visualMap 的 `outOfRange`（中性灰），
+ * tooltip 仍按 `value === null` 说「暂无记录」。
+ */
 export function dayHeatOption(points: TrendCell[], p: ChartPalette, metric: TrendMetric): EChartsOption {
   const values = points.map((point) =>
     point.missing ? null : metric === "bytes" ? point.bytes : metric === "parses" ? point.parses : point.downloads
@@ -306,7 +309,8 @@ export function dayHeatOption(points: TrendCell[], p: ChartPalette, metric: Tren
     const date = new Date(`${point.key}T00:00:00`);
     const weekday = (date.getDay() + 6) % 7;
     const value = values[index] ?? null;
-    return { key: point.key, value, cell: [Math.floor((index + ((first + 6) % 7)) / 7), weekday, value] };
+    // `value ?? 0`：null 在 ECharts 里等于「这一格没有值」→ 不绘制；改成 0 才会画出底板
+    return { key: point.key, value, cell: [Math.floor((index + ((first + 6) % 7)) / 7), weekday, value ?? 0] };
   });
   const monthLabels = new Map<number, string>();
   for (const row of rows) {
@@ -331,7 +335,14 @@ export function dayHeatOption(points: TrendCell[], p: ChartPalette, metric: Tren
         return `${row.key}<br/>${fmt(row.value)}${metric === "bytes" ? "" : metric === "parses" ? " 次解析" : " 个资源"}`;
       },
     },
-    visualMap: { show: false, type: "continuous", min: 0, max, inRange: { color: p.ramp } },
+    // heatmap 必须挂 visualMap（ECharts 硬校验：没有它直接抛 "Heatmap must use with visualMap"）。
+    // 用分段型而不是连续型：连续型把低于下界的 0 clamp 回色阶最浅档，空格又变成浅蓝，
+    // 分不出「这天没有账」（业主 2026-10-23）。分段型给 0 单独一段中性灰，1..max 再按色阶分档。
+    visualMap: {
+      show: false,
+      type: "piecewise",
+      pieces: heatPieces(max, p.ramp, p.sunken),
+    },
     xAxis: categoryAxis(p, {
       data: Array.from({ length: weekCount }, (_, index) => String(index)),
       axisLine: { show: false },
@@ -352,6 +363,30 @@ export function dayHeatOption(points: TrendCell[], p: ChartPalette, metric: Tren
       emphasis: { itemStyle: { shadowBlur: 0, borderColor: p.textMuted } },
     }],
   };
+}
+
+/**
+ * 日历热力的分段色阶：`0` 单独一段（中性灰 = 这天没有账），`1..max` 按 palette 色阶等宽分档。
+ *
+ * 段宽取 `ceil(max / 档数)` 而不是均分后取整：均分会让小 max 出现空档（值 1 不命中任何
+ * pieces → ECharts 不着色，格子透明），`ceil` 保证 1..max 每个整数都落在某一段里。
+ */
+function heatPieces(
+  max: number,
+  ramp: string[],
+  empty: string
+): Array<{ value?: number; min?: number; max?: number; color: string }> {
+  const pieces: Array<{ value?: number; min?: number; max?: number; color: string }> = [
+    { value: 0, color: empty },
+  ];
+  const span = Math.max(1, Math.ceil(max / ramp.length));
+  for (let index = 0; index < ramp.length; index++) {
+    const low = index * span + 1;
+    const high = Math.min(max, (index + 1) * span);
+    if (low > high) break;
+    pieces.push({ min: low, max: high, color: ramp[index] });
+  }
+  return pieces;
 }
 
 /** 单文件体积分布：档位边界固定（跨版本可比），标签常显份额 */

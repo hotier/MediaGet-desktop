@@ -64,14 +64,48 @@ function dashAudioFor(url: string, audioUrl?: string, isMain = true): string | u
   return isDashSegment(url) || !isMain ? audioUrl : undefined;
 }
 
+/** 4K / 8K 这类按 K 写的档 → 分辨率高度（统一成 `2160P` 这种写法） */
+const K_HEIGHT: Record<number, number> = { 2: 1440, 4: 2160, 8: 4320 };
+
+/**
+ * 清晰度文案归一（业主 2026-10-23：一律 `720P` / `1080P`，不带「高清 / 超清」字样）。
+ *
+ * 只从文案里抽分辨率，平台给的前后缀（B站 `高清 1080P`、`4K 超清`）一律剥掉。抽不到
+ * 分辨率时才看档位数值，而且只有它像分辨率（≥240）才用 —— B站的 `quality` 是 qn
+ * （80 = 1080P），拿它写 `80P` 比留个「默认」更糟。`杜比视界` 这类真没有分辨率的档
+ * 原样保留：瞎猜一个数字等于把用户骗过去。
+ *
+ * 同分辨率的**增强档**（`1080P 高码率`、`1080P60 高帧率`、上游本来就写的 `1080P+`）
+ * 落成 `1080P+`（业主 2026-10-23）：既不带修饰词，也不与普通 1080P 撞名——
+ * 否则 `buildQualityPlan` 的「同名只留一条、主链优先」会把两档真实不同的流并成一档，
+ * 用户就选不到高码率那条了。
+ */
+export function normalizeQualityLabel(label?: string, tier?: number): string {
+  const raw = (label ?? "").trim();
+  // 增强档的判据：上游的「高码率 / 高帧率」、`1080P60` 这类帧率写法、以及已经带 `+` 的名字
+  const boosted = /高码率|高帧率|\+|(\d{3,4})\s*p\s*60\b/i.test(raw);
+  const plus = boosted ? "+" : "";
+  const p = /(\d{3,4})\s*p/i.exec(raw);
+  if (p) return `${Number(p[1])}P${plus}`;
+  const k = /([248])\s*k/i.exec(raw);
+  if (k) return `${K_HEIGHT[Number(k[1])]}P${plus}`;
+  if (/^\d{3,4}$/.test(raw)) return `${raw}P${plus}`;
+  // 只剩修饰词（「高清」「流畅」）时连同中英文缀一起剥掉，剥空才走数值兜底
+  const stripped = raw.replace(/超高清|高清|超清|蓝光|流畅|清晰|高码率|高帧率|HDR/gi, "").trim();
+  if (stripped) return stripped;
+  if (tier !== undefined && tier >= 240 && tier <= 4320) return `${tier}P`;
+  return "默认";
+}
+
 function qualityLabel(q: ParsedVideoQuality): string {
-  return q.label || `${q.quality}P`;
+  return normalizeQualityLabel(q.label, q.quality);
 }
 
 /** 内核没给多清晰度时的默认项：用主 data.url */
 function defaultOption(data: ParseData): QualityOption {
   return {
-    label: data.qualityLabel || "默认",
+    // 同一个口径：芯片上不出现「超清 1080P」这种带修饰词的名字
+    label: normalizeQualityLabel(data.qualityLabel),
     url: null,
     suffix: "",
     codecs: data.videoCodecs,
@@ -175,7 +209,7 @@ export type FilenamePreset =
 export interface FilenameExtra {
   /** 清晰度后缀（如 `-1080P`）；默认开 —— 现状主视频文件名就带该后缀，关掉才是行为变更 */
   quality: boolean;
-  /** 多文件序号（图集 `-3`、分P `-P2`）；默认开，与现状一致 */
+  /** 多文件序号（图集 `-3`、分P 前缀 `P2-`）；默认开，与现状一致 */
   index: boolean;
 }
 
@@ -243,6 +277,17 @@ export function clampTitle(title: string): string {
 /** 标题与作者都缺时的兜底主体（现状 buildPlan 里的 "media"） */
 const FALLBACK_TITLE = "media";
 
+/**
+ * 分P 自己那一集的名字（`pages[].part`）。
+ *
+ * 只认这一 P 自己的名字，**不回落合集标题**（业主 2026-10-23：P1 只显示自己的名字，
+ * 不显示合集名）——回落会让「合集名」冒充某一 P 的名字，同一合集里两条资源的名字
+ * 还可能撞在一起。没有名字就返回空串，文件名只留 P 号（`P1.mp4`）。
+ */
+function partTitle(own: string | undefined): string {
+  return own?.trim() ?? "";
+}
+
 /** 日期取本地日历日，不带时分秒：文件名里的日期只需要到天 */
 function yyyymmdd(d: Date): string {
   const p = (n: number): string => String(n).padStart(2, "0");
@@ -266,7 +311,9 @@ export function buildFilename(
     author?: string;
     /** 清晰度后缀，形如 `-1080P`；由调用方决定是否附加 */
     qualitySuffix?: string;
-    /** 序号后缀，形如 `-3` / `-P2`；多文件项才有 */
+    /** 分P 序号前缀，形如 `P2-`（业主 2026-10-23：分P 资源统一命名成 `P1-XXXX`）；只挂在最前 */
+    partPrefix?: string;
+    /** 序号后缀，形如 `-3`；多文件项（图集）才有 */
     indexSuffix?: string;
     /** 扩展名，含点，如 `.mp4` */
     ext: string;
@@ -276,32 +323,46 @@ export function buildFilename(
   now: Date = new Date()
 ): string {
   // 标题先压到 15 字再参与拼接：主体里出现的每一处标题都该同样限长，
-  // 否则「作者 - 长标题」里的长标题会把整体重新撑长
-  const title = clampTitle(ctx.title.trim() || FALLBACK_TITLE);
+  // 否则「作者 - 长标题」里的长标题会把整体重新撑长。
+  // 空标题只在有 P 号前缀时合法（分P 名与合集标题相同 → 名字不重复写标题，只留 `P1`），
+  // 其余情况仍走 FALLBACK_TITLE，不能产出 `.mp4` 这种空名。
+  const rawTitle = ctx.title.trim();
+  const title = rawTitle ? clampTitle(rawTitle) : ctx.partPrefix ? "" : FALLBACK_TITLE;
   const author = ctx.author?.trim() ?? "";
 
   let stem: string;
-  switch (rule.preset) {
-    // 连接符统一为下划线（v26）：作者缺失时退化为仅标题，不留尾部空档或孤立连接符
-    case "authorTitle":
-      stem = author ? `${author}_${title}` : title;
-      break;
-    case "titleAuthor":
-      stem = author ? `${title}_${author}` : title;
-      break;
-    case "authorTitleDate":
-      // 三要素全上；作者缺失时就是 titleDate
-      stem = author ? `${author}_${title}_${yyyymmdd(now)}` : `${title}_${yyyymmdd(now)}`;
-      break;
-    case "titleDate":
-      stem = `${title}_${yyyymmdd(now)}`;
-      break;
-    case "title":
-    default:
-      stem = title;
-      break;
+  if (!title) {
+    // 主体只剩 P 号：作者/日期/连接符都不挂 —— 没有标题时 `P1-小明_` 比 `P1` 更难读
+    stem = "";
+  } else {
+    switch (rule.preset) {
+      // 连接符统一为下划线（v26）：作者缺失时退化为仅标题，不留尾部空档或孤立连接符
+      case "authorTitle":
+        stem = author ? `${author}_${title}` : title;
+        break;
+      case "titleAuthor":
+        stem = author ? `${title}_${author}` : title;
+        break;
+      case "authorTitleDate":
+        // 三要素全上；作者缺失时就是 titleDate
+        stem = author ? `${author}_${title}_${yyyymmdd(now)}` : `${title}_${yyyymmdd(now)}`;
+        break;
+      case "titleDate":
+        stem = `${title}_${yyyymmdd(now)}`;
+        break;
+      case "title":
+      default:
+        stem = title;
+        break;
+    }
   }
 
+  // 分P 序号是前缀（`P2-标题`）而不是后缀：用户按名字找片时先看到「第几 P」，
+  // 也让同一合集下的文件在资源管理器里按 P 号自然排在一起。
+  // 没有标题时前缀自己收尾（`P2` 而不是 `P2-`），否则会落出 `P2-.mp4`。
+  if (rule.extra.index && ctx.partPrefix) {
+    stem = stem ? `${ctx.partPrefix}${stem}` : ctx.partPrefix.replace(/[-_]+$/, "");
+  }
   if (rule.extra.quality && ctx.qualitySuffix) stem += ctx.qualitySuffix;
   if (rule.extra.index && ctx.indexSuffix) stem += ctx.indexSuffix;
 
@@ -392,6 +453,9 @@ export function buildPlan(
     // 旧判据只认 `.m4s`，YouTube 那种无扩展名的分离链会被漏掉（预览无声）。
     const audio = dashAudioFor(mainUrl, data.audioUrl, mainUrl === data.url) ??
       (videoMeta.codecs ? data.audioUrl : undefined);
+    // 主链也是合集里的一 P：标题只取这一 P 自己的名字（`pages[].part`），不回落合集标题，
+    // 与分P 清单同一条命名口径（业主 2026-10-23「分P 资源统一改为 P1-XXXX」）。
+    const mainPart = data.page ? (data.videos ?? []).find((v) => v.page === data.page) : undefined;
     out.push({
       id: "main",
       // 合集里主链只是其中一 P（引擎用 `data.page` 说清是第几 P）：标签与文件名都要带上这一位，
@@ -407,10 +471,11 @@ export function buildPlan(
       audioMimeType: audio ? data.audioMimeType : undefined,
       filename: buildFilename(
         {
-          title,
+          // 没有 P 号（单P 稿件）时没有「第几集」可言，仍用合集标题
+          title: data.page ? partTitle(mainPart?.title) : title,
           author,
           qualitySuffix: chosen.suffix,
-          indexSuffix: data.page ? `-P${data.page}` : undefined,
+          partPrefix: data.page ? `P${data.page}-` : undefined,
           ext: ".mp4",
         },
         naming
@@ -461,10 +526,11 @@ export function buildPlan(
         audioMimeType: v.audioUrl ? v.audioMimeType : undefined,
         filename: buildFilename(
           {
-            title,
+            // 分P 只写自己那一集的名字（`pages[].part`），不拿合集名顶替
+            title: partTitle(v.title),
             author,
             qualitySuffix: hit ? chosen.suffix : undefined,
-            indexSuffix: `-P${no}`,
+            partPrefix: `P${no}-`,
             ext: ".mp4",
           },
           naming

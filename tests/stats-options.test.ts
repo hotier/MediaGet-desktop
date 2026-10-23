@@ -16,6 +16,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
+  dayHeatOption,
   donutOption,
   heatOption,
   histogramOption,
@@ -26,7 +27,7 @@ import {
 } from "../renderer/src/components/charts/options";
 import { withAlpha, type ChartPalette } from "../renderer/src/components/charts/palette";
 import { fmtDuration, fmtPercent, fmtSpeed } from "../renderer/src/lib/format";
-import type { SizeBucket, TrendPoint } from "../renderer/src/lib/stats";
+import type { SizeBucket, TrendCell, TrendPoint } from "../renderer/src/lib/stats";
 
 /** 每个字段一眼可辨的假色板：断言「这里用的是 primary」才有意义，全用 #fff 就只是比长度 */
 const P: ChartPalette = {
@@ -127,13 +128,13 @@ describe("比率与时长格式化", () => {
 });
 
 describe("trendOption", () => {
-  it("次数档用同轴折线区分完成与失败", () => {
+  it("次数档用同轴柱状区分完成与失败（业主 2026-10-23 折线改柱）", () => {
     const o = trendOption(trend(), P, "downloads");
     expect(pick(o, "series", 0, "name")).toBe("完成");
     expect(pick(o, "series", 0, "data")).toEqual([2, 4]);
     expect(pick(o, "series", 0, "itemStyle", "color")).toBe(P.ok);
-    expect(pick(o, "series", 0, "type")).toBe("line");
-    expect(pick(o, "series", 1, "type")).toBe("line");
+    expect(pick(o, "series", 0, "type")).toBe("bar");
+    expect(pick(o, "series", 1, "type")).toBe("bar");
     expect(pick(o, "series", 1, "data")).toEqual([1, 0]);
     expect(pick(o, "series", 1, "itemStyle", "color")).toBe(P.err);
     expect(pick(o, "yAxis", "minInterval")).toBe(1);
@@ -164,9 +165,10 @@ describe("trendOption", () => {
     expect(pick(o, "series", 0, "data")).toEqual([]);
   });
 
-  it("坐标轴刻度约束跟着当前单位：次数档锁整数，字节档撤成自动", () => {
+  it("坐标轴刻度一律锁整数：字节档也不许冒出小数刻度", () => {
     expect(pick(trendOption(trend(), P, "downloads"), "yAxis", "minInterval")).toBe(1);
-    expect(pick(trendOption(trend(), P, "bytes"), "yAxis", "minInterval")).toBeUndefined();
+    // 撤成自动（undefined）时全 0 的轴会给出 0.2 / 0.8 刻度，字节轴渲染成「204.8 undefined」（2026-10-23 实测）
+    expect(pick(trendOption(trend(), P, "bytes"), "yAxis", "minInterval")).toBe(1);
   });
 
   it("axis tooltip 按 dataIndex 回自己的数组，把四项都列出来", () => {
@@ -181,6 +183,51 @@ describe("trendOption", () => {
     expect(pick(o, "textStyle", "fontFamily")).toBe(P.font);
     expect(pick(o, "textStyle", "fontSize")).toBe(P.fontSize);
     expect(pick(o, "xAxis", "axisLabel", "fontSize")).toBe(P.fontSize - 1);
+  });
+});
+
+describe("dayHeatOption 的空白格（业主 2026-10-23：没有数据的天也要出方框）", () => {
+  const cells: TrendCell[] = [
+    { key: "2026-10-20", label: "10-20", downloads: 0, failures: 0, bytes: 0, parses: 0, missing: true },
+    { key: "2026-10-21", label: "10-21", downloads: 0, failures: 0, bytes: 0, parses: 0 },
+  ];
+
+  it("覆盖起点前与当天零值都占一格：绘图值落 0，不留 null", () => {
+    const o = dayHeatOption(cells, P, "downloads");
+    expect(pick(o, "series", 0, "data")).toHaveLength(2);
+    expect(pick(o, "series", 0, "data", 0, 2)).toBe(0);
+    expect(pick(o, "series", 0, "data", 1, 2)).toBe(0);
+  });
+
+  it("空格是单独一段中性灰，有账才进色阶（业主 2026-10-23：灰色才分得开）", () => {
+    const o = dayHeatOption(cells, P, "downloads");
+    // heatmap 必须挂 visualMap（撤掉 ECharts 抛 "Heatmap must use with visualMap"）；
+    // 分段型才能把 0 单独染灰 —— 连续型会把 0 clamp 成色阶最浅档，又变浅蓝
+    expect(pick(o, "visualMap", "type")).toBe("piecewise");
+    expect(pick(o, "visualMap", "show")).toBe(false);
+    expect(pick(o, "visualMap", "pieces", 0)).toEqual({ value: 0, color: P.sunken });
+  });
+
+  it("有账的格子按当前范围分档，最大值落最深一档且 1..max 无空档", () => {
+    const pts: TrendCell[] = [
+      { key: "2026-10-21", label: "10-21", downloads: 4, failures: 0, bytes: 0, parses: 0 },
+    ];
+    const pieces = pick(dayHeatOption(pts, P, "downloads"), "visualMap", "pieces") as Array<{
+      min?: number;
+      max?: number;
+      color: string;
+    }>;
+    // P.ramp 两档、max=4 → 段宽 ceil(4/2)=2：1..2 首档、3..4 末档
+    expect(pieces.slice(1)).toEqual([
+      { min: 1, max: 2, color: P.ramp[0] },
+      { min: 3, max: 4, color: P.ramp[1] },
+    ]);
+  });
+
+  it("tooltip 仍分得清「暂无记录」与「0 个资源」", () => {
+    const fmt = pick(dayHeatOption(cells, P, "downloads"), "tooltip", "formatter");
+    expect(at(fmt, 0, false)).toContain("暂无记录");
+    expect(at(fmt, 1, false)).toContain("0 个资源");
   });
 });
 

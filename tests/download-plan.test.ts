@@ -3,7 +3,12 @@
  * 展开错了不会报错、只会静默多下/少下一颗。只钉语义最容易错的两档。
  */
 import { describe, expect, it } from "vitest";
-import { buildFilename, buildPlan, buildQualityPlan } from "../renderer/src/lib/download-plan";
+import {
+  buildFilename,
+  buildPlan,
+  buildQualityPlan,
+  normalizeQualityLabel,
+} from "../renderer/src/lib/download-plan";
 import type { ParseData } from "../types/ipc";
 
 describe("buildQualityPlan 的档位来源", () => {
@@ -93,6 +98,43 @@ describe("一个分 P 就是一份资源（契约 v36）", () => {
     expect(buildPlan(data).find((e) => e.id === "p-1")?.audioUrl).toBeUndefined();
   });
 
+  it("某一 P 没有所选档位：显式挂降级提示并落它自己的默认直链", () => {
+    const data = {
+      title: "合集",
+      page: 1,
+      url: "https://cdn/p1-1080.m4s",
+      // 真机形态：登录态大会员稿件里逐 P 档位并不齐（P2 常只到 720P）
+      qualities: [
+        { quality: 80, label: "1080P", url: "https://cdn/p1-1080.m4s" },
+        { quality: 64, label: "720P", url: "https://cdn/p1-720.m4s" },
+      ],
+      videos: [
+        {
+          page: 1,
+          url: "https://cdn/p1-1080.m4s",
+          qualities: [
+            { quality: 80, label: "1080P", url: "https://cdn/p1-1080.m4s" },
+            { quality: 64, label: "720P", url: "https://cdn/p1-720.m4s" },
+          ],
+        },
+        { page: 2, url: "https://cdn/p2-default.m4s", qualities: [{ quality: 64, label: "720P", url: "https://cdn/p2-720.m4s" }] },
+      ],
+    };
+    const q1080 = buildQualityPlan(data).options.find((o) => o.label === "1080P");
+    if (!q1080) throw new Error("档位表里应当有 1080P");
+    const plan = buildPlan(data, q1080);
+    const p2 = plan.find((e) => e.id === "p-1");
+    // 静默降档的后果是「用户以为下了 1080P」，所以提示必须显式，文件名也不许挂 -1080P
+    expect(p2?.fallbackNote).toBe("无 1080P，用默认清晰度");
+    expect(p2?.url).toBe("https://cdn/p2-default.m4s");
+    expect(p2?.filename).toBe("P2.mp4");
+    // P1 与主链同 URL，去重后只留主链那一条：它命中了所选档位，不该挂降级提示
+    const main = plan.find((e) => e.id === "main");
+    expect(main?.fallbackNote).toBeUndefined();
+    expect(main?.url).toBe("https://cdn/p1-1080.m4s");
+    expect(main?.filename).toBe("P1-1080P.mp4");
+  });
+
   it("某一 P 缺席时编号认 `page`，标签与文件名都不跟着下标前移", () => {
     const data = {
       title: "合集",
@@ -102,7 +144,7 @@ describe("一个分 P 就是一份资源（契约 v36）", () => {
     };
     const plan = buildPlan(data);
     expect(plan.map((p) => p.label)).toEqual(["视频 · P1 · 默认", "分 P 3"]);
-    expect(plan.map((p) => p.filename)).toEqual(["合集-P1.mp4", "合集-P3.mp4"]);
+    expect(plan.map((p) => p.filename)).toEqual(["P1.mp4", "P3.mp4"]);
   });
 
   it("主链带 P 号：解析 P1 与解析 P2 不会落成同一个文件名", () => {
@@ -112,8 +154,85 @@ describe("一个分 P 就是一份资源（契约 v36）", () => {
     ];
     const firstName = (page: number): string =>
       buildPlan({ title: "合集", page, url: `https://cdn/p${page}.m4s`, videos })[0].filename;
-    expect(firstName(1)).toBe("合集-P1.mp4");
-    expect(firstName(2)).toBe("合集-P2.mp4");
+    expect(firstName(1)).toBe("P1.mp4");
+    expect(firstName(2)).toBe("P2.mp4");
+  });
+
+  it("分P 用自己那一集的标题，P 号作前缀（业主 2026-10-23「统一改为 P1-XXXX」）", () => {
+    const data = {
+      title: "合集",
+      page: 1,
+      url: "https://cdn/p1.m4s",
+      videos: [
+        { page: 1, title: "开端", url: "https://cdn/p1.m4s" },
+        { page: 2, title: "第二集", url: "https://cdn/p2.m4s" },
+      ],
+    };
+    expect(buildPlan(data).map((p) => p.filename)).toEqual(["P1-开端.mp4", "P2-第二集.mp4"]);
+    // 「多文件加序号」关掉 = 不挂 P 号前缀（与原 `-P2` 后缀同一个开关语义）
+    expect(
+      buildPlan(data, undefined, { preset: "title", extra: { quality: true, index: false } }).map(
+        (p) => p.filename
+      )
+    ).toEqual(["开端.mp4", "第二集.mp4"]);
+  });
+
+  it("分P 只写自己的名字：与合集同名照常显示，缺名字时只留 P 号", () => {
+    // 实测形态（BV1rgap62Ez5）：P1 的 part 就是稿件标题，P2 是「日-<稿件标题>」
+    const named = {
+      title: "《原神》过场动画",
+      page: 1,
+      url: "https://cdn/p1.m4s",
+      videos: [
+        { page: 1, title: "《原神》过场动画", url: "https://cdn/p1.m4s" },
+        { page: 2, title: "日-《原神》过场动画", url: "https://cdn/p2.m4s" },
+      ],
+    };
+    expect(buildPlan(named).map((p) => p.filename)).toEqual([
+      "P1-《原神》过场动画.mp4",
+      "P2-日-《原神》过场动画.mp4",
+    ]);
+    // 引擎没给这一 P 名字时不拿合集标题顶替（P1 报的那个点），只留 P 号
+    const nameless = {
+      title: "合集",
+      page: 1,
+      url: "https://cdn/p1.m4s",
+      videos: [{ page: 1, url: "https://cdn/p1.m4s" }, { page: 2, url: "https://cdn/p2.m4s" }],
+    };
+    expect(buildPlan(nameless).map((p) => p.filename)).toEqual(["P1.mp4", "P2.mp4"]);
+  });
+});
+
+describe("清晰度文案归一（业主 2026-10-23：一律 720P / 1080P）", () => {
+  it("剥掉平台修饰词，只留分辨率", () => {
+    expect(normalizeQualityLabel("高清 1080P")).toBe("1080P");
+    expect(normalizeQualityLabel("流畅 360P")).toBe("360P");
+    expect(normalizeQualityLabel("720p")).toBe("720P");
+    expect(normalizeQualityLabel("1080")).toBe("1080P");
+  });
+
+  it("同分辨率的增强档落成 1080P+（高码率 / 高帧率不与普通档撞名）", () => {
+    expect(normalizeQualityLabel("1080P 高码率")).toBe("1080P+");
+    expect(normalizeQualityLabel("1080P60 高帧率")).toBe("1080P+");
+    expect(normalizeQualityLabel("高清 1080P+")).toBe("1080P+");
+    // 普通档不许被误标成「+」
+    expect(normalizeQualityLabel("高清 1080P")).toBe("1080P");
+    expect(normalizeQualityLabel("4K 超清")).toBe("2160P");
+  });
+
+  it("4K / 8K 落成 P 记法", () => {
+    expect(normalizeQualityLabel("4K 超清")).toBe("2160P");
+    expect(normalizeQualityLabel("8K 超高清")).toBe("4320P");
+  });
+
+  it("抽不到分辨率：先剥修饰词，空了自己看档位数值，像分辨率才用", () => {
+    // 快手：height 就是分辨率
+    expect(normalizeQualityLabel("超清", 1080)).toBe("1080P");
+    // B站 qn（80 = 1080P）不能写成 80P，宁可留「默认」
+    expect(normalizeQualityLabel("高清", 80)).toBe("默认");
+    expect(normalizeQualityLabel(undefined)).toBe("默认");
+    // 真没有分辨率的专有档原样保留，不瞎猜数字
+    expect(normalizeQualityLabel("杜比视界")).toBe("杜比视界");
   });
 });
 
@@ -130,7 +249,8 @@ describe("buildQualityPlan 的同名档位", () => {
       ],
     };
     const plan = buildQualityPlan(data);
-    expect(plan.options.map((o) => o.label)).toEqual(["高清 1080P", "高清 720P"]);
+    // 芯片只写分辨率（业主 2026-10-23）：上游的「高清 / 高码率」等修饰词一律不进下拉
+    expect(plan.options.map((o) => o.label)).toEqual(["1080P", "720P"]);
     // 保留的是先出现（引擎降序 = 更高档）的那条
     expect(plan.options[0].url).toBe("https://cdn/116.m4s");
   });
@@ -313,8 +433,9 @@ describe("buildPlan 的 MSE 轨道身份", () => {
         { quality: 80, label: "1080P", url: "https://upos.hdslb.com/v/80.m4s", codecs: "avc1.64001f", mimeType: "video/mp4" },
       ],
     };
-    const uhd = buildQualityPlan(data).options.find((o) => o.label === "4K");
-    if (!uhd) throw new Error("应当有 4K 档");
+    // 「4K」按清晰度文案归一落成 2160P（业主 2026-10-23：一律 P 记法）
+    const uhd = buildQualityPlan(data).options.find((o) => o.label === "2160P");
+    if (!uhd) throw new Error("应当有 2160P 档");
     const entry = buildPlan(data, uhd)[0];
     expect(entry.videoCodecs).toBe("av01.0.08M.08");
     expect(entry.videoMimeType).toBe("video/mp4");

@@ -600,7 +600,12 @@ registerIpc({
   settingsRepository,
   historyRepository,
   queueRepository,
-  getAppMeta: () => ({ version: app.getVersion(), electron: process.versions.electron }),
+  // kernel 取 engine 里那份 `PARSE_CORE_VERSION`：内核模块只在 engine.ts 加载，这里不再 import 一次
+  getAppMeta: () => ({
+    version: app.getVersion(),
+    electron: process.versions.electron,
+    kernel: engine.kernelVersion,
+  }),
   kernelMode,
   onSettingsChanged,
   cookieLogin,

@@ -164,7 +164,7 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
       // 删组的落库行为归 history-pagination.test.ts 管，这里只要出参形状对
       remove: (keys: string[]) => keys.length,
     },
-    getAppMeta: opts.getAppMeta ?? (() => ({ version: "0.0.0-test", electron: "44" })),
+    getAppMeta: opts.getAppMeta ?? (() => ({ version: "0.0.0-test", electron: "44", kernel: "0.0.0-test" })),
     kernelMode: () => "local" as const,
     getBinaryStatus: () => ({
       manifestLoaded: true,
@@ -395,7 +395,11 @@ describe("出参校验（dev-only 的契约漂移警报）", () => {
   });
 
   it("出参漂移 → dev 报 contract-drift，打包版放行（这就是 validateOutputs 的代价开关）", async () => {
-    const drift = () => ({ version: "0.0.0-test", electron: undefined as unknown as string });
+    const drift = () => ({
+      version: "0.0.0-test",
+      electron: undefined as unknown as string,
+      kernel: "0.0.0-test",
+    });
     const devR = await stubDeps({ validateOutputs: true, getAppMeta: drift }).handlers.get(
       IPC.appGetMeta
     )!({}, undefined);
