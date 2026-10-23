@@ -4,6 +4,9 @@ name: Release
 # 打 `vX.Y.Z` 附注标签 + push。标签一到 GitHub，本工作流负责验收、出包、发布 ——
 # 「什么时候算一版」是人敲命令决定的，「这一版是什么号」由 commit 前缀推导。
 #
+# beta 不走这里：`v*` 会连 `vX.Y.Z-beta.N` 一起匹配，所以三个 job 都带 tag 级过滤，
+# beta tag 只跑 beta.yml（预发布、beta.yml 清单、独立身份）。这里只发稳定版。
+#
 # 也支持手动干跑：Actions 里点 Run workflow（默认 dry_run=true），只跑到出包为止，
 # 不创建 Release —— 用来在真发版前确认流水线还活着。
 #
@@ -31,88 +34,27 @@ concurrency:
 
 jobs:
   verify:
+    # 稳定版 tag 不带连字符；workflow_dispatch 可能是分支名，不按 ref_name 过滤
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.ref_name, '-') }}
     uses: ./.github/workflows/_verify.yml
 
   build:
     needs: verify
     uses: ./.github/workflows/_build-win.yml
+    with:
+      channel: stable
+      artifact_name: mediaget-desktop-win
 
   publish:
     name: 发布该版本
     needs: build
     # 手动触发默认只演练：分支上的 commit 与 tag/版本号断言必然对不上
     if: github.event_name == 'push' || inputs.dry_run == false
-    runs-on: windows-latest
     permissions:
       # `gh release create/upload` 要写 Release 与附件
       contents: write
-    env:
-      TAG: ${{ github.ref_name }}
-    steps:
-      - uses: actions/checkout@v4
-
-      # 防呆：release-it 先写 package.json 再打 tag，正常一定一致；不一致说明 tag 是
-      # 手打的或版本被改过 —— 趁早红，别发出一个「文件名 v0.3.0 / 应用自报 0.2.0」的包。
-      - name: Assert tag matches package.json version
-        shell: bash
-        run: |
-          pkg="v$(node -p "require('./package.json').version")"
-          if [ "$pkg" != "$TAG" ]; then
-            echo "tag=$TAG 与 package.json=$pkg 不一致，终止发布" >&2
-            exit 1
-          fi
-          echo "OK $TAG"
-
-      # 出包在 build job 里做完了：取回它的 artifact（*.exe / latest.yml / *.blockmap），
-      # 落回 release/，下面那条 gh 命令与以前完全一致。
-      - name: Download installer artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: mediaget-desktop-win
-          path: release
-
-      # 取 CHANGELOG 第一节（release-it 每次把新版本写在最顶）作为 Release 正文；
-      # 对不上当前 tag 就退回占位文案，别把上一版的说明发出去。
-      - name: Extract release notes for this version
-        shell: bash
-        run: |
-          version="${TAG#v}"
-          awk '/^## /{n++; if(n>1) exit} n==1' CHANGELOG.md > /tmp/notes.md
-          if [ ! -s /tmp/notes.md ] || ! head -1 /tmp/notes.md | grep -q "$version"; then
-            {
-              echo "## $version"
-              echo
-              echo "见仓库 CHANGELOG.md。"
-            } > /tmp/notes.md
-            echo "CHANGELOG 首节不是 $version，已退回占位说明" >&2
-          fi
-          echo '--- Release 正文 ---'
-          cat /tmp/notes.md
-
-      - name: Create GitHub Release and upload artifacts
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          shopt -s nullglob
-          # latest.yml 是 electron-updater 的更新源清单，必须与安装包同在一个 Release；
-          # 缺它则应用内「检测更新」永远查不到版本（README P6 的端到端前置）。
-          # 缺附件这件事已在 `_build-win.yml` 的断言里挡过一次，这里是上传前的最后一道。
-          assets=(release/*.exe release/*.7z release/*.yml release/*.blockmap)
-          if [ ${#assets[@]} -eq 0 ]; then
-            echo "release/ 下没有可上传产物" >&2
-            exit 1
-          fi
-          printf '待上传：\n'
-          printf '  %s\n' "${assets[@]}"
-          # 重跑本 job 时 Release 已存在：只覆盖附件，不重复建。
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "${assets[@]}" --clobber
-            echo "Release $TAG 已存在，已覆盖附件"
-          else
-            gh release create "$TAG" "${assets[@]}" \
-              --title "MediaGet $TAG" \
-              --notes-file /tmp/notes.md
-          fi
-          gh release view "$TAG" --json tagName,name,assets \
-            --jq '{tag: .tagName, name: .name, assets: [.assets[].name]}'
+    uses: ./.github/workflows/_publish.yml
+    with:
+      tag: ${{ github.ref_name }}
+      channel: stable
+      artifact_name: mediaget-desktop-win

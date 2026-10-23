@@ -15,6 +15,10 @@ on:
         description: 产物 artifact 名（发布侧按这个名字取回，默认值与 release.yml 对齐）
         type: string
         default: mediaget-desktop-win
+      channel:
+        description: stable | beta；beta 走 electron-builder.beta.cjs 的独立身份
+        type: string
+        default: stable
 
 jobs:
   build:
@@ -42,9 +46,21 @@ jobs:
       # --publish never 是刻意的：package.json 的 build.publish 配了 GitHub provider，
       # electron-builder 默认会自己上传 Release（没有 token 时报 "GitHub Personal Access
       # Token is not set"，有 token 时会另建一个 Release 撞成两个）。所以不复用
-      # `pnpm run build`，显式 never；发布动作统一由 release.yml 完成。
+      # `pnpm run build`，显式 never；发布动作统一由 _publish.yml 完成。
+      #
+      # beta 只换配置、不换代码：electron-builder.beta.cjs 在 package.json 的 build 上
+      # 覆盖 appId / productName / executableName / 产物名 / publish.channel。
       - name: Build app + installer
-        run: pnpm run build:app && pnpm exec electron-builder --win --publish never
+        shell: bash
+        env:
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          pnpm run build:app
+          if [ "$CHANNEL" = "beta" ]; then
+            pnpm exec electron-builder --win --publish never --config electron-builder.beta.cjs
+          else
+            pnpm exec electron-builder --win --publish never
+          fi
 
       # 产物自检其一：安装包里必须真的带上 bin/ 与 manifest.json（extraResources 配错
       # 时构建仍会成功，但用户机器上两个二进制都不可用）。
@@ -60,21 +76,41 @@ jobs:
             Write-Host "  OK $f ($((Get-Item $p).Length) 字节)"
           }
 
-      # 产物自检其二：更新链路的随包件。latest.yml 缺了，应用内「检测更新」永远查不到
+      # 产物自检其二：更新链路的随包件。更新清单缺了，应用内「检测更新」永远查不到
       # 版本；*.blockmap 缺了，增量更新静默退化成整包下载。这两样以前只在发版那步才
       # 发现（而且「少传一个附件」并不会让发版红），现在在打包处就断。
+      #
+      # 通道各认各的名字：beta 若误生成 latest.yml，稳定版客户端会把 beta 当正式版升级。
       - name: Assert installer + update manifest
         shell: pwsh
+        env:
+          CHANNEL: ${{ inputs.channel }}
         run: |
-          $setup = Get-ChildItem -Path release -Filter 'MediaGet-Setup-*.exe' -ErrorAction SilentlyContinue
-          if (-not $setup) { throw "release/ 下没有 NSIS 安装包（MediaGet-Setup-*.exe）：目录页/安装日志都落在它上面" }
-          $archive = Get-ChildItem -Path release -Filter 'MediaGet-*.7z' -ErrorAction SilentlyContinue
-          if (-not $archive) { throw "release/ 下没有 7z 归档（MediaGet-*.7z）：绿色解压分发靠它" }
-          $yml = Join-Path 'release' 'latest.yml'
-          if (-not (Test-Path $yml)) { throw "release/ 下缺少 latest.yml：应用内检测更新会永远查不到版本" }
+          if ($env:CHANNEL -eq 'beta') {
+            $setupPattern = 'MediaGet-Beta-Setup-*.exe'
+            $archivePattern = 'MediaGet-Beta-*.7z'
+            $ymlName = 'beta.yml'
+          } else {
+            $setupPattern = 'MediaGet-Setup-*.exe'
+            $archivePattern = 'MediaGet-*.7z'
+            $ymlName = 'latest.yml'
+          }
+          $setup = Get-ChildItem -Path release -Filter $setupPattern -ErrorAction SilentlyContinue
+          if (-not $setup) { throw "release/ 下没有 NSIS 安装包（$setupPattern）：目录页/安装日志都落在它上面" }
+          $archive = Get-ChildItem -Path release -Filter $archivePattern -ErrorAction SilentlyContinue
+          if ($env:CHANNEL -eq 'stable') {
+            # MediaGet-*.7z 也会匹配 MediaGet-Beta-*.7z，别让本地残留的 beta 包冒充正式版产物
+            $archive = $archive | Where-Object { $_.Name -notmatch '-Beta-' } | Select-Object -First 1
+          }
+          if (-not $archive) { throw "release/ 下没有 7z 归档（$archivePattern）：绿色解压分发靠它" }
+          $yml = Join-Path 'release' $ymlName
+          if (-not (Test-Path $yml)) { throw "release/ 下缺少 $ymlName：应用内检测更新会永远查不到版本" }
+          if ($env:CHANNEL -eq 'beta' -and (Test-Path (Join-Path 'release' 'latest.yml'))) {
+            throw "beta 构建生成了 latest.yml：稳定版客户端会把 beta 当成正式版升级"
+          }
           $blockmap = Get-ChildItem -Path release -Filter '*.exe.blockmap' -ErrorAction SilentlyContinue
           if (-not $blockmap) { throw "release/ 下缺少 *.exe.blockmap：增量更新会退化成整包下载" }
-          Write-Host "  OK $($setup[0].Name) ($($setup[0].Length) 字节) + $($archive[0].Name) ($($archive[0].Length) 字节) + latest.yml + $($blockmap[0].Name)"
+          Write-Host "  OK $($setup[0].Name) ($($setup[0].Length) 字节) + $($archive[0].Name) ($($archive[0].Length) 字节) + $ymlName + $($blockmap[0].Name)"
 
       # 只留发布所需的四类文件：win-unpacked 有几万个文件、体积数倍于安装包，
       # 传上去既慢又没人下载。

@@ -1,0 +1,45 @@
+name: Beta release
+
+# 触发方式：push `vX.Y.Z-beta.N` tag（例如 v0.3.0-beta.1）。
+# package.json 的 version 必须先改成同一个号（`X.Y.Z-beta.N`）—— _publish.yml 会核对
+# tag 与 package.json，_build-win.yml 用这份版本号产出 beta.yml 清单与应用内通道判据。
+#
+# 身份与稳定版完全分开：appId / productName `MediaGet (Beta)` / 安装目录 / userData /
+# 产物名都由 electron-builder.beta.cjs 覆盖（见该文件注释）。发布的是 GitHub **prerelease**，
+# 稳定版的 `releases/latest` 与 latest.yml 都看不到它。
+#
+# 手动触发只出包不发布：分支上的 commit 与 tag/版本号断言必然对不上，用来演练 beta 配置。
+on:
+  push:
+    tags:
+      - "v*-beta*"
+  workflow_dispatch:
+
+# beta 同一时刻只允许一个在跑：两次发布撞在一起会互相覆盖附件。
+concurrency:
+  group: beta-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    uses: ./.github/workflows/_verify.yml
+
+  build:
+    needs: verify
+    uses: ./.github/workflows/_build-win.yml
+    with:
+      channel: beta
+      artifact_name: mediaget-desktop-win-beta
+
+  publish:
+    name: 发布 beta 版本
+    needs: build
+    if: github.event_name == 'push'
+    permissions:
+      # `gh release create/upload` 要写 Release 与附件
+      contents: write
+    uses: ./.github/workflows/_publish.yml
+    with:
+      tag: ${{ github.ref_name }}
+      channel: beta
+      artifact_name: mediaget-desktop-win-beta

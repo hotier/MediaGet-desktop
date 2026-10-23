@@ -45,6 +45,8 @@ import {
   statsRepository,
 } from "./storage-runtime";
 import { createStats } from "./stats";
+import { profileSuffix, releaseChannel } from "./profile";
+import { appUserModelIdOf } from "./release-channel";
 import { createResources, readManifest } from "./resources";
 import { createClipboardWatcher } from "./clipboard";
 import { createDownloadNotifier } from "./notify";
@@ -76,8 +78,8 @@ const emit = (channel: string, payload: unknown) => {
 
 // —— 单实例锁已在 single-instance.ts（本文件第一条 import）完成 ——
 
-// Windows 通知/任务栏身份
-app.setAppUserModelId("cc.hotier.mediaget.desktop");
+// Windows 通知/任务栏身份（beta 用 .beta 后缀：与安装器的 appId 同一份身份，见 release-channel.ts）
+app.setAppUserModelId(appUserModelIdOf(releaseChannel));
 
 // 预览取流的自定义 scheme：Chromium 在 ready 时就固化协议分类，这行必须在 whenReady 之前
 registerPreviewScheme();
@@ -208,15 +210,25 @@ function readKernelConfig(key: string): string | undefined {
  * 首次求值推迟到第一次真正解析 —— 本函数在顶层同步执行，必定早于它。
  */
 const publishedCookieKeys = new Set<string>();
+/** 记录「我们铺进 env 的二进制路径」：用户改设置后要能覆盖，而 dev 手写的不动 */
+const publishedBinaryKeys = new Set<string>();
 
 function publishKernelEnv(): void {
-  // —— 二进制路径：dev 已显式设置的 env 优先（不覆盖开发者手配）——
+  // —— 二进制路径：dev 显式设置的 env 优先；设置页改过的值要压过上次启动铺进去的旧值 ——
   for (const [envKey, cfgKey] of [
     ["YTDLP_BIN", "YTDLP_BIN"],
     ["FFMPEG_BIN", "FFMPEG_BIN"],
   ] as const) {
     const resolved = readKernelConfig(cfgKey);
-    if (resolved && !process.env[envKey]) process.env[envKey] = resolved;
+    if (resolved) {
+      if (!process.env[envKey] || publishedBinaryKeys.has(envKey)) {
+        process.env[envKey] = resolved;
+        publishedBinaryKeys.add(envKey);
+      }
+    } else if (publishedBinaryKeys.has(envKey)) {
+      delete process.env[envKey];
+      publishedBinaryKeys.delete(envKey);
+    }
   }
 
   // —— 用户 Cookie：设置页是产品内的配置面，以它为准 ——
@@ -333,7 +345,9 @@ const stats = createStats({
  */
 const trackMerger = createTrackMerger({
   getFfmpegPath: () => readKernelConfig("FFMPEG_BIN") ?? null,
-  cacheDir: () => join(app.getPath("temp"), "mediaget-media"),
+  // dev 与打包版各清各的预览缓存：同一 URL 哈希会撞同一个文件，两边同时预览时
+  // 一个进程的启动清理也可能删掉另一个正在播的产物
+  cacheDir: () => join(app.getPath("temp"), `mediaget-media${profileSuffix}`),
   userAgent: DESKTOP_USER_AGENT,
   refererFor,
   // 失败原因已由内核把直链洗成 `<url>`：留一句给日志，排查「一直是转圈」时不再靠猜
@@ -406,9 +420,9 @@ const downloader = new Downloader({
         kind: groupTask.kind,
         bytes: groupTask.received,
         elapsedMs:
-          groupTask.transferMs > 0 && groupTask.transferBytes === groupTask.received
-            ? Math.round(groupTask.transferMs)
-            : undefined,
+          // 合流任务的 received 以落地文件为准（≈ 视频 + 音频 + 容器开销），与 transferBytes
+          // 不再逐字节相等；平均速度仍然可算，别因此把它显示成「—」
+          groupTask.transferMs > 0 ? Math.round(groupTask.transferMs) : undefined,
         workKey: entry.groupId,
         historyEntry: entry,
       });
@@ -513,6 +527,10 @@ const proxyReady = app.whenReady().then(() => applyProxy());
 
 const updater = createUpdater({
   currentVersion: app.getVersion(),
+  // 通道判据同样是版本号：beta 只读 beta.yml 且允许 prerelease，稳定版只看 latest.yml。
+  // 两边的 tag 过滤在 GitHubProvider 内部完成，这里只给策略。
+  channel: releaseChannel === "beta" ? "beta" : "latest",
+  allowPrerelease: releaseChannel === "beta",
   onChange: (state) => emit(IPC.evUpdateState, state),
 });
 updater.setPolicy(updatePolicy());
@@ -604,8 +622,13 @@ registerIpc({
   validateOutputs: !app.isPackaged,
 });
 
-/** 唤起主窗口：托盘点击、通知点击、二次启动、全局快捷键共用同一条恢复路径 */
+/**
+ * 唤起主窗口：托盘点击、通知点击、二次启动、全局快捷键共用同一条恢复路径
+ */
 function showMainWindow(): void {
+  // second-instance 在模块作用域注册，理论上可早于 ready 触发：那时 createWindow 还没有
+  // 会话/协议/权限钩子可依赖，交给 whenReady 的常规启动路径即可
+  if (!app.isReady()) return;
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow();
     return;
@@ -687,6 +710,23 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//.test(url)) void shell.openExternal(url);
     return { action: "deny" };
+  });
+  // 同页跳转也要挡：preload 会随每次导航重新注入，主窗口一旦被导航到远程页面，
+  // `window.mg` 就交到了那页手里（sandbox/CSP 只是兜底，这是唯一把桥送出去的路径）。
+  // 放行打包态的 file:// 与开发服务器自身的 origin，其余拦下并交系统浏览器。
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    const devUrl = process.env.VITE_DEV_SERVER_URL;
+    let allowed = url.startsWith("file://");
+    if (!allowed && isDev && devUrl) {
+      try {
+        allowed = new URL(url).origin === new URL(devUrl).origin;
+      } catch {
+        allowed = false;
+      }
+    }
+    if (allowed) return;
+    event.preventDefault();
+    if (/^https?:\/\//.test(url)) void shell.openExternal(url);
   });
 
   if (isDev) {
@@ -797,6 +837,7 @@ app.whenReady().then(() => {
   // 启动留痕：只有报错的日志看不出「进程什么时候起过」，一行档期信息给排查一个锚点。
   // 队列那半写的是摘要（条数 + 状态分布）而不是光一个数：「恢复了 0 项」和
   // 「恢复了 5 项（done 5）」是两种完全不同的事故，前者才需要去追 queue_tasks 的写入方
+  if (!app.isPackaged) logger.info(`[app] dev 档数据目录：${app.getPath("userData")}（与打包版隔离）`);
   logger.info(
     `[app] 启动 v${app.getVersion()} ${isDev ? "dev" : "packaged"} · 内核 ${kernelMode()} · 队列恢复 ${queueDigest(restoredQueue)}`
   );

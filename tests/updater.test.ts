@@ -14,6 +14,8 @@ import type { UpdateState } from "../types/ipc";
 class FakeSource implements UpdaterSource {
   autoDownload = true;
   autoInstallOnAppQuit = true;
+  channel = "latest";
+  allowPrerelease = false;
   quitAndInstall = vi.fn();
   checkForUpdates = vi.fn(async () => undefined);
   downloadUpdate = vi.fn<UpdaterSource["downloadUpdate"]>(async () => undefined);
@@ -72,6 +74,25 @@ describe("createUpdater 初始态", () => {
     updater.attach(new FakeSource());
     source.fire("update-available", { version: "0.2.0" });
     expect(latest().availableVersion).toBe("0.2.0");
+  });
+
+  it("beta 通道铺到更新源：channel=beta + allowPrerelease=true；稳定版不覆盖源默认", () => {
+    const beta = createUpdater({
+      currentVersion: "0.3.0-beta.1",
+      channel: "beta",
+      allowPrerelease: true,
+      onChange: () => {},
+    });
+    const betaSource = new FakeSource();
+    beta.attach(betaSource);
+    expect(betaSource.channel).toBe("beta");
+    expect(betaSource.allowPrerelease).toBe(true);
+
+    const stable = createUpdater({ currentVersion: "0.2.1", onChange: () => {} });
+    const stableSource = new FakeSource();
+    stable.attach(stableSource);
+    expect(stableSource.channel).toBe("latest");
+    expect(stableSource.allowPrerelease).toBe(false);
   });
 
   it("setPolicy：attach 前记账、attach 后热更；安装固定手动确认", () => {

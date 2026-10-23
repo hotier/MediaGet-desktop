@@ -5,6 +5,7 @@ MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet
 深层依据不在此文件，按需要读：
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— §1 三条硬约束、§6 安全红线、§7 构建与发布、§8 分仓与同步（改架构前先读 §8）、§9 耦合治理（平台清单的归属在这里定过）
 - [docs/UIUX-DESIGN.md](docs/UIUX-DESIGN.md) —— Token 分层与视觉语义真源；§7 覆盖 §1–2；§9 定统计页与图表底座（ECharts 唯一登记点、取色探针、作图三规）
+- [docs/CODE-REVIEW.md](docs/CODE-REVIEW.md) —— 审查标准与流程：P0–P3 分级判据、D0–D3 审查深度、按改动面分组的检查清单、一票否决项、事故反哺守卫的登记表（提 PR 前看 §3 对应那组，别通读）
 - [README.md](README.md) —— 项目说明、命令表、里程碑状态；界面决策沿革不在这里（在 [docs/UIUX-HANDOFF.md](docs/UIUX-HANDOFF.md) §6 勘误记录）
 
 ## 改 IPC 通道 = 动六件套
@@ -27,6 +28,10 @@ MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet
 1. **单一代码源**：解析逻辑只在 `packages/parse-core/` 维护一份，本仓 import 工件、不复制。同步成本就是一个版本号——白名单外的符号（如 `createTtlCache`）在 `core-adapter/` 本地复刻，需要更多能力时让上游加进 exports 再发版，伸手拿内部实现会把升级变成定期冲突。
 2. **依赖边界**：renderer 只能经 IPC 拿数据；全仓不 import route 层与 Next.js 运行时模块。
 3. **零敏感资产入包**：运维 Cookie（`BILIBILI_COOKIE`、`IG_COOKIE`）等站点资产绝不打包、绝不硬编码；客户端只接受用户自配。
+
+## 依赖分类决定包体积
+
+`dependencies` 只放**主进程运行时**（parse-core、amagi、better-sqlite3、ytdlp-nodejs、undici、zod、font-list、electron-updater 等）；渲染层依赖与 build-only 工具进 `devDependencies`——Vite 会把前者打进 `dist-renderer`，而 electron-builder 会把 `dependencies` 整棵复制进 `app.asar`。2026-10-23 重分类后 app.asar 176 MB → 28.6 MB、win-unpacked 666 MB → 446 MB。主进程 `require` 的包挪进 devDependencies，打包版启动即 `MODULE_NOT_FOUND`；渲染层包留在 dependencies，只会在包里多一份副本。改完分类必须启动一次打包版验证（详见 [ARCHITECTURE.md](docs/ARCHITECTURE.md) §7）。
 
 ## 平台清单只有一个真源：`shared/platforms.ts`
 
@@ -68,7 +73,8 @@ MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet
 ## 本机的坑（配置里读不出来）
 
 - **`pnpm run build` 末段在本机被拦**：electron-builder 解包卸载器时 spawn 失败（exit null），是环境限制不是代码问题。本机验收用 `pnpm run build:app`，出包优先 `portable`。
-- **「UI 没变化」先看进程**：旧 Electron 实例持单实例锁会让新实例静默 `exit 0`，旧 vite 会占住 5433。重启 dev 前先按命令行把残留清干净。
+- **「UI 没变化」先看进程**：旧 Electron 实例持单实例锁会让新实例静默 `exit 0`，旧 vite 会占住 5433。重启 dev 前先按命令行把残留清干净。三档各有各的 userData：dev = `MediaGet-dev`、稳定版 = `MediaGet`、beta = `MediaGet (Beta)`，可以同时启动做 A/B；清数据只删对应那一档，别动另外两份。并排时全局快捷键 `Ctrl+Alt+V` 仍然只有一个实例能注册（系统级独占，不是分档失效）。
+- **dev/打包版并排时全局快捷键只有一个能注册**（`Ctrl+Alt+V` 同一键位，先启动者拿到）；这是并排运行的系统级限制，不是分档没生效。
 - renderer 走 HMR，**主进程/preload 改动必须重启 Electron**才生效。
 - Node 的全局 fetch 不读 Windows 系统代理：需要联网调试时导出 `HTTP_PROXY`/`HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`（git 则是另一个坑：`-c http.schannelCheckRevoke=false`）。
 - 本机无 `gh` CLI；操作 GitHub 走 `git credential fill` 取 token + Node fetch。
@@ -77,10 +83,12 @@ MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet
 
 提交格式 `type(scope): 摘要`，scope 必填、摘要 ≤120。前缀不是审美而是 `pnpm release` 的**发版输入**：`feat`→minor、`fix`→patch、`!` 或 `BREAKING CHANGE`→major，`docs`/`test`/`chore` 等不进 CHANGELOG。版本号只写进 `package.json`（包 `private`，不上注册表）。
 
+**beta 通道**（2026-10-23）：不走 `pnpm release`（那会把 beta 号写进 CHANGELOG 和落地页）。在 dev 分支把 `package.json` 的 `version` 改成 `X.Y.Z-beta.N` 并提交，打 `vX.Y.Z-beta.N` 附注标签推送，`beta.yml` 校验 tag 与版本一致后出包并发布 GitHub prerelease。beta 有独立身份（`MediaGet (Beta)` / `cc.hotier.mediaget.desktop.beta` / `MediaGet Beta.exe` / `beta.yml`），与稳定版并排安装、数据互不相通；配置真源是 `electron-builder.beta.cjs`，运行时通道判据只有版本号的 `-beta.N`（`electron/main/release-channel.ts`）。
+
 二进制随包件的真源是 `resources/binaries.json`（版本 + 固定 tag 直链 + SHA-256）：`releases/latest/download` 会随上游发布漂移，不带 `--fail` 的 `curl -o` 会把 404 的 HTML 错误页原样写成 `.exe`。观察上游用 `node scripts/fetch-binaries.cjs --check-updates`（它把新资产下载下来算好 SHA-256，产出可直接粘贴的片段），**写回 `binaries.json` 由人完成**。`pnpm dev` 前置同一脚本的 `--soft`：下载失败只播报并以 0 退出（缺的那路运行时就降级，不挡 UI 开工），`binaries.json` 残缺仍非零退出；CI 走严格分支，别把这两条语义合并。
 
-CI 打包固定 `--publish never`：发布动作统一由 tag 触发的 `release.yml` 末尾一次 `gh release create` 完成，否则 electron-builder 会另建一个 Release 撞成两个。`latest.yml` 必须与安装包同在一个 Release，缺它应用内「检测更新」永远查不到版本。
+CI 打包固定 `--publish never`：发布动作统一由 tag 触发的 `_publish.yml` 末尾一次 `gh release create` 完成，否则 electron-builder 会另建一个 Release 撞成两个。稳定版 `latest.yml`、beta `beta.yml` 必须与安装包同在一个 Release，缺它应用内「检测更新」永远查不到版本。`v*` 会同时匹配 beta tag，所以 `release.yml` 的三个 job 都带 tag 级过滤，beta 只走 `beta.yml`。
 
-**.github 的分层别再拍平**（2026-10-21 收拢）：环境准备只有 `.github/actions/setup`（composite），验收只有 `_verify.yml`，出包 + 产物断言只有 `_build-win.yml`；`ci.yml` / `release.yml` 只写「什么时候跑」。以前这两段在 ci 与 release 各有一份拷贝，已经漂移过——资源落地断言与 `latest.yml`/`blockmap` 断言只长在 CI 那份上，于是「CI 绿、发出去的 Release 少附件」是结构上可能的。改 CI 要改那两个 `_` 文件，不要往调用方里加步骤。`release.yml` 支持手动干跑（`workflow_dispatch`，默认 `dry_run=true` 只出包不发布）——真发版前先点一次。
+**.github 的分层别再拍平**（2026-10-21 收拢）：环境准备只有 `.github/actions/setup`（composite），验收只有 `_verify.yml`，出包 + 产物断言只有 `_build-win.yml`（输入 `channel: stable|beta`），发布只有 `_publish.yml`（输入 `channel` + `tag`）；`ci.yml` / `release.yml` / `beta.yml` 只写「什么时候跑」。以前这两段在 ci 与 release 各有一份拷贝，已经漂移过——资源落地断言与 `latest.yml`/`blockmap` 断言只长在 CI 那份上，于是「CI 绿、发出去的 Release 少附件」是结构上可能的。改 CI 要改那三个 `_` 文件，不要往调用方里加步骤。`release.yml` 支持手动干跑（`workflow_dispatch`，默认 `dry_run=true` 只出包不发布）——真发版前先点一次。
 
-落地页（`landing/`）由**独立的** `landing.yml` 发到 GitHub Pages：push 到 main 且命中落地页相关路径（`landing/**`、`scripts/build-landing.cjs`、`brand/**`、`shared/**`、`renderer/public/{logos,brand}/**`、`package.json` 等）就重建并部署，也可以用 `workflow_dispatch` 手动补发。它走离线档构建，不等发版、也不查 Release——改一句文档措辞推上去就上线；版本号仍然跟得上，因为 `pnpm release` 改的 `package.json` 本身就在那组 paths 里。`release.yml` 只出安装包与 Release，不碰 Pages。产物自检是 `scripts/verify-landing.cjs`（六页齐备（含 404）、资源引用文档相对、每个本地引用都落盘、平台卡数与页内数字自洽、更新日志与 CHANGELOG 同步），只在部署链路里跑（`ci.yml` 不再重复构建，2026-10-21 移除）。产物是 `build.format="directory"`（URL 不带 .html，`/changelog/` 而非 `/changelog.html`；2026-10-22 业主定）：五页各在自己的目录，站内链接的前缀一律经 `landing/src/lib/rel.ts` 按页深度算，页面里不手写 `../`；404.html 是唯一保留扩展名的产物（Pages 按根下这个文件名接管未命中路径）。双击 dist/index.html 只能看首页自身——file:// 没有服务器补 index.html，目录链接会落到本地目录列表，这是原理性边界，预览请走 `landing:preview` 或真 Pages。`landing/dist` 塞进任意子路径都可用。Pages 需要 `Settings → Pages → Source = GitHub Actions`。
+落地页（`landing/`）由**独立的** `landing.yml` 发到 GitHub Pages：push 到 main 且命中落地页相关路径（`landing/**`、`scripts/build-landing.cjs`、`brand/**`、`shared/**`、`renderer/public/{logos,brand}/**`、`package.json` 等）就重建并部署，也可以用 `workflow_dispatch` 手动补发。它走离线档构建，不等发版、也不查 Release——改一句文档措辞推上去就上线；版本号仍然跟得上，因为 `pnpm release` 改的 `package.json` 本身就在那组 paths 里。`release.yml` 只出安装包与 Release，不碰 Pages。产物自检是 `scripts/verify-landing.cjs`（七页 + 404 齐备、资源引用文档相对、每个本地引用都落盘、平台卡数与页内数字自洽、更新日志与 CHANGELOG 同步），只在部署链路里跑（`ci.yml` 不再重复构建，2026-10-21 移除）。产物是 `build.format="directory"`（URL 不带 .html，`/changelog/` 而非 `/changelog.html`；2026-10-22 业主定）：七页各在自己的目录，站内链接的前缀一律经 `landing/src/lib/rel.ts` 按页深度算，页面里不手写 `../`；404.html 是唯一保留扩展名的产物（Pages 按根下这个文件名接管未命中路径）。双击 dist/index.html 只能看首页自身——file:// 没有服务器补 index.html，目录链接会落到本地目录列表，这是原理性边界，预览请走 `landing:preview` 或真 Pages。`landing/dist` 塞进任意子路径都可用。Pages 需要 `Settings → Pages → Source = GitHub Actions`。

@@ -1,7 +1,10 @@
 # 测试与验证纪律
 
+> 本文件只回答「**验没验过、跑哪一档**」。「该不该这么改、审到多深、看哪几组」在
+> [CODE-REVIEW.md](CODE-REVIEW.md)——PR 模板里的「自验档位」一栏就是按本文档 §1 填的，两处定义不要分叉。
+
 > 核心原则只有一条：**按「改了什么」选最低够用的一档；同一批改动只在收尾时完整验证一次。**
-> 全量套件 ≈5s、构建 ≈4s，看着便宜，但对每条改动无差别地跑三遍才是真浪费——
+> 全量套件 ≈20s（61 文件 / 1037 例）、构建 ≈4s，单看不算贵，但对每条改动无差别地跑三遍才是真浪费——
 > 既拖慢施工，又制造「全绿了应该没问题」的错觉（绿的是上一版代码）。
 > 本文件是施工方（含 agent 团队）的验收口径；CI 配置见 `.github/workflows/ci.yml`。
 
@@ -12,7 +15,7 @@
 | **L0 机械门禁** | `pnpm typecheck` `pnpm lint` | 类型、引用完整、flat-config 规则 | ~10s |
 | **L1 定向单测** | `npx vitest run tests/<相关>.test.ts` | 被测改动对应的那份测试 | 1–3s |
 | **L2 契约/边界** | `npx vitest run tests/contract.test.ts tests/boundaries.test.ts tests/ipc.test.ts tests/kernel-sync.test.ts` | IPC 通道对账、依赖铁律、主进程 handler、内核镜像一致性 | ~5s |
-| **L3 全量** | `pnpm test`（27 文件 / 397 例） | 全部离线逻辑 | ~5s |
+| **L3 全量** | `pnpm test`（61 文件 / 1037 例） | 全部离线逻辑 | ~20s |
 | **L4 构建** | `pnpm build:app` | tsup + vite 产物成立 | ~4s |
 | **L5 实机人工** | `pnpm dev` / 安装包 + 浏览器 | 窗口、托盘、打包态、像素与几何 | 不可压缩 |
 

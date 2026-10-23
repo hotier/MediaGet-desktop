@@ -1,0 +1,125 @@
+name: Publish GitHub release
+
+# 可复用工作流：把 _build-win 的产物发成一个 GitHub Release。
+# stable 与 beta 的差别只在 tag 规则与 --prerelease —— 发布步骤只应有一份实现，
+# 否则「CI 绿、Release 少附件」这类漂移会在两条通道之间各长一份。
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 要发布的 tag（vX.Y.Z 或 vX.Y.Z-beta.N）
+        type: string
+        required: true
+      channel:
+        description: stable | beta（同时核对版本号的预发布标识）
+        type: string
+        default: stable
+      artifact_name:
+        description: _build-win 产出的 artifact 名
+        type: string
+        default: mediaget-desktop-win
+
+jobs:
+  publish:
+    name: 发布 ${{ inputs.tag }}
+    runs-on: windows-latest
+    permissions:
+      # `gh release create/upload/edit` 要写 Release 与附件
+      contents: write
+    env:
+      TAG: ${{ inputs.tag }}
+      CHANNEL: ${{ inputs.channel }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # 防呆：release-it（或手工 beta tag）先写 package.json 再打 tag，正常一定一致；
+      # 不一致说明 tag 是手打的或版本被改过。通道也在这里对一次：beta 版本号必须带
+      # -beta.，稳定版不能带任何预发布标识，别让两条通道的清单混进同一个 Release。
+      - name: Assert tag matches package.json version and channel
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          pkg="v$version"
+          if [ "$pkg" != "$TAG" ]; then
+            echo "tag=$TAG 与 package.json=$pkg 不一致，终止发布" >&2
+            exit 1
+          fi
+          tag_channel=$(node -e 'process.stdout.write(/-beta(?:\.|$)/i.test(process.argv[1]) ? "beta" : "stable")' "$version")
+          if [ "$tag_channel" != "$CHANNEL" ]; then
+            echo "tag=$TAG 属于 $tag_channel 通道，本工作流是 $CHANNEL" >&2
+            exit 1
+          fi
+          echo "OK $TAG ($CHANNEL)"
+
+      # 出包在 build job 里做完了：取回它的 artifact（*.exe / *.7z / *.yml / *.blockmap），
+      # 落回 release/，下面那条 gh 命令与以前完全一致。
+      - name: Download installer artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: release
+
+      # 稳定版取 CHANGELOG 第一节作为 Release 正文；对不上当前 tag 就退回占位文案。
+      # beta 不强制写 CHANGELOG（预发布通常只有 commit 级变化），没有对应小节时
+      # 交给 gh 的 --generate-notes。
+      - name: Extract release notes for this version
+        id: notes
+        shell: bash
+        run: |
+          version="${TAG#v}"
+          awk '/^## /{n++; if(n>1) exit} n==1' CHANGELOG.md > /tmp/notes.md || true
+          if [ -s /tmp/notes.md ] && head -1 /tmp/notes.md | grep -q "$version"; then
+            echo "file=/tmp/notes.md" >> "$GITHUB_OUTPUT"
+            echo '--- Release 正文（CHANGELOG） ---'
+            cat /tmp/notes.md
+          elif [ "$CHANNEL" = "stable" ]; then
+            {
+              echo "## $version"
+              echo
+              echo "见仓库 CHANGELOG.md。"
+            } > /tmp/notes.md
+            echo "file=/tmp/notes.md" >> "$GITHUB_OUTPUT"
+            echo "CHANGELOG 首节不是 $version，已退回占位说明" >&2
+          else
+            echo "file=" >> "$GITHUB_OUTPUT"
+            echo "beta 没有对应的 CHANGELOG 小节，改用 GitHub 自动生成说明" >&2
+          fi
+
+      - name: Create GitHub Release and upload artifacts
+        shell: bash
+        run: |
+          shopt -s nullglob
+          # *.yml 就是更新源清单：稳定版 latest.yml、beta beta.yml，必须与安装包同在一个
+          # Release；缺它则应用内「检测更新」永远查不到版本。
+          # 缺附件这件事已在 _build-win.yml 的断言里挡过一次，这里是上传前的最后一道。
+          assets=(release/*.exe release/*.7z release/*.yml release/*.blockmap)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "release/ 下没有可上传产物" >&2
+            exit 1
+          fi
+          printf '待上传：\n'
+          printf '  %s\n' "${assets[@]}"
+
+          create_args=(--title "MediaGet $TAG")
+          if [ "$CHANNEL" = "beta" ]; then
+            create_args+=(--prerelease)
+          fi
+          if [ -n "${{ steps.notes.outputs.file }}" ]; then
+            create_args+=(--notes-file "${{ steps.notes.outputs.file }}")
+          else
+            create_args+=(--generate-notes)
+          fi
+
+          # 重跑本 job 时 Release 已存在：只覆盖附件，不重复建。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+            # 已有 Release 也要保证 beta 仍是 prerelease（tag 规则是唯一入口，这里是兜底）
+            if [ "$CHANNEL" = "beta" ]; then
+              gh release edit "$TAG" --prerelease
+            fi
+            echo "Release $TAG 已存在，已覆盖附件"
+          else
+            gh release create "$TAG" "${assets[@]}" "${create_args[@]}"
+          fi
+          gh release view "$TAG" --json tagName,name,isPrerelease,assets \
+            --jq '{tag: .tagName, name: .name, prerelease: .isPrerelease, assets: [.assets[].name]}'
