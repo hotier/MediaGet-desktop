@@ -135,11 +135,14 @@ export default function HomePage({
   const [recent, setRecent] = useState<HistoryEntry[]>([]);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  /** 下一批解析是否跳过结果缓存（历史页「重新解析」打的标记，runBatch 消费即清） */
+  const forceOnceRef = useRef(false);
 
   /**
-   * 单条解析（批内逐条调用；结果卡与失败卡的 [重试] 都走它，`retry=true`）。
-   * 重试必须带 `skipCache`：主进程有 24h 结果缓存，而 CDN 直链几分钟就过期——
-   * 不带的话重试永远拿回同一条过期直链，用户怎么点都是同一个错。
+   * 单条解析（批内逐条调用；结果卡/失败卡的 [重试]、[重新解析]、历史页送回的
+   * 「重新解析」都走它，`retry=true`）。
+   * 重解必须带 `skipCache`：主进程有 24h 结果缓存，而 CDN 直链几分钟就过期——
+   * 不带的话永远拿回同一条过期直链，换了引擎也还是旧引擎那份结果，用户怎么点都是同一个错。
    */
   const parseOne = useCallback(
     async (id: number, source: string, retry = false) => {
@@ -187,11 +190,16 @@ export default function HomePage({
   /** 批量解析：串行执行（内核自带节流，串行=速率与进度都诚实），完成一张落一张 */
   const runBatch = useCallback(
     async (sources: string[]) => {
+      // 历史页点的「重新解析」在 effect 里打了这一发标记：它要的是**新结果**，
+      // 命中 24h 缓存等于点了没反应。只作用于紧接着的这一批，先取走再判空——
+      // 否则这一批被挡下（空表 / 上一批还在跑）时标记会残留到下一次普通解析。
+      const force = forceOnceRef.current;
+      forceOnceRef.current = false;
       const list = sources.map((s) => s.trim()).filter(Boolean);
       if (list.length === 0 || useHomeDraft.getState().busy) return;
       setBusy(true);
       const fresh = startBatch(list);
-      for (const it of fresh) await parseOne(it.id, it.text);
+      for (const it of fresh) await parseOne(it.id, it.text, force);
       setBusy(false);
     },
     [parseOne, setBusy, startBatch]
@@ -313,6 +321,9 @@ export default function HomePage({
     if (!reparseFill) return;
     onReparseFillDone();
     const joined = reparseFill.links.join("\n");
+    // 这一批必须跳过 24h 结果缓存：用户点「重新解析」就是要一份带新签名直链的结果，
+    // 命中缓存会原样交回旧链（换过引擎的话还会是旧引擎解的那份）。
+    forceOnceRef.current = true;
     autoFilledRef.current = joined;
     onInputRef.current(joined);
   }, [reparseFill]);
