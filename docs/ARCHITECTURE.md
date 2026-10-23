@@ -178,6 +178,7 @@
   - `beta.yml`（push `v*-beta*` 标签，或手动干跑）：`verify` → `_build-win`（beta）→ `_publish.yml`（beta，prerelease）。标签必须与 `package.json` 的 `X.Y.Z-beta.N` 一致；手动触发只出包不发布。
   - `landing.yml`（push `main` 且命中 paths / 手动）与 `binaries-watch.yml`（每周一 cron）职责独立，不参与上面两条链路。
   - 内核腐化告警不再靠并列检出冒烟（`smoke:kernel` 已随 2982811 拆桥删除）：`tests/kernel-sync.test.ts` 直接对工件 `dist/index.d.ts` 断言契约面，装不上依赖即红。
+- 发版前的分支与合并路径见 [GIT-WORKFLOW.md](GIT-WORKFLOW.md)：日常改动落 `dev`，业主确认后合并 `main` 再发版；只有已发布版本的紧急修复直接改 `main`，发版后当轮合回 `dev`。
 - 发版：`pnpm release`（release-it）—— 先跑 `typecheck`/`lint`/`test` 门禁，再按 commit 前缀推导版本（`feat`→minor、`fix`→patch、`!` 或 `BREAKING CHANGE`→major），写 `CHANGELOG.md`、提交 `chore(release): vX.Y.Z`、打附注标签并 push。版本号只写进 `package.json`（`npm.publish: false`，本包 `private`，不上注册表）。要改档位随时覆盖：`pnpm release patch|minor|major|1.2.3`（显式参数优先于 commit 推导，实测确认）。
 - beta 发版不走 release-it（它会把 beta 号写进 CHANGELOG 与落地页版本）：在 dev 分支把 `package.json` 的 `version` 改成 `X.Y.Z-beta.N` 并提交，打 `vX.Y.Z-beta.N` 附注标签推送，`beta.yml` 校验 tag 与版本一致后出独立身份的包并发布 prerelease。稳定版的 `releases/latest` 与 `latest.yml` 都不会命中 prerelease；beta 端口读 `beta.yml`。
 - 提交规范由 commitlint 强制（husky `commit-msg`）：`type(scope): 摘要`，scope 必填、摘要 ≤120 字符。卡它的理由不是审美——commit 前缀是 release-it 的**发版输入**，写歪一个 `fix` 就决定档位，CHANGELOG 分组也直接取摘要行。

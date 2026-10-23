@@ -83,6 +83,8 @@ MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet
 
 提交格式 `type(scope): 摘要`，scope 必填、摘要 ≤120。前缀不是审美而是 `pnpm release` 的**发版输入**：`feat`→minor、`fix`→patch、`!` 或 `BREAKING CHANGE`→major，`docs`/`test`/`chore` 等不进 CHANGELOG。版本号只写进 `package.json`（包 `private`，不上注册表）。
 
+**分支模型**：日常改动先落 `dev`，业主确认后 `git merge --no-ff dev` 到 `main` 再 `pnpm release`；只有已发布版本的紧急修复直接改 `main`，发版后当轮把 `main` 合回 `dev`。两条路径的步骤、冲突处理与版本号规则见 [docs/GIT-WORKFLOW.md](docs/GIT-WORKFLOW.md)——beta 号进 main 前必须落回稳定号，否则 release-it 会把版本推偏。
+
 **beta 通道**（2026-10-23）：不走 `pnpm release`（那会把 beta 号写进 CHANGELOG 和落地页）。在 dev 分支把 `package.json` 的 `version` 改成 `X.Y.Z-beta.N` 并提交，打 `vX.Y.Z-beta.N` 附注标签推送，`beta.yml` 校验 tag 与版本一致后出包并发布 GitHub prerelease。beta 有独立身份（`MediaGet (Beta)` / `cc.hotier.mediaget.desktop.beta` / `MediaGet Beta.exe` / `beta.yml`），与稳定版并排安装、数据互不相通；配置真源是 `electron-builder.beta.cjs`，运行时通道判据只有版本号的 `-beta.N`（`electron/main/release-channel.ts`）。
 
 二进制随包件的真源是 `resources/binaries.json`（版本 + 固定 tag 直链 + SHA-256）：`releases/latest/download` 会随上游发布漂移，不带 `--fail` 的 `curl -o` 会把 404 的 HTML 错误页原样写成 `.exe`。观察上游用 `node scripts/fetch-binaries.cjs --check-updates`（它把新资产下载下来算好 SHA-256，产出可直接粘贴的片段），**写回 `binaries.json` 由人完成**。`pnpm dev` 前置同一脚本的 `--soft`：下载失败只播报并以 0 退出（缺的那路运行时就降级，不挡 UI 开工），`binaries.json` 残缺仍非零退出；CI 走严格分支，别把这两条语义合并。
