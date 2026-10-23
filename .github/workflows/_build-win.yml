@@ -43,6 +43,37 @@ jobs:
       - name: Verify binaries + manifest before packaging
         run: node scripts/fetch-binaries.cjs --verify-only --require-all
 
+      # beta 版本号只存在于 tag（2026-10-23 定）：分支上的 package.json 永远停在**已发布的
+      # 稳定号**，出包时从触发 tag 注入完整的 `X.Y.Z-beta.N`。
+      #
+      # 为什么不能写在文件里：beta 号写进 dev 的 package.json，就等于每次出 beta 都要为版本号
+      # 单独提交一笔，且 dev → main 合并前必须手工回落（旧 §3.4）——那一整类摩擦都来自这里。
+      # 注入之后，产物里的版本、beta.yml 清单、应用内通道判据（`release-channel.ts` 只认
+      # `-beta.N` 后缀）都还是那个完整的 beta 号，而分支历史里没有半句假版本。
+      #
+      # 手动触发（workflow_dispatch）没有 tag：`github.ref_name` 是分支名，注入会把版本变成
+      # 垃圾字符串，所以只在 ref 形如 `v*-beta*` 时注入，演练保留 package.json 的基线号。
+      - name: Inject beta version from tag
+        shell: bash
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$CHANNEL" != "beta" ]; then
+            echo "stable 通道用 release-it 写好的 package.json 版本，不注入"
+            exit 0
+          fi
+          case "$REF_NAME" in
+            v*-beta*) version="${REF_NAME#v}" ;;
+            *)
+              echo "非 beta tag 触发（ref=$REF_NAME）：保留 package.json 版本，只演练出包"
+              exit 0
+              ;;
+          esac
+          # --workspaces=false：根件是 pnpm monorepo 宿主，别让 npm 顺手去改 landing/
+          npm version "$version" --no-git-tag-version --workspaces=false
+          echo "注入版本：$(node -p "require('./package.json').version")"
+
       # --publish never 是刻意的：package.json 的 build.publish 配了 GitHub provider，
       # electron-builder 默认会自己上传 Release（没有 token 时报 "GitHub Personal Access
       # Token is not set"，有 token 时会另建一个 Release 撞成两个）。所以不复用

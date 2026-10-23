@@ -32,24 +32,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # 防呆：release-it（或手工 beta tag）先写 package.json 再打 tag，正常一定一致；
-      # 不一致说明 tag 是手打的或版本被改过。通道也在这里对一次：beta 版本号必须带
-      # -beta.，稳定版不能带任何预发布标识，别让两条通道的清单混进同一个 Release。
-      - name: Assert tag matches package.json version and channel
+      # 防呆（2026-10-23 起版本号以 tag 为真源）：
+      # ① 通道对一次——beta 版本号必须带 -beta.，稳定版不能带任何预发布标识，
+      # 别让两条通道的清单混进同一个 Release；
+      # ② tag 的**基线号**不得低于分支上的 package.json：分支上的版本是「已发布的稳定号」，
+      # beta 的未来号只活在 tag 里（`_build-win.yml` 出包时注入），所以这里不能再要求全等。
+      # 比较用 `sort -V`（git bash 自带），避免为一次断言引入 semver 依赖。
+      - name: Assert tag channel and baseline
         shell: bash
         run: |
           version=$(node -p "require('./package.json').version")
-          pkg="v$version"
-          if [ "$pkg" != "$TAG" ]; then
-            echo "tag=$TAG 与 package.json=$pkg 不一致，终止发布" >&2
-            exit 1
-          fi
-          tag_channel=$(node -e 'process.stdout.write(/-beta(?:\.|$)/i.test(process.argv[1]) ? "beta" : "stable")' "$version")
+          tag_version="${TAG#v}"
+          tag_base="${tag_version%%-*}"
+          tag_channel=$(node -e 'process.stdout.write(/-beta(?:\.|$)/i.test(process.argv[1]) ? "beta" : "stable")' "$tag_version")
           if [ "$tag_channel" != "$CHANNEL" ]; then
             echo "tag=$TAG 属于 $tag_channel 通道，本工作流是 $CHANNEL" >&2
             exit 1
           fi
-          echo "OK $TAG ($CHANNEL)"
+          newest=$(printf '%s\n%s\n' "$tag_base" "$version" | sort -V | tail -1)
+          if [ "$newest" != "$tag_base" ]; then
+            echo "tag=$TAG 的基线 $tag_base 低于分支上的 $version：像是把旧 tag 打到了新代码上，终止发布" >&2
+            exit 1
+          fi
+          echo "OK $TAG ($CHANNEL，基线 $tag_base ≥ 分支 $version)"
 
       # 出包在 build job 里做完了：取回它的 artifact（*.exe / *.7z / *.yml / *.blockmap），
       # 落回 release/，下面那条 gh 命令与以前完全一致。
