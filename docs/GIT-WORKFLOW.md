@@ -87,15 +87,16 @@ git pull --ff-only origin dev
 
 业主明确说「可以发」之前：不合 main、不升稳定版本号、不打稳定 tag。
 
-### 3.4 发版前把 beta 号落回稳定号（dev 上打过 beta 时必做）
+### 3.4 分支版本号：只写「已发布的稳定号」
 
-```bash
-node -p "require('./package.json').version"   # 例：0.3.0-beta.1
-# 对照 main 的最新稳定号（例：0.2.1），把 package.json 的 version 改成它
-git commit -am "chore(release): 回落稳定版本号（beta 号只属于预发布）"
-```
+**beta 号不进 `package.json`**（2026-10-23 起）：`dev` 的 version 永远等于**已发布**的稳定号（合并后自动跟随 main），beta 号只存在于 tag `vX.Y.Z-beta.N`，由 `_build-win.yml` 出包时注入（`npm version "$tag" --no-git-tag-version`）。
 
-原因：release-it 从当前版本按 semver 递增，`0.3.0-beta.1` 再走 minor 会跳成 `0.4.0`，稳定版号被 beta 带偏。beta 号只活在 dev 的预发布 tag 里，不进入 main 的版本历史。
+这条改动的意义就是**取消原来那一步「合并前手工回落 beta 号」**：
+
+- 旧做法：beta 号写进 dev 的文件 → 合并前必须改成稳定号并单独提交一笔；release-it 从 `0.3.0-beta.1` 按 semver 递增还会跳号（minor 变 `0.4.0`）。
+- 现做法：文件里没有预发布标识，`dev → main` 直接合；版本号由 tag（beta）与 release commit（stable）定，二者不打架。
+
+发版时代查一次：`node -p "require('./package.json').version"` 应当等于**上一个**稳定版号（例如 `0.3.1`）。若 dev 上冒出了 `-beta`，说明有人又把它写回文件了——`tests/publish-workflow.test.ts` 会先红。
 
 ### 3.5 合并并发版
 
@@ -127,9 +128,10 @@ git push origin dev
 
 ## 4. beta 预发布（不参与上面的合并）
 
-- 在 dev 上把 `package.json` 改成 `X.Y.Z-beta.N` 并提交，打附注 tag `vX.Y.Z-beta.N` 推送；`beta.yml` 校验 tag 与版本一致后出包，并发 GitHub prerelease。
+- **不改 `package.json`**：直接打附注 tag 推送即可——`git tag -a v0.4.0-beta.1 -m v0.4.0-beta.1 && git push origin v0.4.0-beta.1`。`_build-win.yml` 出包前从 tag 注入版本，`beta.yml` 只核对「通道匹配 + tag 基线不低于分支上的稳定号」，出包后发 GitHub prerelease。
+- 分支上的 version 停在已发布稳定号（例如 `0.3.1`），所以 tag 的基线通常比它高（`0.4.0-beta.1` 对 `0.3.1`），这是正常的，不是写错。
 - 不走 `pnpm release`（那会把 beta 号写进 CHANGELOG 和落地页）。
-- beta 验证通过也不自动进 main；要转正按 §3 走，先把版本号落回主线稳定号（§3.4）。
+- beta 验证通过也不自动进 main；要转正按 §3 走，转正时 `pnpm release -- X.Y.Z` 显式给号（main 上的稳定号仍是上一个版本，所以精确版本不会被 semver 递增改偏）。
 - 稳定版 `releases/latest` 看不到 prerelease，两条通道互不影响。
 
 ## 5. 冲突处理
@@ -151,7 +153,7 @@ git push origin dev
 1. main 不接日常改动；dev 不发稳定版。
 2. 不 force push `main` / `dev`；不移动稳定 tag。
 3. 推 `main`、打 tag、`dev → main` 合并前必须有业主确认 + 自验输出；CI 绿只是底线。
-4. 稳定版本号的递增只在 main 由 `pnpm release` 完成；dev 只写 beta 号，合并前落回 main 的稳定号（回落不算递增）。
+4. 稳定版本号的递增只在 main 由 `pnpm release` 完成；**beta 号不得写进 `package.json`**（只活在 `vX.Y.Z-beta.N` tag 里，出包时注入），dev 的 version 永远等于已发布的稳定号。
 5. 每次 main 变动（紧急修复或发版）后，**同一轮内**让 dev 包含 main；`git merge-base --is-ancestor main dev` 必须为真。
 6. 合并一律用 merge，不 cherry-pick（例外见 §5 最后一条）。
 
@@ -168,7 +170,7 @@ git push origin dev
 - [ ] 改动全部落在 dev，提交前缀正确
 - [ ] 收尾跑完 L0 + L3（按 TESTING 加档）
 - [ ] 业主确认可以发
-- [ ] dev 上的 beta 号已落回 main 的稳定号
+- [ ] dev 的 `package.json` 就是已发布稳定号（没有 `-beta`；打了 beta 也不必改）
 - [ ] `git merge --no-ff dev` 到 main，`pnpm release`
 - [ ] Release 附件齐全，`release.yml` 绿
 - [ ] main 合回 dev 并推送

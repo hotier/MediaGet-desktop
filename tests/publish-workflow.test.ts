@@ -44,6 +44,36 @@ describe("gh 凭据", () => {
   });
 });
 
+/**
+ * beta 版本号只存在于 tag（2026-10-23 定）。
+ *
+ * 事故形状：beta 号写进 `dev` 的 `package.json`，于是每次出 beta 都要为版本号单独提交一笔，
+ * 且 `dev → main` 合并前必须手工回落（旧 GIT-WORKFLOW §3.4）——版本号在两条长期分支上
+ * 各写一份、还要人工对齐，这类摩擦反复出现过（「落后 3 个提交」「beta 号把稳定号推偏」）。
+ * 现在改成：分支停在已发布稳定号，出包时从 tag 注入。下面三条钉住这个形状不被改回去。
+ */
+describe("beta 版本号只存在于 tag", () => {
+  it("出包时从 tag 注入版本，而不是读分支上写死的 beta 号", () => {
+    const build = stripYamlComments(src(".github/workflows/_build-win.yml"));
+    expect(build).toMatch(/v\*-beta\*/); // 只认 beta tag 的形状
+    expect(build).toContain("npm version");
+    expect(build).toContain("--no-git-tag-version"); // 注入不能顺手改 git 历史
+    expect(build).toContain("--workspaces=false"); // 根件是 monorepo 宿主，别连带改 landing
+  });
+
+  it("发布步不再要求 tag 与 package.json 全等，只核对通道 + 基线不倒挂", () => {
+    const publish = stripYamlComments(src(".github/workflows/_publish.yml"));
+    expect(publish).not.toContain('pkg="v$version"'); // 全等断言是旧摩擦的源头
+    expect(publish).toContain("tag_base"); // 取 tag 的基线号
+    expect(publish).toMatch(/sort\s+-V/); // 语义化比较，别用字符串比大小
+  });
+
+  it("仓库自己的 package.json 不带 beta 号（这条防的是「下次又手改回去」）", () => {
+    const pkg = JSON.parse(src("package.json")) as { version: string };
+    expect(pkg.version, `package.json 的 version 带了预发布标识：${pkg.version}`).not.toMatch(/-/);
+  });
+});
+
 describe("Release 附件集合", () => {
   it("更新清单按名字收，不用 release/*.yml 整类（builder-debug.yml 也会命中）", () => {
     const publish = stripYamlComments(src(".github/workflows/_publish.yml"));
