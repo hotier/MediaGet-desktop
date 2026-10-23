@@ -11,7 +11,7 @@
  * option 全部来自 `lib/stats.ts` 的纯聚合 + `charts/options.ts` 的纯构造器，可在 node 环境整份测掉。
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CircleX, Download, File, HardDriveDownload, Image, Music2, Percent, RefreshCw, ScanSearch, Video, type LucideIcon } from "lucide-react";
+import { ChartNoAxesCombined, CloudAlert, File, GlobeCheck, HardDriveDownload, Image, Music2, RefreshCw, ScanSearch, Video, type LucideIcon } from "lucide-react";
 import { api, BridgeError } from "../lib/bridge";
 import { fmtBytes, fmtCount, fmtPercent, fmtSpeed } from "../lib/format";
 import {
@@ -49,22 +49,28 @@ import {
   SelectValue,
 } from "../components/ui/select";
 
+// 全页分类切换共用一套短词（业主 2026-10-23）：请求 / 下载 / 字节。这一处没有「请求」这一维，
+// 只比「资源个数」与「体积」——用「数量」而不是「次数」，免得和平台区的请求次数混读
 const KIND_RANK_METRICS: Array<{ key: "downloads" | "bytes"; label: string }> = [
-  { key: "downloads", label: "次数" },
+  { key: "downloads", label: "数量" },
   { key: "bytes", label: "字节" },
 ];
+// 顺序即视觉顺序（业主 2026-10-23）：请求打头并作默认档 —— 解析是用户在这一页
+// 最先想看的动作，下载与字节是它的结果。三个词与「每日热力」保持同一套说法。
 const TREND_METRICS: Array<{ key: TrendMetric; label: string }> = [
-  { key: "downloads", label: "下载结果" },
-  { key: "bytes", label: "传输字节" },
-  { key: "parses", label: "解析请求" },
-];
-const PLATFORM_METRICS: Array<{ key: "parses" | "downloads"; label: string }> = [
-  { key: "parses", label: "解析请求" },
-  { key: "downloads", label: "下载结果" },
-];
-const HEAT_METRICS: Array<{ key: TrendMetric; label: string }> = [
+  { key: "parses", label: "请求" },
   { key: "downloads", label: "下载" },
-  { key: "parses", label: "解析" },
+  { key: "bytes", label: "字节" },
+];
+// 与「总体趋势」「每日热力」同一套词（业主 2026-10-23）：请求 / 下载
+const PLATFORM_METRICS: Array<{ key: "parses" | "downloads"; label: string }> = [
+  { key: "parses", label: "请求" },
+  { key: "downloads", label: "下载" },
+];
+// 与「总体趋势」同一套词与同一顺序（业主 2026-10-23）：请求 / 下载 / 字节
+const HEAT_METRICS: Array<{ key: TrendMetric; label: string }> = [
+  { key: "parses", label: "请求" },
+  { key: "downloads", label: "下载" },
   { key: "bytes", label: "字节" },
 ];
 
@@ -175,8 +181,9 @@ export default function StatsPage({
   const [yearResult, setYearResult] = useState<StatsQueryResult | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const [trendMetric, setTrendMetric] = useState<TrendMetric>("downloads");
-  const [heatMetric, setHeatMetric] = useState<TrendMetric>("downloads");
+  const [trendMetric, setTrendMetric] = useState<TrendMetric>("parses");
+  // 与总体趋势同档起步：两处 tab 长成一个样子，默认档也对齐
+  const [heatMetric, setHeatMetric] = useState<TrendMetric>("parses");
   const [platformMetric, setPlatformMetric] = useState<PlatformMetric>("parses");
   const [kindMetric, setKindMetric] = useState<KindMetric>("downloads");
   // 「自定义」是显式档位：选了它才亮出日历入口；回到任一预设档就收起
@@ -377,7 +384,10 @@ export default function StatsPage({
       ) : (
         <>
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <PeriodFact icon={Download} tone="text-ok" label="下载资源" value={fmtCount(health.done)} detail="成功完成" />
+            {/* 成功用 `GlobeCheck`（地球 + 对勾，业主 2026-10-23 点名）：
+                下载是「从网上下回来并落地成功」这件事，地球那半句说来源、对勾那半句说结果。
+                原先是一枚裸向下箭头（与侧栏「下载」同字形），一眼看去像导航图标。 */}
+            <PeriodFact icon={GlobeCheck} tone="text-ok" label="下载资源" value={fmtCount(health.done)} detail="成功完成" />
             <PeriodFact
               icon={HardDriveDownload}
               tone="text-info"
@@ -385,15 +395,21 @@ export default function StatsPage({
               value={fmtBytes(health.bytes)}
               detail={speed.sampled > 0 ? `平均速度 ${fmtSpeed(speed.avgBytesPerSec)}` : "暂无速度样本"}
             />
+            {/* 失败用 `CloudAlert`（业主 2026-10-23 点名）：与成功那枚 `GlobeCheck` 同族——
+                两枚都画「网上下回来的这件事」，差别只在结尾是勾还是叹号，一眼能对上
+                「一件事成了 / 没成」，比一枚孤立的红叉更成对。 */}
             <PeriodFact
-              icon={CircleX}
+              icon={CloudAlert}
               tone="text-err"
               label="下载失败"
               value={fmtCount(health.failed)}
               detail={`取消 ${fmtCount(health.canceled)} 次`}
             />
+            {/* 成功率用组合柱线图（业主 2026-10-23 点名 `chart-no-axes-combined`）：
+                比率是要「看趋势」的数，不是要「命中靶心」的成绩；也别用 `%` ——
+                右边那个值本来就带百分号，图标再画一个等于同一句话写两遍。 */}
             <PeriodFact
-              icon={Percent}
+              icon={ChartNoAxesCombined}
               tone="text-warn"
               label="下载成功率"
               value={fmtPercent(health.successRate, 1)}
@@ -424,8 +440,11 @@ export default function StatsPage({
               end={<Segment value={platformMetric} options={PLATFORM_METRICS} onChange={setPlatformMetric} ariaLabel="平台统计类型" />}
             >
               {platformRows.length ? (
-                <div>
-                  <div className="grid grid-cols-[minmax(82px,1.1fr)_repeat(3,minmax(44px,0.7fr))] gap-2 border-b border-border pb-2 text-[11px] text-muted-foreground">
+                // 固定可视高度 + 内部滚动（业主 2026-10-23）：平台数随启用平台变（最多 13 个），
+                // 让卡片高度跟着行数长，右邻的「资源类型构成」就永远对不齐，页面还会往下窜。
+                // 表头 sticky 在滚动容器里，滚到第 8 行也知道每列是什么。
+                <div className="stat-scroll h-80 overflow-y-auto">
+                  <div className="sticky top-0 z-10 grid grid-cols-[minmax(82px,1.1fr)_repeat(3,minmax(44px,0.7fr))] gap-2 border-b border-border bg-card pb-2 text-[11px] text-muted-foreground">
                     <span>平台</span>
                     {platformMetric === "parses" ? (
                       <>
@@ -489,7 +508,10 @@ export default function StatsPage({
                   </ol>
                 </div>
               ) : (
-                <Empty />
+                // 空态也占同一可视高度：否则「有数据的平台卡 + 空的类型卡」会把两卡拉成一高一矮
+                <div className="flex h-80 items-center justify-center">
+                  <Empty />
+                </div>
               )}
             </Panel>
 
@@ -498,9 +520,10 @@ export default function StatsPage({
               end={<Segment value={kindMetric} options={KIND_RANK_METRICS} onChange={setKindMetric} ariaLabel="资源类型构成口径" />}
             >
               {kindData.length ? (
-                <div className="grid grid-cols-[132px_minmax(0,1fr)] items-center gap-2 sm:grid-cols-[148px_minmax(0,1fr)]">
+                // 与「平台」同一可视高度（h-80）：环图垂直居中，两侧卡片底部齐平
+                <div className="grid h-80 grid-cols-[132px_minmax(0,1fr)] items-center gap-2 sm:grid-cols-[148px_minmax(0,1fr)]">
                   <div className="relative">
-                    <EChart option={kindOpt} height={174} ariaLabel="资源类型占比空心环形图" />
+                    <EChart option={kindOpt} height={196} ariaLabel="资源类型占比空心环形图" />
                     <div
                       aria-hidden="true"
                       className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center text-center"
@@ -537,7 +560,10 @@ export default function StatsPage({
                   </div>
                 </div>
               ) : (
-                <Empty />
+                // 同「平台」：空态保持 h-80，两卡在任何数据组合下都齐平
+                <div className="flex h-80 items-center justify-center">
+                  <Empty />
+                </div>
               )}
             </Panel>
           </div>
@@ -545,17 +571,18 @@ export default function StatsPage({
           <Panel title="作者 · 解析与下载">
             {authors.length ? (
               <div className="overflow-x-auto">
-                <div className="grid min-w-[580px] grid-cols-[minmax(160px,1fr)_110px_110px_120px] gap-3 border-b border-border pb-2 text-[11px] text-muted-foreground">
+                <div className="grid min-w-[660px] grid-cols-[minmax(160px,1fr)_110px_110px_110px_120px] gap-3 border-b border-border pb-2 text-[11px] text-muted-foreground">
                   <span>作者</span>
+                  <span>平台</span>
                   <span className="text-right">解析作品</span>
                   <span className="text-right">下载文件</span>
                   <span className="text-right">下载体积</span>
                 </div>
-                <ol className="min-w-[580px] divide-y divide-border/60" aria-label="作者解析与下载统计">
+                <ol className="min-w-[660px] divide-y divide-border/60" aria-label="作者解析与下载统计">
                   {authors.map((author, index) => (
                     <li
                       key={author.name}
-                      className="grid grid-cols-[minmax(160px,1fr)_110px_110px_120px] items-center gap-3 py-3"
+                      className="grid grid-cols-[minmax(160px,1fr)_110px_110px_110px_120px] items-center gap-3 py-3"
                     >
                       <span className="flex min-w-0 items-center gap-3">
                         <span className="w-5 text-[11px] tabular-nums text-muted-foreground">
@@ -568,6 +595,12 @@ export default function StatsPage({
                           textClassName="text-xs"
                         />
                         <span className="truncate text-sm font-medium">{author.name}</span>
+                      </span>
+                      {/* 平台（业主 2026-10-23）：取该作者范围内最新一条历史行；老记录没有就写「—」，
+                          不按名字猜一个平台。图标与平台表同源（注册表 iconFileOf）。 */}
+                      <span className="flex min-w-0 items-center gap-2">
+                        <PlatformIcon platform={author.platform} className="size-3.5" />
+                        <span className="truncate text-sm">{author.platform ? displayName(author.platform) : "—"}</span>
                       </span>
                       <span className="text-right text-sm font-semibold tabular-nums">{fmtCount(author.parsedWorks)}</span>
                       <span className="text-right text-sm font-semibold tabular-nums">{fmtCount(author.downloadedFiles)}</span>

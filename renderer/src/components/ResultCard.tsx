@@ -22,7 +22,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
-import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, CircleEuro, CircleFadingPlay, ExternalLink, FileText, Heart, Images, ListTree, Loader2, MessageCircle, MessageCircleText, Music, Pause, Play, Share2, StarCheck } from "lucide-react";
+import { ArrowLeft, ArrowRight, ChevronDown, ChevronUp, CircleEuro, CircleFadingPlay, ExternalLink, FileText, Heart, Images, ListTree, MessageCircle, MessageCircleText, Music, Pause, Play, RefreshCw, Share2, StarCheck } from "lucide-react";
 import { api } from "../lib/bridge";
 import {
   buildPlan,
@@ -48,6 +48,7 @@ import {
   type EngineId,
 } from "../../../shared/platforms";
 import { AuthorAvatar } from "./AuthorAvatar";
+import { BrandLoader } from "./BrandLoader";
 import { PlatformIcon } from "./PlatformIcon";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
@@ -81,7 +82,11 @@ export function ResultCard({
   /** 这条结果到手的时刻（epoch ms）：切页重挂载后直链计龄接着算，见下面的 resultAge */
   parsedAt?: number;
   onQueued: (count: number) => void;
-  /** 失败态 [重试]：由页面重新发起解析（直链过期不再走这里，改由主进程下载侧续链） */
+  /**
+   * 重新解析（主进程侧带 `skipCache`）：失败态是 [重试]，成功态是动作条上的
+   * [重新解析]（业主 2026-10-23：直链过期、或刚换了引擎时需要一条强制重解的入口）。
+   * 下载侧的 403 续链不经过这里，那是主进程自己按作品键再解析一次。
+   */
   onRetry?: () => void;
   /**
    * 失败态「去配置 Cookie」：打开设置并直达分类 id（引擎页 = "engine"）。
@@ -120,14 +125,6 @@ export function ResultCard({
    * 十秒级等待是正常范围——两种都要有这层提示，否则用户看到的就是「一直转圈」。
    */
   const [previewLoading, setPreviewLoading] = useState(false);
-  /**
-   * 加载超过 2.5s 才解释原因。
-   *
-   * 为什么要分两段文案：绝大多数预览是秒开的，一上来就写「合并音轨可能要十几秒」等于
-   * 让顺畅的那一半用户白读一句技术说明；真正慢的时候（高质量视频要先 ffmpeg 合流、
-   * 或网络打不满）又必须有人告诉他「这是正常的，在等，不是卡死」。
-   */
-  const [previewSlow, setPreviewSlow] = useState(false);
   /**
    * 首帧是否已到手：决定封面层淡出、画面淡入。
    *
@@ -189,16 +186,6 @@ export function ResultCard({
     // 只随解析结果重置；策略读新值迟到由下方 memo 纠正
   }, [outcome, data, parsedAt]);
 
-  // 慢加载提示的计时器：loading 一灭就复位，翻页/重开都从「正在加载」重新起算
-  useEffect(() => {
-    if (!previewLoading) {
-      setPreviewSlow(false);
-      return;
-    }
-    const timer = setTimeout(() => setPreviewSlow(true), 2500);
-    return () => clearTimeout(timer);
-  }, [previewLoading]);
-
   const qualityPlan = useMemo(() => buildQualityPlan(data, qualityStrategy), [data, qualityStrategy]);
   const qualityOptions = qualityPlan.options;
   const activeIdx = Math.min(qualityIdx ?? qualityPlan.primaryIndex, Math.max(0, qualityOptions.length - 1));
@@ -242,19 +229,6 @@ export function ResultCard({
     () => (previewEntry?.kind === "video" ? mseTrackMime(previewEntry) : null),
     [previewEntry]
   );
-  const mseActive = mseMime !== null && !mseFallback;
-
-  /**
-   * 加载态文案：先说「在加载」，慢了才解释为什么慢。
-   * 慢的原因只有两种，分开说 —— 回退到合流的那条链（`dashAudio` 且没走 MSE）是本地
-   * ffmpeg 在出片，与网速无关；其余（含 MSE 边拉边播）是上游 CDN 打不满带宽，
-   * 说「网络较慢」才对得上用户看到的现象。
-   */
-  const previewLoadingHint = previewSlow
-    ? dashAudio && !mseActive
-      ? "高质量视频要先合并音轨，可能还要十几秒…"
-      : "网络较慢，正在缓冲…"
-    : "正在加载预览…";
 
   /** 缺省 = 下载勾选中的那批（Ctrl+D 与动作条按钮）；传条目 = 只下这一条 */
   async function enqueue(list: PlanEntry[] = selected): Promise<void> {
@@ -513,7 +487,7 @@ export function ResultCard({
 
             </div>
 
-            {/* 动作条：跨两列的整行，「资源列表」贴卡片左缘（与封面同一条左边缘），
+            {/* 动作条：跨两列的整行，「展开资源」贴卡片左缘（与封面同一条左边缘），
                 就地展开的链接式开关，不是下拉；清晰度与下载靠右。
                 构成摘要（「视频 2 · 图 2」）2026-10-18 业主指令移除——
                 下载按钮上的项数已经把「点下去会得到几颗」说清楚了，再排一行构成是重复信息。 */}
@@ -522,11 +496,11 @@ export function ResultCard({
                 <Button
                   size="sm"
                   variant="link"
-                  className="me-auto h-auto px-0"
+                  className="me-auto h-auto px-0 hover:no-underline"
                   onClick={() => setPlanOpen((v) => !v)}
                 >
                   <ListTree className="size-3.5" />
-                  {planOpen ? "收起资源" : "资源列表"}
+                  {planOpen ? "收起资源" : "展开资源"}
                 </Button>
               )}
               {/* 清晰度在下载动作旁，不再藏在资源清单里：设置里那档只是默认值，
@@ -543,8 +517,8 @@ export function ResultCard({
                   {/* 列表跟着 trigger 收窄（2026-10-21 业主「下拉出现的列表宽度也减小」）：
                       基座 `min-w-[8rem]` 是给普通宽度下拉留的地板，而 Viewport 自己已经
                       `min-w-[var(--radix-select-trigger-width)]`，所以这里把地板去掉即可——
-                      列表最窄就是 trigger 宽（88px），档位名短；真遇到长标签（B站「高清 1080P」）
-                      列表仍按内容自然变宽，不做硬截断。 */}
+                      列表最窄就是 trigger 宽（88px）。清晰度文案统一成 `720P` / `2160P` 之后
+                      档位名都很短，列表仍按内容自然变宽，不做硬截断。 */}
                   <SelectContent className="min-w-0">
                     {qualityOptions.map((q, i) => (
                       <SelectItem key={`${q.label}-${i}`} value={String(i)}>
@@ -698,6 +672,20 @@ export function ResultCard({
             <span className="tabular-nums">{fmtDuration(durationMs)}</span>
             {parsedAt && <span className="tabular-nums">解析于 {fmtClock(parsedAt)}</span>}
             {via === "local" && durationMs < 50 && <Badge variant="secondary">缓存命中</Badge>}
+            {/* 强制重新解析（业主 2026-10-23）：带 `skipCache` 重走一遍引擎选路 —— 直链过期
+                要新签名、或刚换了引擎而卡片还是旧引擎那份结果，都靠这一颗。放在这行元信息里
+                而不是下载动作条：它是「这份结果从哪来」的补救动作，不参与「下几项」的决策。 */}
+            {onRetry && (
+              <Button
+                size="sm"
+                variant="link"
+                className="ms-auto h-auto px-0 text-xs hover:no-underline"
+                onClick={onRetry}
+              >
+                <RefreshCw className="size-3" />
+                重新解析
+              </Button>
+            )}
           </div>
         </CardContent>
       </Card>
@@ -804,6 +792,7 @@ export function ResultCard({
                     videoMime={mseMime.video}
                     audioMime={mseMime.audio}
                     durationMs={data?.duration}
+                    showControls={!previewLoading}
                     className={cn(
                       "preview-video size-full object-contain transition-opacity duration-300",
                       previewReady ? "opacity-100" : "opacity-0"
@@ -837,7 +826,12 @@ export function ResultCard({
                     key={previewSrc}
                     ref={previewVideoRef}
                     src={previewSrc}
-                    controls
+                    // 加载期间摘掉 `controls`（业主 2026-10-23「禁用原生的加载转圈动画」）：
+                    // Chromium 的缓冲指示 `-internal-media-controls-loading-panel` 长在控件
+                    // shadow DOM 里，CSS 选不到、JS 删不掉（Stack Overflow 那条结论）——
+                    // 想让那颗深色圆盘不出现，只有「没有控件」这一条路。手搭控件是另一个量级的改动，
+                    // 而加载时控件本来也没得点（进度条动不了），先按这条做，加载完立刻挂回来。
+                    controls={!previewLoading}
                     controlsList="nodownload nofullscreen noremoteplayback noplaybackrate"
                     // 最右那枚「⋮」不是全屏，是溢出菜单：里面还剩一项（画中画 / 投屏 / 播放速度）
                     // 它就不会消失。三样都得关：能力属性管前两个，速度走 controlsList 的
@@ -877,7 +871,11 @@ export function ResultCard({
                     )}
                   />
                 )}
-                {/* 加载态：转圈 + 一句会随等待时长改变的话（见 `previewLoadingHint`）。
+                {/* 加载态：三点跳动 + 一句话（业主 2026-10-23：「文案统一改为：正在加载中......」）。
+                    文案不再分段——原先 2.5s 后按「ffmpeg 合流慢 / 带宽慢」改写原因，
+                    业主明确只要一句「在加载」，不要替用户推断为什么慢。
+                    字形用品牌点阵（`BrandLoader`）而不是 `Loader2 + animate-spin`：转环是系统语汇，
+                    盖在画面上像浏览器自己在转圈。
                     `role=status` 让读屏也知道在等，而不是把一段静默当成失败。
                     遮罩只压 25%：底下是封面，压太重就白铺了这张图。 */}
                 {previewLoading && (
@@ -886,8 +884,8 @@ export function ResultCard({
                     aria-live="polite"
                     className="pointer-events-none absolute inset-0 z-[5] flex animate-in flex-col items-center justify-center gap-3 bg-black/25 fade-in-0 duration-200"
                   >
-                    <Loader2 aria-hidden="true" className="size-7 animate-spin text-white/90 drop-shadow" />
-                    <p className="px-6 text-center text-xs text-white/90 drop-shadow">{previewLoadingHint}</p>
+                    <BrandLoader className="text-white/90 drop-shadow" />
+                    <p className="px-6 text-center text-xs text-white/90 drop-shadow">正在加载中......</p>
                   </div>
                 )}
                 <button
@@ -903,7 +901,14 @@ export function ResultCard({
                     "absolute top-1/2 left-1/2 z-10 flex size-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full",
                     "border border-white/20 bg-black/55 text-white shadow-pop backdrop-blur-sm transition-opacity",
                     "hover:bg-black/70 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none",
-                    previewPlaying && "opacity-0 group-hover/video:opacity-100 focus-visible:opacity-100"
+                    previewPlaying && "opacity-0 group-hover/video:opacity-100 focus-visible:opacity-100",
+                    // 加载中让位给点阵（业主 2026-10-23「暂停按钮和加载中动画重合了」）：
+                    // 两者原本同心，56px 圆钮正好把三颗点连文案一起吞进去。加载态只该说一件事
+                    // ——「在等」——所以这颗按钮在加载期间整个不挂出来；`hidden` 而不是 `opacity-0`，
+                    // 否则 `group-hover:opacity-100` 会让它一 hover 又浮回来压住点阵。
+                    // 代价：缓冲卡顿时点不了暂停（原生控件此刻也摘掉了，见 `controls` 那条），
+                    // 换来的是「点了没反应」与「点了把加载当成卡死」两种误读都消失。
+                    previewLoading && "hidden"
                   )}
                 >
                   {previewPlaying ? (

@@ -12,6 +12,7 @@
 import type { AuthorSnapshot } from "../../../types/ipc";
 import { fmtCount } from "../lib/format";
 import { AuthorAvatar } from "./AuthorAvatar";
+import { PlatformIcon } from "./PlatformIcon";
 import { TruncatedTooltip } from "./ui/tooltip";
 
 export function AuthorCard({
@@ -63,16 +64,23 @@ export function AuthorCard({
               <span className="block truncate font-semibold text-sm">{name}</span>
             </TruncatedTooltip>
           )}
-          {/* 抖音 uid 这类长 ID 一定会被切，截断处同样要给 tooltip（全仓基准） */}
-          {author.id && (
-            <TruncatedTooltip label={`ID ${author.id}`}>
-              <div className="truncate text-muted-foreground">ID {author.id}</div>
-            </TruncatedTooltip>
-          )}
-          {platformName && (
-            <TruncatedTooltip label={platformName}>
-              <div className="truncate text-muted-foreground">{platformName}</div>
-            </TruncatedTooltip>
+          {/* ID 与平台同行（业主 2026-10-23）：平台改成 logo 贴在 ID 数字后面，不再单占一行文字 ——
+              「是哪个平台」看图标就够，那行文字只留给 ID。图标本体 aria-hidden，读屏名走 sr-only。
+              抖音 uid 这类长 ID 一定会被切，截断处同样要给 tooltip（全仓基准） */}
+          {(author.id || platform) && (
+            <div className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+              {author.id && (
+                <TruncatedTooltip label={`ID ${author.id}`}>
+                  <div className="min-w-0 truncate">ID {author.id}</div>
+                </TruncatedTooltip>
+              )}
+              {platform && (
+                <span className="flex shrink-0 items-center" title={platformName || undefined}>
+                  <PlatformIcon platform={platform} />
+                  <span className="sr-only">{platformName}</span>
+                </span>
+              )}
+            </div>
           )}
         </div>
       </div>

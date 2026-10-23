@@ -25,7 +25,6 @@ import type {
   EngineHealth,
   UpdateState,
 } from "../../../types/ipc";
-import { CONTRACT_VERSION } from "../../../types/ipc";
 import {
   ENGINE_INFO,
   PLATFORMS,
@@ -507,13 +506,21 @@ export default function SettingsPage({
     }
   }
 
-  /** 引擎开关：同一条纪律——乐观写 + 失败回滚 + 复检让「通道」列当场跟着变 */
+  /**
+   * 引擎开关：同一条纪律——乐观写 + 失败回滚 + 复检让「通道」列当场跟着变。
+   *
+   * 成功也要出声（业主 2026-10-23「切换引擎时虽然不用点击确认按钮，但是要弹一个 toast」）：
+   * 这一批开关**即时落盘、没有确认按钮**，于是屏幕上除了那颗开关自己翻转之外没有任何回执；
+   * 而关掉一个引擎会让相关平台当场换引擎或解析直接 400，这个后果必须有人说一声。
+   */
   async function toggleEngine(id: SwitchableEngineId, enabled: boolean): Promise<void> {
+    const label = ENGINE_INFO[id].label;
     try {
       await setEngineEnabled(id, enabled);
       setEngines(await api.probe.engines());
+      toast.success(enabled ? `已启用 ${label} 引擎` : `已关闭 ${label} 引擎`);
     } catch (e) {
-      toast.error(`${ENGINE_INFO[id].label}：开关未能落盘，已回滚（${e instanceof BridgeError ? e.message : String(e)}）`);
+      toast.error(`${label}：开关未能落盘，已回滚（${e instanceof BridgeError ? e.message : String(e)}）`);
     }
   }
 
@@ -527,11 +534,19 @@ export default function SettingsPage({
     }
   }
 
-  /** 通道下拉：选中的引擎成为该平台的主引擎（失败后按回退开关决定是否再试其余） */
+  /**
+   * 通道下拉：选中的引擎成为该平台的主引擎（失败后按回退开关决定是否再试其余）。
+   *
+   * 与引擎开关同一条回执纪律（业主 2026-10-23）：下拉选完即落盘，没有确认按钮，
+   * 所以「这一格的通道现在是哪家」只能靠一句 toast 告诉用户。文案带上平台名——
+   * 一行一平台，只说引擎名的话，切了五行就分不清哪一行生效了。
+   */
   async function choosePrimary(platform: string, engine: SwitchableEngineId): Promise<void> {
+    const label = ENGINE_INFO[engine].label;
     try {
       await setPrimaryEngine(platform, engine);
       setEngines(await api.probe.engines());
+      toast.success(`${displayName(platform)}：主引擎已切换为 ${label}`);
     } catch (e) {
       toast.error(`${displayName(platform)}：主引擎未能落盘，已回滚（${e instanceof BridgeError ? e.message : String(e)}）`);
     }
@@ -1363,12 +1378,10 @@ export default function SettingsPage({
                 <span className="pt-2 font-mono text-sm">v{meta?.version ?? "—"}</span>
               </Row>
               <Row label="框架版本" end>
-                <span className="pt-2 font-mono text-sm">契约 v{CONTRACT_VERSION} · Electron {meta?.electron ?? "—"}</span>
+                <span className="pt-2 font-mono text-sm">Electron {meta?.electron ?? "—"}</span>
               </Row>
               <Row label="内核版本" end>
-                <span className="pt-2 font-mono text-sm">
-                  {meta ? `${meta.kernelMode} · ${PLATFORMS.length} 平台` : "—"}
-                </span>
+                <span className="pt-2 font-mono text-sm">{meta ? `parse-core v${meta.kernel}` : "—"}</span>
               </Row>
             </ItemCard>
 

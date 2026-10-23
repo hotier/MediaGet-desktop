@@ -31,6 +31,12 @@ export interface MsePreviewVideoProps {
   audioMime: string;
   durationMs?: number;
   className?: string;
+  /**
+   * 是否挂原生控件。加载中由调用方关掉：Chromium 的缓冲指示长在控件 shadow DOM 里
+   * （`-internal-media-controls-loading-panel`），CSS/JS 都碰不到它，只能靠「没有控件」
+   * 让它根本不出现（业主 2026-10-23「禁用原生的加载转圈」）。
+   */
+  showControls?: boolean;
   /** 任何一步失败：调用方切回合流 <video> */
   onFallback: () => void;
   onLoadStart?: () => void;
@@ -105,6 +111,7 @@ export function MsePreviewVideo(props: MsePreviewVideoProps) {
     audioMime,
     durationMs,
     className,
+    showControls = true,
     onLoadStart,
     onCanPlay,
     onWaiting,
@@ -570,7 +577,7 @@ export function MsePreviewVideo(props: MsePreviewVideoProps) {
   return (
     <video
       ref={videoRef}
-      controls
+      controls={showControls}
       controlsList="nodownload nofullscreen noremoteplayback noplaybackrate"
       disablePictureInPicture
       disableRemotePlayback

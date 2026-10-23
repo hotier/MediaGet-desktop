@@ -49,8 +49,15 @@ export default function App(): React.ReactElement {
   /** 更新策略两开关（设置→关于）：静默流水线跑完（下载好安装包）后侧栏才亮下载图标 */
   const [updatePolicy, setUpdatePolicy] = useState({ onStartup: false, autoDownload: false });
   const [tasks, setTasks] = useState<DownloadTaskView[]>([]);
-  /** 队列页右键「查看作品信息」带过来的定位目标（历史页行 key） */
-  const [historyFocus, setHistoryFocus] = useState<string | null>(null);
+  /**
+   * 队列页右键「查看作品信息」带过来的定位目标（历史页行 key = 作品键 `w-…`）。
+   *
+   * 带 `seq` 而不是裸字符串：连点同一个作品两次也要重放一次定位（同值 setState 不触发渲染）；
+   * 同时让历史页能判断「这次意图处理过了没」——否则翻页把 `rows` 变长时，那个 effect
+   * 会拿旧目标再滚一次、再闪一次。
+   */
+  const [historyFocus, setHistoryFocus] = useState<{ key: string; seq: number } | null>(null);
+  const historyFocusSeq = useRef(0);
   /** 剪贴板监听命中的链接（main 端已识别）：交给首页输入面填入；seq 让同值复填可重触发 */
   const [clipboardFill, setClipboardFill] = useState<{ url: string; platform: string; seq: number } | null>(null);
   const clipboardSeq = useRef(0);
@@ -88,9 +95,16 @@ export default function App(): React.ReactElement {
   );
 
   /** 队列行 → 历史页定位。稳定引用：DownloadsPage 的行是 memo 组件，内联箭头会让每行都被判「变了」 */
-  const navToHistory = useCallback((target: "history", groupId: string) => {
-    setHistoryFocus(groupId);
+  const navToHistory = useCallback((target: "history", workKey: string) => {
+    historyFocusSeq.current += 1;
+    setHistoryFocus({ key: workKey, seq: historyFocusSeq.current });
     setPage(target);
+  }, []);
+  /** 手动切页（侧栏 / ⌃1–4）：顺手清掉「定位」这个一次性意图，
+   *  否则下次从侧栏进历史页会重放上一次的滚动与闪烁。 */
+  const goPage = useCallback((key: Page) => {
+    setHistoryFocus(null);
+    setPage(key);
   }, []);
   /** 统计页平台榜 → 历史页只看这个平台。seq 让「连着点同一个平台」也能重放这次意图 */
   const [historyPlatform, setHistoryPlatform] = useState<{ key: string; seq: number } | null>(null);
@@ -197,7 +211,7 @@ export default function App(): React.ReactElement {
         e.preventDefault();
         // 唯一输入面在首页：不在首页先切页，等这一帧渲染完再聚焦
         startNavGlyph("home");
-        setPage("home");
+        goPage("home");
         setTimeout(() => workspaceInputRef.current?.focus(), 0);
         return;
       }
@@ -205,12 +219,12 @@ export default function App(): React.ReactElement {
       if (idx >= 0) {
         e.preventDefault();
         startNavGlyph(NAV_ITEMS[idx].key);
-        setPage(NAV_ITEMS[idx].key);
+        goPage(NAV_ITEMS[idx].key);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [settingsMode, startNavGlyph]);
+  }, [settingsMode, startNavGlyph, goPage]);
 
   const running = tasks.filter((t) => t.status === "downloading" || t.status === "queued").length;
 
@@ -292,7 +306,7 @@ export default function App(): React.ReactElement {
                 type="button"
                 onClick={() => {
                   startNavGlyph(it.key);
-                  setPage(it.key);
+                  goPage(it.key);
                 }}
                 aria-current={page === it.key ? "page" : undefined}
                 aria-label={it.label}
@@ -435,7 +449,7 @@ export default function App(): React.ReactElement {
             )}
             {page === "downloads" && <DownloadsPage onNav={navToHistory} />}
             {page === "history" && (
-              <HistoryPage focusKey={historyFocus} platformFocus={historyPlatform} onReparse={requestHomeReparse} />
+              <HistoryPage focus={historyFocus} platformFocus={historyPlatform} onReparse={requestHomeReparse} />
             )}
             {page === "stats" && (
               <Suspense

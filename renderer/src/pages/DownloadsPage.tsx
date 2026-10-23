@@ -34,6 +34,7 @@ import { cn } from "../lib/utils";
 import { avgSpeed, fmtBytes, fmtCreated, fmtEta, fmtSpeed } from "../lib/format";
 import type { DownloadTaskView, QueueCursor, QueueFilter } from "../../../types/ipc";
 import { canonicalKeys, displayName } from "../../../shared/platforms";
+import { workKeyOf } from "../../../shared/history";
 import { QUEUE_PAGE_SIZE } from "../lib/local-limits";
 import { PlatformIcon } from "../components/PlatformIcon";
 import { Button } from "../components/ui/button";
@@ -131,6 +132,8 @@ const clearOne = (id: string): Promise<unknown> => api.download.clear([id]);
  * 百分比 `w-[2.4em]`（「100%」30、「0%」16 —— 不固定位数会让每行的条长短不一），条吃掉剩下的并且每行等长。
  * 2026-10-18 业主指令「加宽状态列 + 保留速度列的数值」：状态 3.6em（46.8 < 74）根本装不下带图标的徽标，
  * 速度 4em（52 < 65）会让「999.9 MB/s」溢出到剩余列 —— 两列各自提到装得下的宽度（5.7 / 5.2em）。
+ * 2026-10-23 暂停/继续只把**字形**填实（业主 2026-10-23 去掉主色方块），图标仍是 12px，
+ * 状态列的最坏内容宽没变（74），所以宽度回到 5.7em——曾为 16px 方块临时提到 6.1em，已撤回。
  * MIN_W = 69.7em：定宽内容合计 54.6em + 8 格内边距 14.8em ≈ 69.4em，剩下那点给文件列。
  * 文件列要装下主线程行的「15 平台图标 + 标题 + 28 箭头 + 18 完成数」，实测这些固定件占 113，
  * 底线给到 320 标题才有 211px ≈ 14 个汉字可读（再窄一档只剩 7 个字，等于没标题）。
@@ -140,6 +143,7 @@ const clearOne = (id: string): Promise<unknown> => api.download.clear([id]);
 const COL = {
   // 2026-10-18 业主指令：状态列与速度列各自放宽到「最坏内容装得下」——
   // 状态徽标含动作图标要 74（5.7em），速度「999.9 MB/s」要 65（5em，给到 5.2em 留余量）。
+  // 2026-10-23：暂停/继续只是把字形填实、图标尺寸没变，5.7em 够用（方块方案那版的 6.1em 已撤回）。
   // 不从速度列刮宽度去补状态列：**速度列的数值必须完整可见**，两列各长各的，总宽交给 TABLE_MIN_W。
   status: "w-[calc(1.5rem+5.7em)]",
   // 进度/大小/剩余四列（2026-10-18 业主指令：取消列移除，腾出的宽度分给它们）
@@ -153,6 +157,15 @@ const COL = {
 
 /** 定宽内容 54.6em + 8 格内边距 14.8em ≈ 69.4em；66.4 → 69.7 加的就是状态 +2.1em 与速度 +1.2em */
 const TABLE_MIN_W = "min-w-[69.7em]";
+
+/**
+ * 实心字形（业主 2026-10-23）。Lucide 没有 `pause-filled` 这类图标组件，官方口径是
+ * 「所有 SVG 属性都能用」：给形状上 `fill` 并把 `strokeWidth` 归零，描边留的双线就没了。
+ * 只对**本身就是实心轮廓**的图标成立——`Pause` 是两条 rect、`Play` 是三角形，填完干净；
+ * 重试那颗 `RotateCcw` 是纯线条，填了会糊成一团，保持描边。
+ * 填的是 `currentColor`：颜色跟着徽标档位走（进行中绿、已暂停琥珀），不再另起一块主色底。
+ */
+const SOLID_GLYPH = { fill: "currentColor", strokeWidth: 0 } as const;
 
 export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactElement {
   const [tasks, setTasks] = useState<DownloadTaskView[]>([]);
@@ -457,8 +470,15 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
 
 type OnAct = (fn: (id: string) => Promise<unknown>, id: string) => Promise<void>;
 
-/** 跨页跳转：带 groupId 去历史页定位那一行作品 */
-type OnNav = (page: "history", groupId: string) => void;
+/**
+ * 跨页跳转：带**作品键**去历史页定位那一行。
+ *
+ * 不能拿队列自己的 `groupId`：那是主进程在入队时兜底生成的 `g-<base36 时间戳>`
+ * （渲染层入队没传 groupId，见 `ipc.ts` 的 `download:enqueue`），而历史行的键是
+ * `workKeyOf(sourceUrl)` 算出的 `w-<16 hex>`。两套命名空间，`data-group` 永远选不中，
+ * 跳过去只会停在列表顶部——这才是本入口此前「点了没定位」的真因。
+ */
+type OnNav = (page: "history", workKey: string) => void;
 
 /** 组行九格的数值集（aggregate() 的产物，随 GroupView 一起复用） */
 interface Aggregate {
@@ -638,11 +658,20 @@ const GroupRow = memo(function GroupRow({
       for (const id of ids) await onAct(fn, id);
     })();
   // 聚合行同样只有一颗动作，按优先级取：在动→全部暂停；暂停→继续全部；有失败→重试失败项
+  // 字形口径与子行一致（业主 2026-10-23）：暂停 / 继续填实，重试保持描边
   const action =
     a.running > 0
-      ? { label: "全部暂停", icon: <Pause />, run: () => batch(view.activeIds, api.download.pause) }
+      ? {
+          label: "全部暂停",
+          icon: <Pause {...SOLID_GLYPH} />,
+          run: () => batch(view.activeIds, api.download.pause),
+        }
       : a.anyPaused
-        ? { label: "继续全部", icon: <Play />, run: () => batch(view.pausedIds, api.download.resume) }
+        ? {
+            label: "继续全部",
+            icon: <Play {...SOLID_GLYPH} />,
+            run: () => batch(view.pausedIds, api.download.resume),
+          }
         : a.failed > 0
           ? { label: "重试失败项", icon: <RotateCcw />, run: () => batch(view.errorIds, api.download.resume) }
           : undefined;
@@ -826,7 +855,18 @@ const TaskRow = memo(function TaskRow({
             取消下载
           </ContextMenuItem>
         )}
-        <ContextMenuItem onSelect={() => onNav("history", t.groupId)}>
+        <ContextMenuItem
+          onSelect={() => {
+            // 历史行的键是作品键（`workKeyOf(sourceUrl)`），不是队列的 groupId —— 见 `OnNav` 那条注释。
+            // 没有 sourceUrl 的行（理论上不该有）宁可明说，也别跳过去静默停在列表顶部。
+            const key = workKeyOf(t.sourceUrl);
+            if (!key) {
+              toast.error("这条记录没有可定位的原始链接");
+              return;
+            }
+            onNav("history", key);
+          }}
+        >
           <Info />
           查看作品信息
         </ContextMenuItem>
@@ -872,6 +912,11 @@ const STATUS: Record<DownloadTaskView["status"], [string, "secondary" | "ok" | "
  * 主进程按 `.part` 续传）；排队没什么可暂停、完成没什么可重做，这两态的徽标就不是按钮。
  * `h-7` 是必需的：徽标要撑到 28px 才和同表其他行的 28px 控件一起把行高钉在 45，
  * 否则「完成」这种无动作态的行会比别的行矮一截。
+ *
+ * 醒目（业主 2026-10-23）：暂停 / 继续只把**字形**填实（`SOLID_GLYPH`），不另铺主色底——
+ * 先把整枚徽标刷成主色、再给图标垫方块都试过，蓝色底把状态色挤掉、也太抢眼。
+ * 现在颜色仍由徽标档位说（进行中绿、已暂停琥珀），填实的字形负责「这颗能点」。
+ * 重试不加实心——失败行的红点是状态，不该再抢注意力。
  */
 function StatusPill({
   label,
@@ -905,6 +950,8 @@ function StatusPill({
           onClick={action.run}
         >
           {label}
+          {/* 徽标整体就是点击区，图标只是它的视觉重心 —— 不拆成嵌套按钮，免得点中缝漏事件。
+              图标尺寸交给徽标自己的 `[&>svg]:size-3`，这里不写第二条同名规则去赌样式先后。 */}
           {action.icon}
         </button>
       </TooltipTrigger>
@@ -919,9 +966,17 @@ function rowAction(
   onAct: OnAct
 ): { label: string; icon: React.ReactNode; run: () => void } | undefined {
   if (t.status === "downloading")
-    return { label: "暂停", icon: <Pause />, run: () => void onAct(api.download.pause, t.taskId) };
+    return {
+      label: "暂停",
+      icon: <Pause {...SOLID_GLYPH} />,
+      run: () => void onAct(api.download.pause, t.taskId),
+    };
   if (t.status === "paused")
-    return { label: "继续", icon: <Play />, run: () => void onAct(api.download.resume, t.taskId) };
+    return {
+      label: "继续",
+      icon: <Play {...SOLID_GLYPH} />,
+      run: () => void onAct(api.download.resume, t.taskId),
+    };
   if (t.status === "error" || t.status === "canceled")
     return { label: "重试", icon: <RotateCcw />, run: () => void onAct(api.download.resume, t.taskId) };
   return undefined;
