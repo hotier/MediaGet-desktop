@@ -35,6 +35,7 @@ import {
   type QualityStrategy,
 } from "../lib/download-plan";
 import { fmtClock, fmtCount, fmtDuration } from "../lib/format";
+import { mseTrackMime } from "../lib/fmp4";
 import { cn } from "../lib/utils";
 import { buildAuthorSnapshot } from "../../../shared/author";
 import { pickWorkStat, workStatItems } from "../../../shared/work-stat";
@@ -64,6 +65,7 @@ import {
   dialogSlideMotion,
 } from "./ui/dialog";
 import { AuthorCard } from "./AuthorCard";
+import { MsePreviewVideo } from "./MsePreviewVideo";
 
 export function ResultCard({
   outcome,
@@ -114,8 +116,8 @@ export function ResultCard({
   const [previewEntry, setPreviewEntry] = useState<PlanEntry | null>(null);
   const [previewFailed, setPreviewFailed] = useState(false);
   /**
-   * 还没吐出头一帧。B站登录态的 dash 要先由主进程下完两条远程轨再并流，
-   * 十秒级等待是正常范围；不给这层提示的话，用户看到的就是「一直转圈」。
+   * 还没吐出头一帧。双轨 DASH 优先走 MSE 边拉边播（一般秒开）；回退到主进程合流后，
+   * 十秒级等待是正常范围——两种都要有这层提示，否则用户看到的就是「一直转圈」。
    */
   const [previewLoading, setPreviewLoading] = useState(false);
   /**
@@ -146,6 +148,11 @@ export function ResultCard({
    */
   const [previewPlaying, setPreviewPlaying] = useState(false);
   const previewVideoRef = useRef<HTMLVideoElement | null>(null);
+  /**
+   * MSE 预览失败后，这一条退回「主进程合流」的老路（ffmpeg 出片再播）。
+   * 失败只影响当前这一项，翻页/重开时重置——别让上一档的编码不支持连坐到下一档。
+   */
+  const [mseFallback, setMseFallback] = useState(false);
   const [lyricsOpen, setLyricsOpen] = useState(false);
   /** 作者卡片：与历史页同一个组件、同一套开合（非模态 + 轻遮罩），数据就是这份解析快照 */
   const [authorCardOpen, setAuthorCardOpen] = useState(false);
@@ -178,6 +185,7 @@ export function ResultCard({
     setPreviewEntry(null);
     setPreviewFailed(false);
     setPreviewOpen(false);
+    setMseFallback(false);
     // 只随解析结果重置；策略读新值迟到由下方 memo 纠正
   }, [outcome, data, parsedAt]);
 
@@ -225,12 +233,25 @@ export function ResultCard({
         : buildImageSrc(previewEntry.url, result.platform);
 
   /**
+   * 双轨 DASH 走 MSE（2026-10-23 业主定调「凡是 dash 流都要边缓存边播放」）：
+   * 两条轨道各有 codec/容器才建得出 SourceBuffer；缺字段（渐进式、B站未登录的 durl、
+   * 内核没回元数据）时为 null，预览按原路直接播或合流，行为不变。
+   * `mseFallback` 是单向闸：这一条失败后退回合流，翻到下一项再给 MSE 一次机会。
+   */
+  const mseMime = useMemo(
+    () => (previewEntry?.kind === "video" ? mseTrackMime(previewEntry) : null),
+    [previewEntry]
+  );
+  const mseActive = mseMime !== null && !mseFallback;
+
+  /**
    * 加载态文案：先说「在加载」，慢了才解释为什么慢。
-   * 慢的原因只有两种，分开说 —— 需要合流的那条链（`dashAudio`）是本地 ffmpeg 在出片，
-   * 与网速无关；其余是上游 CDN 打不满带宽，说「网络较慢」才对得上用户看到的现象。
+   * 慢的原因只有两种，分开说 —— 回退到合流的那条链（`dashAudio` 且没走 MSE）是本地
+   * ffmpeg 在出片，与网速无关；其余（含 MSE 边拉边播）是上游 CDN 打不满带宽，
+   * 说「网络较慢」才对得上用户看到的现象。
    */
   const previewLoadingHint = previewSlow
-    ? dashAudio
+    ? dashAudio && !mseActive
       ? "高质量视频要先合并音轨，可能还要十几秒…"
       : "网络较慢，正在缓冲…"
     : "正在加载预览…";
@@ -332,6 +353,7 @@ export function ResultCard({
     // 音视频从「打开」就可能进入等待（dash 双轨合流），先亮加载态；图片不等
     setPreviewLoading(p.kind === "video" || p.kind === "audio");
     setPreviewReady(false);
+    setMseFallback(false);
     setPreviewEntry(p);
     setPreviewOpen(true);
   }
@@ -366,6 +388,7 @@ export function ResultCard({
     // 与 showPreview 同一口径：翻到音视频就先亮加载态，别等新元素的 loadstart 抢进来
     setPreviewLoading(next.kind === "video" || next.kind === "audio");
     setPreviewReady(false);
+    setMseFallback(false);
     setPreviewEntry(next);
   }
 
@@ -768,49 +791,92 @@ export function ResultCard({
                     )}
                   />
                 )}
-                <video
-                  key={previewSrc}
-                  ref={previewVideoRef}
-                  src={previewSrc}
-                  controls
-                  controlsList="nodownload nofullscreen noremoteplayback noplaybackrate"
-                  // 最右那枚「⋮」不是全屏，是溢出菜单：里面还剩一项（画中画 / 投屏 / 播放速度）
-                  // 它就不会消失。三样都得关：能力属性管前两个，速度走 controlsList 的
-                  // `noplaybackrate`（Chromium 105+）。菜单空了，按钮自然不再渲染 —— 比藏按钮可靠。
-                  disablePictureInPicture
-                  disableRemotePlayback
-                  playsInline
-                  autoPlay
-                  onLoadStart={() => setPreviewLoading(true)}
-                  onCanPlay={() => {
-                    setPreviewLoading(false);
-                    setPreviewReady(true);
-                  }}
-                  // canplay 之后才到的卡顿走 waiting/stalled：拖动进度条、高质量档吃不满带宽
-                  // 都会先转圈再续播，没有这两个监听就只有一片静默的静止画面
-                  onWaiting={() => setPreviewLoading(true)}
-                  onStalled={() => setPreviewLoading(true)}
-                  onError={() => {
-                    setPreviewLoading(false);
-                    setPreviewFailed(true);
-                  }}
-                  onPlay={() => {
-                    setPreviewLoading(false);
-                    setPreviewPlaying(true);
-                  }}
-                  onPlaying={() => {
-                    setPreviewLoading(false);
-                    setPreviewReady(true);
-                  }}
-                  onPause={() => setPreviewPlaying(false)}
-                  onEnded={() => setPreviewPlaying(false)}
-                  // 首帧到手前整块透明，让下面那张封面占位；`size-full` 是为了让两层的
-                  // `object-contain` 算出同一个信箱框，淡入时才不会「啪」地换尺寸
-                  className={cn(
-                    "preview-video size-full object-contain transition-opacity duration-300",
-                    previewReady ? "opacity-100" : "opacity-0"
-                  )}
-                />
+                {mseMime && !mseFallback && previewEntry.audioUrl ? (
+                  // 双轨 DASH 走 MSE：两条轨道边拉边 append，首帧不再等整段 ffmpeg 合流。
+                  // 任一环节失败由播放器回调 `onFallback`，当场换回下面这条合流 `<video>`——
+                  // 预览可以慢一点，但不能黑屏。
+                  <MsePreviewVideo
+                    key={`mse:${previewEntry.url}`}
+                    videoRef={previewVideoRef}
+                    videoUrl={previewEntry.url}
+                    audioUrl={previewEntry.audioUrl}
+                    platform={result.platform}
+                    videoMime={mseMime.video}
+                    audioMime={mseMime.audio}
+                    durationMs={data?.duration}
+                    className={cn(
+                      "preview-video size-full object-contain transition-opacity duration-300",
+                      previewReady ? "opacity-100" : "opacity-0"
+                    )}
+                    onFallback={() => {
+                      setMseFallback(true);
+                      setPreviewLoading(true);
+                      setPreviewReady(false);
+                      setPreviewPlaying(false);
+                    }}
+                    onLoadStart={() => setPreviewLoading(true)}
+                    onCanPlay={() => {
+                      setPreviewLoading(false);
+                      setPreviewReady(true);
+                    }}
+                    onWaiting={() => setPreviewLoading(true)}
+                    onStalled={() => setPreviewLoading(true)}
+                    onPlay={() => {
+                      setPreviewLoading(false);
+                      setPreviewPlaying(true);
+                    }}
+                    onPlaying={() => {
+                      setPreviewLoading(false);
+                      setPreviewReady(true);
+                    }}
+                    onPause={() => setPreviewPlaying(false)}
+                    onEnded={() => setPreviewPlaying(false)}
+                  />
+                ) : (
+                  <video
+                    key={previewSrc}
+                    ref={previewVideoRef}
+                    src={previewSrc}
+                    controls
+                    controlsList="nodownload nofullscreen noremoteplayback noplaybackrate"
+                    // 最右那枚「⋮」不是全屏，是溢出菜单：里面还剩一项（画中画 / 投屏 / 播放速度）
+                    // 它就不会消失。三样都得关：能力属性管前两个，速度走 controlsList 的
+                    // `noplaybackrate`（Chromium 105+）。菜单空了，按钮自然不再渲染 —— 比藏按钮可靠。
+                    disablePictureInPicture
+                    disableRemotePlayback
+                    playsInline
+                    autoPlay
+                    onLoadStart={() => setPreviewLoading(true)}
+                    onCanPlay={() => {
+                      setPreviewLoading(false);
+                      setPreviewReady(true);
+                    }}
+                    // canplay 之后才到的卡顿走 waiting/stalled：拖动进度条、高质量档吃不满带宽
+                    // 都会先转圈再续播，没有这两个监听就只有一片静默的静止画面
+                    onWaiting={() => setPreviewLoading(true)}
+                    onStalled={() => setPreviewLoading(true)}
+                    onError={() => {
+                      setPreviewLoading(false);
+                      setPreviewFailed(true);
+                    }}
+                    onPlay={() => {
+                      setPreviewLoading(false);
+                      setPreviewPlaying(true);
+                    }}
+                    onPlaying={() => {
+                      setPreviewLoading(false);
+                      setPreviewReady(true);
+                    }}
+                    onPause={() => setPreviewPlaying(false)}
+                    onEnded={() => setPreviewPlaying(false)}
+                    // 首帧到手前整块透明，让下面那张封面占位；`size-full` 是为了让两层的
+                    // `object-contain` 算出同一个信箱框，淡入时才不会「啪」地换尺寸
+                    className={cn(
+                      "preview-video size-full object-contain transition-opacity duration-300",
+                      previewReady ? "opacity-100" : "opacity-0"
+                    )}
+                  />
+                )}
                 {/* 加载态：转圈 + 一句会随等待时长改变的话（见 `previewLoadingHint`）。
                     `role=status` 让读屏也知道在等，而不是把一段静默当成失败。
                     遮罩只压 25%：底下是封面，压太重就白铺了这张图。 */}

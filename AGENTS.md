@@ -56,7 +56,7 @@ MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet
 - 文件日志与 config 同处 `userData`，**不上传也不外发**：失败原文与媒体直链照原样落（2026-10-21 业主定调——本地应用没有「日志不写直链」这条红线，而「哪条链 403」只能从现场看出来，`engine.ts` 的 `clipForLog` 只压单行、截 300 字）；**不主动记 Cookie 值**——错误原文里本就没有它（引擎递给 yt-dlp 的是 cookiefile 路径而不是头串），专门打印只会把日志变成凭据副本。下载失败投「文件名 + 原因 + 当前直链」。
 - 渲染层转发上来的异常文本截到 2000 字符、单会话上限 50 条。
 - Cookie 只活在主进程并全程脱敏；剪贴板文本不持久化；历史与队列不保留直链 URL。
-- dash 双轨一律合流（预览与下载共用 `electron/main/media-merge.ts`）：预览产物只落系统 `temp` 的 `mediaget-media/<直链哈希>.mp4`，文件名不带直链、不写日志、TTL 24h 启动清理；下载侧的 `.part.audio` / `.part.merged` 随任务完成或取消清理，`done` 行的 `audioUrl` 与 `url` 一起剥空（见 ARCHITECTURE §6 第 13 条）。
+- dash 双轨：预览优先 MSE 边拉边播（两条轨经 `mgpreview:` 拉进两个 SourceBuffer），失败才回退 ffmpeg 合流；下载仍一律合流（预览回退与下载共用 `electron/main/media-merge.ts`）。回退产物只落系统 `temp` 的 `mediaget-media/<直链哈希>.mp4`，文件名不带直链、不写日志、TTL 24h 启动清理；下载侧的 `.part.audio` / `.part.merged` 随任务完成或取消清理，`done` 行的 `audioUrl` 与 `url` 一起剥空（见 ARCHITECTURE §6 第 13 条）。
 - 不解析黑名单平台（微信视频号、付费/DRM），沿用内核判定；不做反检测加码。
 
 ## 验收按档，不按门（详表在 [docs/TESTING.md](docs/TESTING.md)，改档前先读它）

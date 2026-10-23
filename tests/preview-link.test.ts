@@ -139,10 +139,25 @@ describe("接线：CSP 只认自家 scheme，媒体 src 必经代理", () => {
     fileURLToPath(new URL("../renderer/src/components/ResultCard.tsx", import.meta.url)),
     "utf8"
   );
+  const protocol = readFileSync(
+    fileURLToPath(new URL("../electron/main/preview-protocol.ts", import.meta.url)),
+    "utf8"
+  );
 
-  it("media-src 恰好是 'self' + 代理 scheme，没多出 https:", () => {
+  it("media-src 恰好是 'self' + 代理 scheme + blob:（MSE 的 object URL），没多出 https:", () => {
     const mediaSrc = /media-src\s+([^;"]+)/.exec(html)?.[1]?.trim();
-    expect(mediaSrc).toBe(`'self' ${PREVIEW_SCHEME}:`);
+    // `blob:` 只给 MSE：`MediaSource` 通过 object URL 交给 <video>，不放行则预览建不起来。
+    // 仍然没有 `https:`——上游直链只许经代理。
+    expect(mediaSrc).toBe(`'self' ${PREVIEW_SCHEME}: blob:`);
+  });
+
+  it("connect-src 放行代理 scheme：MSE 预览由渲染层 fetch 两条轨道（契约 v35）", () => {
+    const connectSrc = /connect-src\s+([^;"]+)/.exec(html)?.[1]?.trim();
+    expect(connectSrc).toBe(`'self' ${PREVIEW_SCHEME}:`);
+    // 自定义 scheme 默认既不走 Fetch 也不参与 CORS；缺任一条，上面这条 CSP 形同虚设。
+    expect(protocol).toContain("supportFetchAPI: true");
+    expect(protocol).toContain("corsEnabled: true");
+    expect(protocol).toContain('out.set("access-control-allow-origin", "*")');
   });
 
   it("音视频的 src 由 buildPreviewLink 生成；图片同走代理（buildImageSrc）", () => {

@@ -15,8 +15,9 @@
  */
 import amagi from "@ikenxuan/amagi";
 import { ENGINE_INFO, type EngineId } from "../../shared/platforms";
-import type { ParseData, ParseResult, ParsedVideoQuality } from "../../types/ipc";
+import type { ParseData, ParseResult, ParsedVideoItem, ParsedVideoQuality } from "../../types/ipc";
 import type { EngineOutcome, EngineRequest, ParseEngine } from "./engines";
+import { DESKTOP_USER_AGENT, refererFor } from "./hotlink";
 
 // ————————————————————————————————————————————————
 // amagi 信封（按 contracts：success 唯一判别；失败分支只有 error）
@@ -89,6 +90,8 @@ export interface AmagiEngineDeps {
    * 与设置页代理地址 hint 的口径一致）。
    */
   getProxyConfig?: () => { mode: "system" | "manual" | "direct" | "off"; url: string };
+  /** CDN 探测用的 fetch（测试注入，缺省全局 fetch）；只在 B 站取流结果带镜像候选时发请求 */
+  fetchImpl?: typeof fetch;
 }
 
 export const AMAGI_ENGINE_ID: EngineId = "amagi";
@@ -140,6 +143,129 @@ const firstUrl = (v: unknown, path: string): string | undefined => {
   }
   return undefined;
 };
+
+// ————————————————————————————————————————————————
+// B 站 CDN 候选（2026-10-23 实测）
+// ————————————————————————————————————————————————
+
+/**
+ * B 站取流给每条轨一串候选链：`baseUrl` 是按运营商/地域调度的主链，`backup_url` 是镜像。
+ *
+ * 2026-10-23 实测（BV1GJ411x7h7，1080P）：主链落在 `*.mcdn.bilivideo.cn`，单连接只有
+ * ~0.5 MB/s，AVC 主链甚至 TLS 握手直接失败；镜像 `edge.*` ~3.5 MB/s。预览是 ffmpeg 把
+ * 两条远程轨**整段拉完**才合流，同一份 230 MB 视频在主链上要 8 分钟，必然撞 120s 超时
+ * （日志里两条「远程合流失败：ffmpeg 超时被杀」就是它）。下载走同一条链，症状是进度爬得很慢。
+ *
+ * 所以解析时先量一小段吞吐：主链是 PCDN（mcdn）且存在镜像才探测，几个候选各拉 64 KB 比速度，
+ * 选中的下标同时套到所有档位与音轨（B 站各条轨的候选顺序一致，下标不在的条目退回主链）。
+ * 探测失败不影响解析——全部拿不到数据就维持主链，行为与改动前一致。
+ */
+const CDN_PROBE_BYTES = 64 * 1024;
+const CDN_PROBE_TIMEOUT_MS = 1200;
+const PCDN_HOST = /(^|\.)mcdn\.bilivideo\.cn$/i;
+
+/** 一条轨的可换 CDN：主链在前、镜像在后（`url` 是 durl 分段的键名） */
+function cdnCandidates(item: Unknown): string[] {
+  const out: string[] = [];
+  const push = (u: string | undefined): void => {
+    if (u && /^https?:\/\//i.test(u) && !out.includes(u)) out.push(u);
+  };
+  push(strAt(item, "baseUrl"));
+  push(strAt(item, "base_url"));
+  push(strAt(item, "url"));
+  for (const s of asArr(pick(item, "backup_url"))) push(str(s));
+  for (const s of asArr(pick(item, "backupUrl"))) push(str(s));
+  return out;
+}
+
+/** 候选下标 → 直链；该条目没有这个镜像位时退回主链 */
+function candidateAt(item: Unknown, slot: number): string | undefined {
+  const list = cdnCandidates(item);
+  return list[slot] ?? list[0];
+}
+
+const hostOf = (url: string): string => {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+};
+
+/** 探测代表条目：视频档位里带镜像且 qn 最高的一条；没有视频则退 durl/音轨 */
+function probeEntry(stream: Unknown): Unknown | null {
+  const dashVideo = asArr(pick(stream, "dash.video"))
+    .map((v) => asObj(v))
+    .filter((v): v is Unknown => v !== null);
+  let best: Unknown | null = null;
+  for (const item of dashVideo) {
+    if (cdnCandidates(item).length < 2) continue;
+    if (!best || (numAt(item, "id") ?? 0) > (numAt(best, "id") ?? 0)) best = item;
+  }
+  if (best) return best;
+  for (const path of ["durl", "dash.audio"]) {
+    for (const raw of asArr(pick(stream, path))) {
+      const item = asObj(raw);
+      if (item && cdnCandidates(item).length >= 2) return item;
+    }
+  }
+  return null;
+}
+
+/**
+ * 量一小段吞吐，返回最快的候选下标（0 = 主链）。
+ * 超时只中止本次读取，已收到的字节仍参与比较——慢主链往往不是报错而是拖。
+ */
+async function probeCdnSlot(entry: Unknown, fetchImpl: typeof fetch): Promise<number> {
+  const candidates = cdnCandidates(entry);
+  if (candidates.length < 2 || !PCDN_HOST.test(hostOf(candidates[0]))) return 0;
+  const referer = refererFor("bilibili");
+
+  const measure = async (
+    url: string,
+    slot: number
+  ): Promise<{ slot: number; speed: number } | null> => {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), CDN_PROBE_TIMEOUT_MS);
+    const started = performance.now();
+    let got = 0;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      const resp = await fetchImpl(url, {
+        headers: {
+          "User-Agent": DESKTOP_USER_AGENT,
+          ...(referer ? { Referer: referer } : {}),
+          Range: `bytes=0-${CDN_PROBE_BYTES - 1}`,
+        },
+        signal: ctrl.signal,
+      });
+      if (!resp.ok && resp.status !== 206) {
+        void resp.body?.cancel().catch(() => undefined);
+        return null;
+      }
+      reader = resp.body?.getReader();
+      if (!reader) return null;
+      while (got < CDN_PROBE_BYTES) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        got += value.byteLength;
+      }
+      return got > 0 ? { slot, speed: got / Math.max(1, performance.now() - started) } : null;
+    } catch {
+      return got > 0 ? { slot, speed: got / Math.max(1, performance.now() - started) } : null;
+    } finally {
+      clearTimeout(timer);
+      void reader?.cancel().catch(() => undefined);
+    }
+  };
+
+  const results = (await Promise.all(candidates.map(measure))).filter(
+    (r): r is { slot: number; speed: number } => r !== null
+  );
+  if (results.length === 0) return 0;
+  results.sort((a, b) => b.speed - a.speed);
+  return results[0].slot;
+}
 
 /**
  * amagi 的取数信封**有的端点双层、有的单层**（2026-10-21 实测 `BV1GJ411x7h7`）：
@@ -207,6 +333,21 @@ interface WorkRef {
   xsecToken?: string;
   /** av 号链接专用：先经 convertAvToBv 换算成 bvid 再走稿件通道 */
   av?: number;
+  /** B 站分 P 序号（1 起，链接上的 `?p=N`）；缺省 = 合集首 P */
+  page?: number;
+}
+
+/**
+ * 分 P 序号：B 站链接的 `?p=N`（1 起）。
+ *
+ * 只认 1–4 位正整数：`?p=0`、`?p=abc`、`?p=` 后面挂着一长串指纹数字都当没写，
+ * 由调用方回落 P1 —— 拿一个认不出来的值去夹 pages 下标，等于给用户看不存在的 P。
+ */
+function pageNumberIn(url: string): number | undefined {
+  const raw = /[?&]p=(\d{1,4})(?:[&#/]|$)/.exec(url)?.[1];
+  if (!raw) return undefined;
+  const n = Number(raw);
+  return n >= 1 ? n : undefined;
 }
 
 function extractId(platform: string, url: string): WorkRef | null {
@@ -217,10 +358,13 @@ function extractId(platform: string, url: string): WorkRef | null {
     );
   }
   if (platform === "bilibili") {
+    // 分 P 序号与作品 ID 同源抽出：`?p=` 挂在 BV 号还是 av 号后面都是「要第几 P」
+    const page = pageNumberIn(url);
     // av 号（video/av170001、?aid=170001）→ 换算成 bvid 再进稿件通道
     const av = /\/video\/av(\d{6,})/i.exec(url)?.[1] ?? /[?&]aid=(\d{6,})/i.exec(url)?.[1];
-    if (av) return { id: "", av: Number(av) };
-    return firstMatch(url, [/\/video\/(BV[0-9A-Za-z]{8,})/i, /[?&]bvid=(BV[0-9A-Za-z]{8,})/i]) ?? null;
+    if (av) return { id: "", av: Number(av), page };
+    const bvid = firstMatch(url, [/\/video\/(BV[0-9A-Za-z]{8,})/i, /[?&]bvid=(BV[0-9A-Za-z]{8,})/i]);
+    return bvid ? { id: bvid.id, page } : null;
   }
   if (platform === "kuaishou") {
     return firstMatch(url, [
@@ -408,24 +552,56 @@ function mapDouyin(detail: Unknown, awemeId: string): ParseData | null {
 }
 
 /**
- * @param authorCard UP 主名片（`fetchUserCard` 的 `data`，形状是 `{ card: {...}, archive_count, like_num }`）。
- *   缺省 / 失败时只是少几行作者统计，稿件本身照常出。
+ * 「一个分 P 就是一份资源」（业主 2026-10-23）里的一个 P：`pages[]` 的那条载荷，
+ * 加上**为它单独取到**的那一份流（取流失败 = null，这一 P 在清单里缺席）。
+ *
+ * 每条自带 stream 是这个模型成立的前提：B 站一次 `playurl` 只回答一个 cid，
+ * 顶层那条音轨属于本次取流的那一 P，把它配到别的 P 上就是「画面是 P3、声音是 P2」。
  */
-function mapBilibili(info: Unknown, stream: Unknown | null, authorCard: Unknown | null = null): ParseData | null {
-  const owner = asObj(pick(info, "owner"));
-  const stat = asObj(pick(info, "stat")) ?? {};
-  const bvid = strAt(info, "bvid");
-  const mid = numAt(info, "owner.mid");
-  const durationSec = numAt(info, "duration");
-  // 名片把用户资料放在 `card` 里，投稿数与获赞在 data 顶层；两种形状都认
-  const cardInfo = asObj(pick(authorCard, "card")) ?? authorCard;
+interface BilibiliPage {
+  item: Unknown | null;
+  no: number;
+  stream: Unknown | null;
+}
 
-  // 取流失败或形状异样时仍交出稿件信息（无直链，结果卡只剩元数据），不让整次解析白跑
-  const dashVideo = asArr(pick(stream, "dash.video"));
+/**
+ * 本次解析面对的分 P 合集。
+ *
+ * 两个值必须一起给：`pages` 决定清单里有几条资源、要不要在名字上标 P，
+ * `no` 决定主链（结果卡的主视觉、清晰度档位、下载文件名的 P 号）是其中哪一条。
+ */
+interface BilibiliPart {
+  pages: BilibiliPage[];
+  no: number;
+}
+
+/** 一次 `playurl` 映射出来的交付面：档位、主链、音轨与各自的 MSE 身份 */
+interface BilibiliStreams {
+  qualities: ParsedVideoQuality[];
+  url?: string;
+  audioUrl?: string;
+  videoCodecs?: string;
+  videoMimeType?: string;
+  audioCodecs?: string;
+  audioMimeType?: string;
+  /** 本次取流那条媒体的实际毫秒数；取流失败或形状异样时缺省 */
+  timelength?: number;
+}
+
+/**
+ * 一份 `playurl` 响应 → 这一 P 能交付的东西。
+ *
+ * 单独成函数是为了让「每一 P 都走同一套映射」：档位归并与音轨挑选里踩过的坑
+ * （同一个 qn 按编码回两条 → 结果卡摆两个「1080P」；未登录 `accept_description[0]`
+ * 不是当前档 → 360P 虚标成 720P；`durl` 多段只取第一段 → 交付半截视频，
+ * 都是 2026-10-21 实测修的）若在分 P 那一份上另写一遍，就会变成「只有主链那条是对的」。
+ */
+function mapBilibiliStream(stream: Unknown | null, cdnSlot: number): BilibiliStreams {
+  if (!stream) return { qualities: [] };
   const supportFormats = asArr(pick(stream, "support_formats"));
   const acceptQuality = asArr(pick(stream, "accept_quality"));
-  const qualityUrl = (item: Unknown): string | undefined =>
-    strAt(item, "baseUrl") ?? strAt(item, "base_url") ?? firstUrl(item, "backup_url");
+  const qualityUrl = (item: Unknown): string | undefined => candidateAt(item, cdnSlot);
+
   /**
    * 档位显示名：**先按 `support_formats[].quality` 匹配，不按下标**。
    *
@@ -458,7 +634,7 @@ function mapBilibili(info: Unknown, stream: Unknown | null, authorCard: Unknown 
     (codecRank(a) === codecRank(b) && (numAt(a, "bandwidth") ?? 0) > (numAt(b, "bandwidth") ?? 0));
 
   const bestByQuality = new Map<number, Unknown>();
-  for (const raw of dashVideo) {
+  for (const raw of asArr(pick(stream, "dash.video"))) {
     const item = asObj(raw);
     if (!item) continue;
     const qn = numAt(item, "id");
@@ -466,10 +642,19 @@ function mapBilibili(info: Unknown, stream: Unknown | null, authorCard: Unknown 
     const cur = bestByQuality.get(qn);
     if (!cur || betterVideo(item, cur)) bestByQuality.set(qn, item);
   }
-  // 降序：主链取 qualities[0] 才是最高档（服务端数组顺序不保证）
+  // 降序：主链（qualities[0]）取最高档（服务端数组顺序不保证）
   const qualities: ParsedVideoQuality[] = [...bestByQuality.entries()]
-    .map(([qn, item]) => ({ quality: qn, label: qualityLabel(qn), url: qualityUrl(item) as string }))
+    .map(([qn, item]) => ({
+      quality: qn,
+      label: qualityLabel(qn),
+      url: qualityUrl(item) as string,
+      // MSE 预览（契约 v35）：playurl 每条 DASH 档自带 codecs/mimeType，
+      // 渲染层建 SourceBuffer 时要用；durl 分支不写，预览自然走合流回退。
+      codecs: strAt(item, "codecs"),
+      mimeType: strAt(item, "mimeType") ?? strAt(item, "mime_type"),
+    }))
     .sort((a, b) => b.quality - a.quality);
+  const mainItem = qualities.length > 0 ? bestByQuality.get(qualities[0].quality) : undefined;
 
   // 未登录时 B 站不下发 dash，只回 `durl`（渐进式 mp4，含音轨）：主链与唯一档位都取它，
   // `audioUrl` 留空——把整段视频当「音频流」交出去，下载侧会落一个文件名骗人的文件。
@@ -483,7 +668,7 @@ function mapBilibili(info: Unknown, stream: Unknown | null, authorCard: Unknown 
   const durls = asArr(pick(stream, "durl"));
   if (qualities.length === 0 && durls.length === 1) {
     const seg = asObj(durls[0]);
-    const url = seg ? (strAt(seg, "url") ?? firstUrl(seg, "backup_url")) : undefined;
+    const url = seg ? candidateAt(seg, cdnSlot) : undefined;
     if (url) {
       const qn = numAt(stream, "quality") ?? 0;
       const descIndex = acceptQuality.findIndex((q) => num(q) === qn);
@@ -503,15 +688,99 @@ function mapBilibili(info: Unknown, stream: Unknown | null, authorCard: Unknown 
       (a, b) =>
         audioRank(a) - audioRank(b) || (numAt(b, "bandwidth") ?? 0) - (numAt(a, "bandwidth") ?? 0)
     );
-  const audioUrl = dashVideo.length > 0
-    ? (strAt(dashAudio[0], "baseUrl") ?? strAt(dashAudio[0], "base_url"))
-    : undefined;
+  const audioItem = asArr(pick(stream, "dash.video")).length > 0 ? dashAudio[0] : undefined;
+
+  return {
+    qualities,
+    url: qualities[0]?.url,
+    audioUrl: audioItem ? candidateAt(audioItem, cdnSlot) : undefined,
+    videoCodecs: mainItem ? strAt(mainItem, "codecs") : undefined,
+    videoMimeType: mainItem ? strAt(mainItem, "mimeType") ?? strAt(mainItem, "mime_type") : undefined,
+    audioCodecs: audioItem ? strAt(audioItem, "codecs") : undefined,
+    audioMimeType: audioItem ? strAt(audioItem, "mimeType") ?? strAt(audioItem, "mime_type") : undefined,
+    timelength: numAt(stream, "timelength"),
+  };
+}
+
+/**
+ * 这一 P 的时长（毫秒）：`timelength` 优先（playurl 对**这次取流的那条媒体**报的实际毫秒数），
+ * 其次 `pages[].duration`（秒）。
+ */
+function partDurationMs(page: BilibiliPage, s: BilibiliStreams): number | undefined {
+  const sec = numAt(page.item, "duration");
+  return s.timelength ?? (sec !== undefined ? sec * 1000 : undefined);
+}
+
+/**
+ * @param authorCard UP 主名片（`fetchUserCard` 的 `data`，形状是 `{ card: {...}, archive_count, like_num }`）。
+ *   缺省 / 失败时只是少几行作者统计，稿件本身照常出。
+ * @param part 这份稿件的全部分 P（各带自己取到的流）与用户链接指向的那一 P 的序号。
+ */
+function mapBilibili(
+  info: Unknown,
+  part: BilibiliPart,
+  authorCard: Unknown | null = null,
+  cdnSlot = 0
+): ParseData | null {
+  const owner = asObj(pick(info, "owner"));
+  const stat = asObj(pick(info, "stat")) ?? {};
+  const bvid = strAt(info, "bvid");
+  const mid = numAt(info, "owner.mid");
+  // 名片把用户资料放在 `card` 里，投稿数与获赞在 data 顶层；两种形状都认
+  const cardInfo = asObj(pick(authorCard, "card")) ?? authorCard;
+
+  /**
+   * 主链那一 P：`pages[]` 里序号对上的一条。对不上（越界没夹好、上游少了这一条）时
+   * 退回首 P——宁可交一份 P1 的答复，也不能让整篇稿件因为没有主链而解不出来。
+   */
+  const selectedPage = part.pages.find((p) => p.no === part.no) ?? part.pages[0] ?? null;
+  const partItem = selectedPage?.item ?? null;
+  const streams = mapBilibiliStream(selectedPage?.stream ?? null, cdnSlot);
+
+  /**
+   * 这一 P 到底是多长。
+   *
+   * 优先级：`timelength`（playurl 对**这次取流的那条媒体**的毫秒数）→ `pages[].duration`（秒）
+   * → 顶层 `duration`。最后一个是合集的**总时长**，分 P 稿件拿它当交付时长会直接打断预览：
+   * MSE 把 `MediaSource.duration` 写成总长，进度条于是比实际流长出一截，用户拖到这一 P
+   * 末尾之后一直在等一段永远不会来的缓冲（2026-10-23 业主报「b站分P视频的dash流问题」）。
+   */
+  const totalSec = numAt(info, "duration");
+  const durationMs =
+    (selectedPage ? partDurationMs(selectedPage, streams) : undefined) ??
+    (totalSec !== undefined ? totalSec * 1000 : undefined);
+
+  /**
+   * 分 P 清单：每一 P 一条资源，各带自己的档位、音轨与 MSE 身份。
+   *
+   * 标题取 `pages[].part`（分 P 名），合集名留给顶层：区分靠 `page`（渲染层据此落
+   * `_P2` 文件名后缀），不在标题里重复挂 `P2 ·`——那串会跟着进每一条分 P 的文件名，
+   * 于是「P2 合集名_P1.mp4」，用户按名字找 P1 找到的是 P2 的命名。
+   * 取不到直链的 P 不列（`url` 是契约必填项，硬凑一条只会产出一个下不动的条目）。
+   */
+  const isMulti = part.pages.length > 1;
+  const videos: ParsedVideoItem[] = part.pages
+    .map((pg) => ({ pg, s: pg === selectedPage ? streams : mapBilibiliStream(pg.stream, cdnSlot) }))
+    .filter(({ s }) => s.url)
+    .map(({ pg, s }) => ({
+      page: pg.no,
+      title: strAt(pg.item, "part") ?? strAt(pg.item, "title"),
+      duration: partDurationMs(pg, s),
+      cover: strAt(pg.item, "pic") ?? strAt(pg.item, "first_frame") ?? strAt(info, "pic"),
+      url: s.url as string,
+      qualities: s.qualities.length > 0 ? s.qualities : undefined,
+      audioUrl: s.audioUrl,
+      videoCodecs: s.videoCodecs,
+      videoMimeType: s.videoMimeType,
+      audioCodecs: s.audioCodecs,
+      audioMimeType: s.audioMimeType,
+    }));
 
   const data: ParseData = {
     title: strAt(info, "title"),
     desc: strAt(info, "desc"),
     type: "video",
-    duration: durationSec !== undefined ? durationSec * 1000 : undefined,
+    duration: durationMs,
     author: strAt(info, "owner.name") ?? (owner ? str(owner["name"]) : undefined),
     authorId: mid !== undefined ? String(mid) : undefined,
     authorUrl: mid !== undefined ? `https://space.bilibili.com/${mid}` : undefined,
@@ -522,11 +791,19 @@ function mapBilibili(info: Unknown, stream: Unknown | null, authorCard: Unknown 
     followingCount: numAt(cardInfo, "attention"),
     totalFavorited: numAt(authorCard, "like_num"),
     videoCount: numAt(authorCard, "archive_count"),
-    cover: strAt(info, "pic"),
-    url: qualities[0]?.url,
-    audioUrl,
+    // 封面跟主链那一 P 走：合集封面是 P1 的画面，用它当 P3 的主视觉会「图和片子对不上」
+    cover: strAt(partItem, "pic") ?? strAt(partItem, "first_frame") ?? strAt(info, "pic"),
+    url: streams.url,
+    audioUrl: streams.audioUrl,
+    videoCodecs: streams.videoCodecs,
+    videoMimeType: streams.videoMimeType,
+    audioCodecs: streams.audioCodecs,
+    audioMimeType: streams.audioMimeType,
     bvid,
-    qualities: qualities.length > 0 ? qualities : undefined,
+    // 只有合集才标 P：单 P 稿件标 `P1` 是白挂（文件名与条目都要多一个没人要的区分位）
+    page: isMulti ? selectedPage?.no : undefined,
+    qualities: streams.qualities.length > 0 ? streams.qualities : undefined,
+    videos: videos.length > 0 ? videos : undefined,
     stat: {
       view: num(stat["view"]),
       danmaku: num(stat["danmaku"]),
@@ -662,6 +939,7 @@ function parseProxyUrl(raw: string): { host: string; port: number } | null {
 
 export function createAmagiEngine(deps: AmagiEngineDeps): ParseEngine {
   const expandUrl = deps.expandUrl ?? defaultExpandUrl;
+  const fetchImpl = deps.fetchImpl ?? fetch;
   const makeClient: AmagiClientFactory =
     deps.makeClient ??
     ((cookies, requestConfig) => {
@@ -707,7 +985,11 @@ export function createAmagiEngine(deps: AmagiEngineDeps): ParseEngine {
     if (direct) return direct;
     if (!SHORT_LINK.test(url)) return null;
     const expanded = await expandUrl(url);
-    return expanded ? extractId(platform, expanded) : null;
+    const ref = expanded ? extractId(platform, expanded) : null;
+    // 落点没写 `?p=` 而短链那一份写了，用用户给的那一位：b23 展开出来常是裸 BV 链接，
+    // 丢掉序号就等于把用户指的 P2 解成 P1
+    if (ref && ref.page === undefined) ref.page = pageNumberIn(url);
+    return ref;
   }
 
   const noRef = (platform: string): ParseResult => ({
@@ -756,13 +1038,43 @@ export function createAmagiEngine(deps: AmagiEngineDeps): ParseEngine {
           const info = unwrapBilibili(infoEnv.data);
           if (!info) return bad("empty-detail", { code: 404, msg: "amagi：响应里没有稿件详情", platform: key, failType: "source-unavailable" });
           const avid = numAt(info, "aid");
-          // 稿件详情里 `cid` 不总在顶层：正片分 P 时只在 `pages[].cid`（2026-10-21 实测）
-          const cid = numAt(info, "cid") ?? numAt(info, "pages.0.cid");
-          let stream: Unknown | null = null;
-          if (avid !== undefined && cid !== undefined) {
-            const streamEnv = (await client.bilibili.fetchVideoStreamUrl({ avid, cid })) as AmagiEnvelope;
-            if (streamEnv.success) stream = unwrapBilibili(streamEnv.data);
-          }
+          // 分 P 稿件的 `cid` 不总在顶层，只在 `pages[]` 里（2026-10-21 实测），而 `?p=N` 决定
+          // 主链是第几 P（2026-10-23 业主报「b站分P视频的dash流问题」：永远取 pages[0]，用户指的
+          // P2 解出来是 P1 的流）。越界夹到首/末——B 站自己就是这么处理的，给一条真流比报错好。
+          const pageItems = asArr(pick(info, "pages"))
+            .map((p) => asObj(p))
+            .filter((p): p is Unknown => p !== null);
+          // 「一个分 P 就是一份资源」（业主 2026-10-23）：每一 P 各取一次流——请求数 = P 数，与内核
+          // 同量级（内核还要为每一档再请求一次），而一次 playurl 就带回该 P 的全部档位与音轨。
+          // `pages` 缺失（只把 cid 写在顶层的老形状）时按顶层 cid 造一条，取流主干只剩一种形状。
+          const pageSources =
+            pageItems.length > 0
+              ? pageItems.map((item, i) => ({ item, no: numAt(item, "page") ?? i + 1, cid: numAt(item, "cid") }))
+              : [{ item: null, no: 1, cid: numAt(info, "cid") }];
+          const partNo = Math.min(Math.max(ref.page ?? 1, 1), pageSources.length);
+          const fetchPartStream = async (cid: number | undefined): Promise<Unknown | null> => {
+            if (avid === undefined || cid === undefined) return null;
+            try {
+              const env = (await client.bilibili.fetchVideoStreamUrl({ avid, cid })) as AmagiEnvelope;
+              return env.success ? unwrapBilibili(env.data) : null;
+            } catch {
+              // 某一 P 取流失败（加密稿、分 P 风控、接口抖动）只让这一 P 缺席，不能打死整次解析
+              return null;
+            }
+          };
+          const pages: BilibiliPage[] = await Promise.all(
+            pageSources.map(async (p) => ({
+              item: p.item,
+              no: p.no,
+              stream: await fetchPartStream(p.cid),
+            }))
+          );
+          const part: BilibiliPart = { pages, no: partNo };
+          // CDN 探测与名片并行：只在主链是 PCDN 且带镜像时真发请求，最坏多等 1.2s
+          // 探测主链那一 P 的节点（用户点开就看到的那条），其余 P 沿用同一个节点偏好
+          const mainStream = pages.find((p) => p.no === partNo)?.stream ?? null;
+          const probe = mainStream ? probeEntry(mainStream) : null;
+          const slotPromise = probe ? probeCdnSlot(probe, fetchImpl) : Promise.resolve(0);
           // 作者资料：稿件详情只有 owner{name,face,sign}，粉丝/关注/投稿数在名片里。
           // 这次请求是「锦上添花」——失败就交一份缺作者统计的结果，不能让整次解析白跑。
           const ownerMid = numAt(info, "owner.mid");
@@ -776,7 +1088,7 @@ export function createAmagiEngine(deps: AmagiEngineDeps): ParseEngine {
               /* 名片失败不影响稿件本身 */
             }
           }
-          const data = mapBilibili(info, stream, authorCard);
+          const data = mapBilibili(info, part, authorCard, await slotPromise);
           return data ? { ok: true, result: okResult(key, data) } : bad("unmapped-detail", noRef(key));
         }
 

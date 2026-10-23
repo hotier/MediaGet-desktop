@@ -19,6 +19,9 @@ export interface QualityOption {
   audio?: boolean;
   /** 内核画质档位数值（越大越清晰）；音频/默认项无数值 */
   tier?: number;
+  /** 单轨视频的 MSE 身份（契约 v35）；渐进式档位没有，预览走 `<video>` 或合流回退 */
+  codecs?: string;
+  mimeType?: string;
 }
 
 /** 计划里的一项 */
@@ -31,6 +34,11 @@ export interface PlanEntry {
   url: string;
   /** DASH 音频轨：有它下载器就必须合流（交付音画完整的一个文件，见 `media-merge`） */
   audioUrl?: string;
+  /** 双轨 MSE 预览所需的轨道身份（契约 v35）：视频轨 + 音轨各一组 */
+  videoCodecs?: string;
+  videoMimeType?: string;
+  audioCodecs?: string;
+  audioMimeType?: string;
   filename: string;
   /** 请求的清晰度在该项上不存在、实际用默认 —— 必须显式说出来，不能静默降级 */
   fallbackNote?: string;
@@ -62,7 +70,13 @@ function qualityLabel(q: ParsedVideoQuality): string {
 
 /** 内核没给多清晰度时的默认项：用主 data.url */
 function defaultOption(data: ParseData): QualityOption {
-  return { label: data.qualityLabel || "默认", url: null, suffix: "" };
+  return {
+    label: data.qualityLabel || "默认",
+    url: null,
+    suffix: "",
+    codecs: data.videoCodecs,
+    mimeType: data.videoMimeType,
+  };
 }
 
 /** 清晰度选择器的完整形态：芯片列表 + 内核主直链落在第几个 */
@@ -102,7 +116,14 @@ export function buildQualityPlan(data?: ParseData, strategy: QualityStrategy = "
   const byLabel = new Map<string, QualityOption>();
   for (const q of source) {
     const label = qualityLabel(q);
-    const option: QualityOption = { label, url: q.url, suffix: `-${label}`, tier: q.quality };
+    const option: QualityOption = {
+      label,
+      url: q.url,
+      suffix: `-${label}`,
+      tier: q.quality,
+      codecs: q.codecs,
+      mimeType: q.mimeType,
+    };
     const prev = byLabel.get(label);
     if (!prev || (data.url && q.url === data.url)) byLabel.set(label, option);
   }
@@ -360,18 +381,38 @@ export function buildPlan(
   const out: PlanEntry[] = [];
 
   const mainUrl = chosen.url ?? data.url;
+  // 选中档位的 MSE 身份：选了具体档位就跟档位走，默认项才回落到主链自己的 codec
+  const videoMeta = chosen.url
+    ? { codecs: chosen.codecs, mimeType: chosen.mimeType }
+    : { codecs: data.videoCodecs, mimeType: data.videoMimeType };
   // 图集帖的主直链就是首张图：它由下面的 images 循环以 `.jpg` 落盘，这里再当视频展开，
   // 第一张图就会变成一个打不开的 `.mp4`（判据与 describeResourceMix 同一份）
   if (!chosen.audio && mainUrl && !isGalleryMain(data)) {
+    // 已知是分离视频轨（有 codecs）就必须配音频：主链也可能落到 video-only，
+    // 旧判据只认 `.m4s`，YouTube 那种无扩展名的分离链会被漏掉（预览无声）。
+    const audio = dashAudioFor(mainUrl, data.audioUrl, mainUrl === data.url) ??
+      (videoMeta.codecs ? data.audioUrl : undefined);
     out.push({
       id: "main",
-      label: `视频 · ${chosen.label}`,
+      // 合集里主链只是其中一 P（引擎用 `data.page` 说清是第几 P）：标签与文件名都要带上这一位，
+      // 否则「解析 P1 下一次、解析 P2 再下一次」落成同一个名字，第二遍覆盖第一遍。
+      label: `视频${data.page ? ` · P${data.page}` : ""} · ${chosen.label}`,
       kind: "video",
       url: mainUrl,
       // 主链判定按「选中的档位是不是主链那条」：选了更高档就是非主链，得配音轨
-      audioUrl: dashAudioFor(mainUrl, data.audioUrl, mainUrl === data.url),
+      audioUrl: audio,
+      videoCodecs: videoMeta.codecs,
+      videoMimeType: videoMeta.mimeType,
+      audioCodecs: audio ? data.audioCodecs : undefined,
+      audioMimeType: audio ? data.audioMimeType : undefined,
       filename: buildFilename(
-        { title, author, qualitySuffix: chosen.suffix, ext: ".mp4" },
+        {
+          title,
+          author,
+          qualitySuffix: chosen.suffix,
+          indexSuffix: data.page ? `-P${data.page}` : undefined,
+          ext: ".mp4",
+        },
         naming
       ),
     });
@@ -392,25 +433,38 @@ export function buildPlan(
 
   // 「仅音频」是排他档：主视频已跳过，分 P 的视频也不能再进来（否则按钮上会写 4 项）
   if (!chosen.audio) {
-    // 分 P 各自的音频轨不在契约里（`ParseData.videos[]` 没有 audioUrl），别拿顶层音频硬配
-    // ——音轨配错比无声更难发现。这里保持单流，缺口留给内核补字段。
     (data.videos ?? []).forEach((v, i) => {
+      // 编号认契约的 `page`（第几 P），下标只在引擎没报这一位时兜底：某一 P 取流失败会整条
+      // 缺席、数组下标随之前移，用下标报「分 P 2」就把名字贴到了真正的第三 P 上。
+      const no = v.page ?? i + 1;
       // 想要哪一档写在 suffix 上（默认项也可能带档位，例如主 url 就是 1080P）
       const wanted = chosen.suffix ? chosen.suffix.slice(1) : undefined;
       const hit = wanted ? v.qualities?.find((q) => qualityLabel(q) === wanted) : undefined;
       const url = hit?.url ?? v.url;
       if (!url) return;
+      // 这一 P 的视频轨身份跟着选中的档位走（与主链那条同一规则）
+      const track = hit
+        ? { codecs: hit.codecs, mimeType: hit.mimeType }
+        : { codecs: v.videoCodecs, mimeType: v.videoMimeType };
       out.push({
         id: `p-${i}`,
-        label: `分 P ${i + 1}${v.title ? ` · ${v.title}` : ""}`,
+        label: `分 P ${no}${v.title ? ` · ${v.title}` : ""}`,
         kind: "video",
         url,
+        // 一条分 P 就是一份独立资源（v36）：音轨只认这一 P 自己带的那条。拿顶层 `data.audioUrl`
+        // 硬配等于交付「画面是 P3、声音是 P2」——音轨配错比无声更难发现。缺键就是渐进式单文件
+        // （内核未登录的 durl 分支），照常单流下载。
+        audioUrl: v.audioUrl,
+        videoCodecs: track.codecs,
+        videoMimeType: track.mimeType,
+        audioCodecs: v.audioUrl ? v.audioCodecs : undefined,
+        audioMimeType: v.audioUrl ? v.audioMimeType : undefined,
         filename: buildFilename(
           {
             title,
             author,
             qualitySuffix: hit ? chosen.suffix : undefined,
-            indexSuffix: `-P${i + 1}`,
+            indexSuffix: `-P${no}`,
             ext: ".mp4",
           },
           naming

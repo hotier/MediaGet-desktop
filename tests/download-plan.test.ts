@@ -62,6 +62,61 @@ describe("buildPlan 的清晰度档位", () => {
   });
 });
 
+describe("一个分 P 就是一份资源（契约 v36）", () => {
+  it("音轨与双轨身份只认这一 P 自己带的那条，不借顶层", () => {
+    const data = {
+      title: "合集",
+      // 顶层那条音轨属于主链（P1）：配到 P2 上就是「画面是 P2、声音是 P1」，
+      // 比无声更难发现——文件能播、听着像另一集
+      audioUrl: "https://cdn/p1-a.m4s",
+      url: "https://cdn/p1-v.m4s",
+      videoCodecs: "avc1.640032",
+      videos: [
+        { page: 1, url: "https://cdn/p1-v.m4s", audioUrl: "https://cdn/p1-a.m4s", videoCodecs: "avc1.640032", audioCodecs: "mp4a.40.2" },
+        { page: 2, url: "https://cdn/p2-v.m4s", audioUrl: "https://cdn/p2-a.m4s", videoCodecs: "avc1.64001f", audioCodecs: "mp4a.40.2", audioMimeType: "audio/mp4" },
+      ],
+    };
+    const p2 = buildPlan(data).find((e) => e.id === "p-1");
+    expect(p2?.audioUrl).toBe("https://cdn/p2-a.m4s");
+    expect(p2?.videoCodecs).toBe("avc1.64001f");
+    expect(p2?.audioCodecs).toBe("mp4a.40.2");
+    expect(p2?.audioMimeType).toBe("audio/mp4");
+  });
+
+  it("渐进式分 P 没有音轨键：保持单流，不拿顶层音轨硬配", () => {
+    const data = {
+      title: "合集",
+      url: "https://cdn/p1.mp4",
+      audioUrl: "https://cdn/top-a.m4s",
+      videos: [{ page: 1, url: "https://cdn/p1.mp4" }, { page: 2, url: "https://cdn/p2.mp4" }],
+    };
+    expect(buildPlan(data).find((e) => e.id === "p-1")?.audioUrl).toBeUndefined();
+  });
+
+  it("某一 P 缺席时编号认 `page`，标签与文件名都不跟着下标前移", () => {
+    const data = {
+      title: "合集",
+      page: 1,
+      url: "https://cdn/p1.m4s",
+      videos: [{ page: 1, url: "https://cdn/p1.m4s" }, { page: 3, url: "https://cdn/p3.m4s" }],
+    };
+    const plan = buildPlan(data);
+    expect(plan.map((p) => p.label)).toEqual(["视频 · P1 · 默认", "分 P 3"]);
+    expect(plan.map((p) => p.filename)).toEqual(["合集-P1.mp4", "合集-P3.mp4"]);
+  });
+
+  it("主链带 P 号：解析 P1 与解析 P2 不会落成同一个文件名", () => {
+    const videos = [
+      { page: 1, url: "https://cdn/p1.m4s" },
+      { page: 2, url: "https://cdn/p2.m4s" },
+    ];
+    const firstName = (page: number): string =>
+      buildPlan({ title: "合集", page, url: `https://cdn/p${page}.m4s`, videos })[0].filename;
+    expect(firstName(1)).toBe("合集-P1.mp4");
+    expect(firstName(2)).toBe("合集-P2.mp4");
+  });
+});
+
 describe("buildQualityPlan 的同名档位", () => {
   it("上游把两档标成同一句话时只留一个芯片（两个 1080P 会让用户分不清）", () => {
     const data = {
@@ -216,5 +271,66 @@ describe("buildPlan 的 DASH 音频轨", () => {
     const plan = buildPlan(data, audio);
     expect(plan.map((p) => p.kind)).toEqual(["audio"]);
     expect(plan[0].url).toBe(data.audioUrl);
+  });
+});
+
+/**
+ * MSE 预览的轨道身份（契约 v35）：计划项要一路带着两条轨的 codec/容器，
+ * 结果卡才能建 SourceBuffer 边拉边播；缺一项就该由 `mseTrackMime` 判 null 并回退合流。
+ */
+describe("buildPlan 的 MSE 轨道身份", () => {
+  it("默认档是双轨 DASH 时，视频项带齐视频轨与音频轨身份", () => {
+    const data: ParseData = {
+      title: "t",
+      url: "https://upos.hdslb.com/v/80.m4s?e=1",
+      audioUrl: "https://upos.hdslb.com/a/30280.m4s?e=1",
+      videoCodecs: "avc1.64001f",
+      videoMimeType: "video/mp4",
+      audioCodecs: "mp4a.40.2",
+      audioMimeType: "audio/mp4",
+    };
+    const entry = buildPlan(data)[0];
+    expect(entry).toMatchObject({
+      audioUrl: data.audioUrl,
+      videoCodecs: "avc1.64001f",
+      videoMimeType: "video/mp4",
+      audioCodecs: "mp4a.40.2",
+      audioMimeType: "audio/mp4",
+    });
+  });
+
+  it("选中具体档位时跟档位的 codec 走，不沿用它顶上那条主链的", () => {
+    const data: ParseData = {
+      title: "t",
+      url: "https://upos.hdslb.com/v/80.m4s",
+      audioUrl: "https://upos.hdslb.com/a/30280.m4s",
+      videoCodecs: "avc1.64001f",
+      videoMimeType: "video/mp4",
+      audioCodecs: "mp4a.40.2",
+      audioMimeType: "audio/mp4",
+      qualities: [
+        { quality: 120, label: "4K", url: "https://upos.hdslb.com/v/120.m4s", codecs: "av01.0.08M.08", mimeType: "video/mp4" },
+        { quality: 80, label: "1080P", url: "https://upos.hdslb.com/v/80.m4s", codecs: "avc1.64001f", mimeType: "video/mp4" },
+      ],
+    };
+    const uhd = buildQualityPlan(data).options.find((o) => o.label === "4K");
+    if (!uhd) throw new Error("应当有 4K 档");
+    const entry = buildPlan(data, uhd)[0];
+    expect(entry.videoCodecs).toBe("av01.0.08M.08");
+    expect(entry.videoMimeType).toBe("video/mp4");
+    // 音频轨只有顶层一条，身份跟着它走
+    expect(entry.audioCodecs).toBe("mp4a.40.2");
+  });
+
+  it("渐进式主链即便带了 audioUrl（如抖音 BGM）也不产轨道身份：它走 <video> 直读", () => {
+    const data: ParseData = {
+      title: "t",
+      url: "https://cdn/v.mp4",
+      audioUrl: "https://cdn/bgm.mp3",
+    };
+    const entry = buildPlan(data)[0];
+    expect(entry.audioUrl).toBeUndefined();
+    expect(entry.videoCodecs).toBeUndefined();
+    expect(entry.audioCodecs).toBeUndefined();
   });
 });

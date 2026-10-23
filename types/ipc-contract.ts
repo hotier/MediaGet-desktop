@@ -37,6 +37,13 @@ export const ParsedVideoQualitySchema = z.object({
   quality: z.number(),
   label: STR,
   url: STR,
+  /**
+   * MSE 预览用的轨道身份（v35）：`codecs` 形如 `avc1.640032` / `mp4a.40.2`，
+   * `mimeType` 是 `video/mp4` / `audio/mp4`。上游给了才写——缺它只是预览走合流回退，
+   * 不影响下载。B站 playurl 与 yt-dlp 的 format 都自带这两项。
+   */
+  codecs: STR.optional(),
+  mimeType: STR.optional(),
 });
 
 /** 多分 P / 多清晰度视频项 */
@@ -54,6 +61,25 @@ export const ParsedVideoItemSchema = z.object({
   video_url: STR.optional(),
   /** 原始键并存：B站 `pic`，新消费方读 `cover` */
   pic: STR.optional(),
+  /**
+   * 这一条是第几 P（1 起，B站 `pages[].page`）。
+   *
+   * 不能用数组下标代替：某一 P 取流失败时它会整条缺席（内核与 amagi 都是 `filter(Boolean)`），
+   * 下标就整体前移——「分 P 2」标签与 `_P2` 文件名会贴到真正的第三 P 上，
+   * 用户按名字找片找到的是另一条。缺键（其他平台、单 P）才退回下标。
+   */
+  page: z.number().int().min(1).optional(),
+  /**
+   * 这一 P 自己的 DASH 音轨（v36）：一条分 P 就是一份独立资源，音轨不能去借顶层那条
+   * ——借来的音轨配的是别的 P 的声音，比无声更难发现（v33「一律合流」的前提是音画同一次取流）。
+   * 缺键 = 该条是渐进式单文件（自带声音）或内核没补这一字段，按单流下载。
+   */
+  audioUrl: STR.optional(),
+  /** 这一 P 的双轨 MSE 身份（与 `ParseData` 顶层同名四键同一语义）：缺键 = 预览走合流回退 */
+  videoCodecs: STR.optional(),
+  videoMimeType: STR.optional(),
+  audioCodecs: STR.optional(),
+  audioMimeType: STR.optional(),
 });
 
 export const ParseStatSchema = z.object({
@@ -89,8 +115,25 @@ export const ParseDataSchema = z
     /** 主媒体直链（视频/音乐/单图）——渲染层只在结果卡内展示与转交下载，不自行发起网络请求 */
     url: STR.optional(),
     audioUrl: STR.optional(),
+    /**
+     * 主链与音轨的 MSE 身份（v35）：双轨 DASH 预览要在渲染层建两个 SourceBuffer，
+     * 创建时必须给出精确的 `mimeType; codecs=…`。主链是渐进式单文件时不写 codecs，
+     * 预览继续走 `<video>` 直读。缺任一项 = 该条预览回退到主进程合流。
+     */
+    videoCodecs: STR.optional(),
+    videoMimeType: STR.optional(),
+    audioCodecs: STR.optional(),
+    audioMimeType: STR.optional(),
     images: z.array(STR).optional(),
     videos: z.array(ParsedVideoItemSchema).optional(),
+    /**
+     * 主链（`url` + `qualities` + 顶层音轨）是第几 P（v36，1 起）。
+     *
+     * 多篇稿件里「用户点开的那一条」和「合集的第一条」不是同一个东西：主链要带上自己的
+     * P 号，否则同一合集的 P1 与 P2 各自解析一次会落成同一个文件名（下第二遍就覆盖第一遍）。
+     * 单 P 稿件与没报这一位的内核缺键，按「不需要 P 标记」处理。
+     */
+    page: z.number().int().min(1).optional(),
     videoId: STR.optional(),
     embedUrl: STR.optional(),
     embedOnly: z.boolean().optional(),

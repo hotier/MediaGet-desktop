@@ -26,13 +26,19 @@ const ok = (data: unknown): Envelope => ({ success: true, data });
 function fakeClient(handlers: {
   douyinParseWork?: Envelope;
   biliInfo?: Envelope;
-  biliStream?: Envelope;
+  /**
+   * 取流答复。给函数就按 `cid` 各回一份——「一个分 P 一份资源」的用例必须能区分
+   * 每一 P 的流，全 P 返回同一份会让「P2 用的是 P2 的 cid」这条断言失去意义。
+   */
+  biliStream?: Envelope | ((cid: number) => Envelope);
   biliAv2Bv?: Envelope;
   biliUserCard?: Envelope;
   ksWork?: Envelope;
   xhsNote?: Envelope;
 }): { client: AmagiFetchers; calls: string[] } {
   const calls: string[] = [];
+  const streamEnvelope = (cid: number): Envelope | undefined =>
+    typeof handlers.biliStream === "function" ? handlers.biliStream(cid) : handlers.biliStream;
   return {
     calls,
     client: {
@@ -49,7 +55,9 @@ function fakeClient(handlers: {
         },
         fetchVideoStreamUrl: async (req) => {
           calls.push(`bilibili.stream:${req.avid}/${req.cid}`);
-          return handlers.biliStream ?? { success: false, error: { kind: "network", message: "stub" } };
+          return (
+            streamEnvelope(req.cid) ?? { success: false, error: { kind: "network", message: "stub" } }
+          );
         },
         convertAvToBv: async (req) => {
           calls.push(`bilibili.convertAvToBv:${req.avid}`);
@@ -76,11 +84,21 @@ function fakeClient(handlers: {
   };
 }
 
-function makeEngine(client: AmagiFetchers, expandUrl?: (url: string) => Promise<string | null>) {
+/** 测试默认不给网络：CDN 探测一律失败 → 维持主链，余下断言与真实情形一致 */
+const offlineFetch = (async () => {
+  throw new Error("offline");
+}) as unknown as typeof fetch;
+
+function makeEngine(
+  client: AmagiFetchers,
+  expandUrl?: (url: string) => Promise<string | null>,
+  fetchImpl: typeof fetch = offlineFetch
+) {
   return createAmagiEngine({
     getCookie: () => "",
     makeClient: () => client,
     expandUrl,
+    fetchImpl,
   });
 }
 
@@ -195,6 +213,134 @@ describe("amagi 引擎：B站映射", () => {
       { quality: 80, label: "高清 1080P", url: "https://upos.hdslb.com/80.m4s" },
     ]);
     expect(r.data?.audioUrl).toBe("https://upos.hdslb.com/audio.m4s");
+  });
+
+  it("dash 档位的 codecs/mimeType 一路带到契约（MSE 预览建 SourceBuffer 用）", async () => {
+    const { client } = fakeClient({
+      biliInfo: ok({ aid: 170001, bvid: "BV1xx411c7mD", cid: 279786, title: "MSE", duration: 60 }),
+      biliStream: ok({
+        accept_quality: [80, 64],
+        support_formats: [{ quality: 80, display_desc: "高清 1080P" }],
+        dash: {
+          video: [
+            { id: 80, baseUrl: "https://upos.hdslb.com/80.m4s", codecs: "avc1.64001f", mimeType: "video/mp4" },
+            { id: 64, baseUrl: "https://upos.hdslb.com/64.m4s", codecs: "hev1.1.6.L120.90", mimeType: "video/mp4" },
+          ],
+          audio: [{ baseUrl: "https://upos.hdslb.com/a.m4s", codecs: "mp4a.40.2", mimeType: "audio/mp4" }],
+        },
+      }),
+    });
+    const r = okRes(
+      await makeEngine(client).run({ platform: "bilibili", url: "https://www.bilibili.com/video/BV1xx411c7mD" })
+    );
+    expect(r.data?.qualities).toEqual([
+      { quality: 80, label: "高清 1080P", url: "https://upos.hdslb.com/80.m4s", codecs: "avc1.64001f", mimeType: "video/mp4" },
+      { quality: 64, label: "64", url: "https://upos.hdslb.com/64.m4s", codecs: "hev1.1.6.L120.90", mimeType: "video/mp4" },
+    ]);
+    expect(r.data?.videoCodecs).toBe("avc1.64001f");
+    expect(r.data?.videoMimeType).toBe("video/mp4");
+    expect(r.data?.audioCodecs).toBe("mp4a.40.2");
+    expect(r.data?.audioMimeType).toBe("audio/mp4");
+  });
+
+  it("CDN 探测：PCDN 主链更慢时，档位与音轨一并切到镜像；缺镜像位的档位退回主链", async () => {
+    const { client } = fakeClient({
+      biliInfo: ok({
+        aid: 170001,
+        bvid: "BV1xx411c7mD",
+        cid: 279786,
+        title: "镜像探测",
+        duration: 60,
+        owner: { mid: 123, name: "UP主" },
+      }),
+      biliStream: ok({
+        accept_quality: [80, 64],
+        support_formats: [{ quality: 80, display_desc: "高清 1080P" }],
+        dash: {
+          video: [
+            {
+              id: 80,
+              baseUrl: "https://xy1.mcdn.bilivideo.cn:8082/80.m4s",
+              backup_url: ["https://fast.example/80.m4s"],
+            },
+            // 这一档只有主链：槽位不存在时必须退回主链，不能张冠李戴
+            { id: 64, baseUrl: "https://xy1.mcdn.bilivideo.cn:8082/64.m4s" },
+          ],
+          audio: [
+            {
+              baseUrl: "https://xy1.mcdn.bilivideo.cn:8082/a.m4s",
+              backup_url: ["https://fast.example/a.m4s"],
+            },
+          ],
+        },
+      }),
+    });
+    const probed: string[] = [];
+    const fakeFetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      probed.push(new URL(url).hostname);
+      if (url.includes("mcdn.bilivideo.cn")) {
+        // 慢主链：先拖 40ms，再给 4KB —— 有数据但明显慢于镜像
+        await new Promise((res) => setTimeout(res, 40));
+        return new Response(
+          new ReadableStream({
+            start: (c) => {
+              c.enqueue(new Uint8Array(4096));
+              c.close();
+            },
+          }),
+          { status: 206 }
+        );
+      }
+      return new Response(
+        new ReadableStream({
+          start: (c) => {
+            c.enqueue(new Uint8Array(64 * 1024));
+            c.close();
+          },
+        }),
+        { status: 206 }
+      );
+    }) as unknown as typeof fetch;
+
+    const r = okRes(
+      await makeEngine(
+        client,
+        undefined,
+        fakeFetch
+      ).run({ platform: "bilibili", url: "https://www.bilibili.com/video/BV1xx411c7mD" })
+    );
+    expect(probed).toContain("xy1.mcdn.bilivideo.cn");
+    expect(probed).toContain("fast.example");
+    expect(r.data?.url).toBe("https://fast.example/80.m4s");
+    expect(r.data?.qualities).toEqual([
+      { quality: 80, label: "高清 1080P", url: "https://fast.example/80.m4s" },
+      { quality: 64, label: "64", url: "https://xy1.mcdn.bilivideo.cn:8082/64.m4s" },
+    ]);
+    expect(r.data?.audioUrl).toBe("https://fast.example/a.m4s");
+  });
+
+  it("CDN 探测全部失败：维持主链，解析照常成功", async () => {
+    const { client } = fakeClient({
+      biliInfo: ok({ aid: 170001, bvid: "BV1xx411c7mD", cid: 279786, title: "离线", duration: 60 }),
+      biliStream: ok({
+        dash: {
+          video: [
+            {
+              id: 80,
+              baseUrl: "https://xy1.mcdn.bilivideo.cn:8082/80.m4s",
+              backup_url: ["https://fast.example/80.m4s"],
+            },
+          ],
+          audio: [{ baseUrl: "https://xy1.mcdn.bilivideo.cn:8082/a.m4s" }],
+        },
+      }),
+    });
+    const r = okRes(
+      await makeEngine(client).run({ platform: "bilibili", url: "https://www.bilibili.com/video/BV1xx411c7mD" })
+    );
+    expect(r.data?.url).toBe("https://xy1.mcdn.bilivideo.cn:8082/80.m4s");
+    expect(r.data?.audioUrl).toBe("https://xy1.mcdn.bilivideo.cn:8082/a.m4s");
   });
 
   it("取流失败仍交出稿件元数据（ok=true，无直链）", async () => {
@@ -446,6 +592,219 @@ describe("amagi 引擎：B站映射", () => {
       await makeEngine(client).run({ platform: "bilibili", url: "https://www.bilibili.com/video/BV1xx411c7mD" })
     );
     expect(r.data?.audioUrl).toBe("https://upos.hdslb.com/192k.m4s");
+  });
+
+  it("分 P 链接 ?p=2：每一 P 各取一份流，主链是这一 P 的 DASH", async () => {
+    const { client, calls } = fakeClient({
+      biliInfo: ok({
+        aid: 170001,
+        bvid: "BV1xx411c7mD",
+        // 合集信息：顶层没有 cid，duration 是**整合集总时长**
+        title: "教程合集",
+        duration: 6000,
+        pic: "https://i0.hdslb.com/p1.jpg",
+        pages: [
+          { cid: 111, page: 1, part: "开场", duration: 100, pic: "https://i0.hdslb.com/p1.jpg" },
+          { cid: 222, page: 2, part: "实操", duration: 300, pic: "https://i0.hdslb.com/p2.jpg" },
+        ],
+      }),
+      // 每一 P 一份流：两条的直链、音轨、时长都不同，混用就会立刻在断言上露出来
+      biliStream: (cid) =>
+        ok(
+          cid === 222
+            ? {
+                quality: 80,
+                timelength: 300000,
+                accept_quality: [80],
+                support_formats: [{ quality: 80, display_desc: "高清 1080P" }],
+                dash: {
+                  video: [{ id: 80, baseUrl: "https://upos.hdslb.com/p2-80.m4s", codecid: 7, codecs: "avc1.640032", mimeType: "video/mp4" }],
+                  audio: [{ id: 30280, baseUrl: "https://upos.hdslb.com/p2-a.m4s", bandwidth: 192000, codecs: "mp4a.40.2", mimeType: "audio/mp4" }],
+                },
+              }
+            : {
+                quality: 80,
+                timelength: 100000,
+                accept_quality: [80],
+                support_formats: [{ quality: 80, display_desc: "高清 1080P" }],
+                dash: {
+                  video: [{ id: 80, baseUrl: "https://upos.hdslb.com/p1-80.m4s", codecid: 7, codecs: "avc1.640032", mimeType: "video/mp4" }],
+                  audio: [{ id: 30280, baseUrl: "https://upos.hdslb.com/p1-a.m4s", bandwidth: 192000, codecs: "mp4a.40.2", mimeType: "audio/mp4" }],
+                },
+              }
+        ),
+    });
+    const r = okRes(
+      await makeEngine(client).run({
+        platform: "bilibili",
+        url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2&vd_source=abc",
+      })
+    );
+    // 指哪一 P 就把主链落在哪一 P：拿 pages[0] 会把 P1 的流当 P2 交付
+    expect(calls).toContain("bilibili.stream:170001/222");
+    expect(r.data?.url).toBe("https://upos.hdslb.com/p2-80.m4s");
+    expect(r.data?.audioUrl).toBe("https://upos.hdslb.com/p2-a.m4s");
+    expect(r.data?.page).toBe(2);
+    expect(r.data?.cover).toBe("https://i0.hdslb.com/p2.jpg");
+    // 时长取这一 P（timelength 是这次取流的真实毫秒数），不是合集总时长
+    expect(r.data?.duration).toBe(300000);
+    // 「一个分 P 就是一份资源」：两条各带自己的音轨与身份，谁也不借谁的
+    expect(r.data?.videos).toEqual([
+      {
+        page: 1,
+        title: "开场",
+        url: "https://upos.hdslb.com/p1-80.m4s",
+        duration: 100000,
+        cover: "https://i0.hdslb.com/p1.jpg",
+        qualities: [{ quality: 80, label: "高清 1080P", url: "https://upos.hdslb.com/p1-80.m4s", codecs: "avc1.640032", mimeType: "video/mp4" }],
+        audioUrl: "https://upos.hdslb.com/p1-a.m4s",
+        videoCodecs: "avc1.640032",
+        videoMimeType: "video/mp4",
+        audioCodecs: "mp4a.40.2",
+        audioMimeType: "audio/mp4",
+      },
+      {
+        page: 2,
+        title: "实操",
+        url: "https://upos.hdslb.com/p2-80.m4s",
+        duration: 300000,
+        cover: "https://i0.hdslb.com/p2.jpg",
+        qualities: [{ quality: 80, label: "高清 1080P", url: "https://upos.hdslb.com/p2-80.m4s", codecs: "avc1.640032", mimeType: "video/mp4" }],
+        audioUrl: "https://upos.hdslb.com/p2-a.m4s",
+        videoCodecs: "avc1.640032",
+        videoMimeType: "video/mp4",
+        audioCodecs: "mp4a.40.2",
+        audioMimeType: "audio/mp4",
+      },
+    ]);
+    // 标题是合集名：P 的区分由 `page`（渲染层落进文件名）承担，
+    // 把 `P2 ·` 写进标题会跟着进每一条分 P 的文件名，名字与实际对不上
+    expect(r.data?.title).toBe("教程合集");
+  });
+
+  it("某一 P 取流失败：这一 P 缺席，其余照常成资源且编号不错位", async () => {
+    const { client } = fakeClient({
+      biliInfo: ok({
+        aid: 5,
+        bvid: "BV1xx411c7mD",
+        title: "三 P 稿件",
+        duration: 90,
+        pages: [
+          { cid: 111, page: 1, part: "一", duration: 30 },
+          { cid: 222, page: 2, part: "二", duration: 30 },
+          { cid: 333, page: 3, part: "三", duration: 30 },
+        ],
+      }),
+      // 中间那一 P 加密/风控拿不到流：不能把它硬凑成一条下不动的资源，也不能让整次解析白跑
+      biliStream: (cid) =>
+        cid === 222
+          ? { success: false, error: { kind: "network", message: "stub" } }
+          : ok({ dash: { video: [{ id: 16, baseUrl: `https://upos.hdslb.com/${cid}.m4s`, codecid: 7 }] } }),
+    });
+    const r = okRes(
+      await makeEngine(client).run({ platform: "bilibili", url: "https://www.bilibili.com/video/BV1xx411c7mD" })
+    );
+    expect((r.data?.videos ?? []).map((v) => v.page)).toEqual([1, 3]);
+    // 编号认 `page` 不认下标：按数组下标报「分 P 2」就把名字贴到了真正的第三 P 上
+    expect((r.data?.videos ?? []).map((v) => v.url)).toEqual([
+      "https://upos.hdslb.com/111.m4s",
+      "https://upos.hdslb.com/333.m4s",
+    ]);
+  });
+
+  it("分 P 取流没回 timelength：时长退回 pages[].duration，仍不许用合集总时长", async () => {
+    const { client } = fakeClient({
+      biliInfo: ok({
+        aid: 1,
+        bvid: "BV1xx411c7mD",
+        title: "合集",
+        duration: 6000,
+        pages: [
+          { cid: 111, page: 1, part: "一", duration: 5000 },
+          { cid: 222, page: 2, part: "二", duration: 1000 },
+        ],
+      }),
+      biliStream: ok({
+        dash: { video: [{ id: 80, baseUrl: "https://upos.hdslb.com/x.m4s", codecid: 7 }] },
+      }),
+    });
+    const r = okRes(
+      await makeEngine(client).run({ platform: "bilibili", url: "https://www.bilibili.com/video/BV1xx411c7mD?p=2" })
+    );
+    // MSE 拿这个值写 MediaSource.duration：写成 6000s 会让进度条超出实际流，拖过去就永久转圈
+    expect(r.data?.duration).toBe(1000000);
+  });
+
+  it("分 P 越界（?p=9 只有 2 P）：夹到最后一 P，不给一条解不出来的序号", async () => {
+    const { client, calls } = fakeClient({
+      biliInfo: ok({
+        aid: 7,
+        bvid: "BV1xx411c7mD",
+        title: "两 P 稿件",
+        duration: 60,
+        pages: [
+          { cid: 111, page: 1, part: "一", duration: 30 },
+          { cid: 222, page: 2, part: "二", duration: 30 },
+        ],
+      }),
+      biliStream: ok({ dash: { video: [{ id: 16, baseUrl: "https://upos.hdslb.com/f.m4s", codecid: 7 }] } }),
+    });
+    const r = okRes(
+      await makeEngine(client).run({ platform: "bilibili", url: "https://www.bilibili.com/video/BV1xx411c7mD?p=9" })
+    );
+    expect(calls).toContain("bilibili.stream:7/222");
+    expect(r.data?.page).toBe(2);
+    // 夹到末位后标题仍是合集名，区分靠 `page`；`P2 ·` 写进标题会污染每一条分 P 的文件名
+    expect(r.data?.title).toBe("两 P 稿件");
+  });
+
+  it("短链带的 ?p=3 在落点没写序号时接着用：不能悄悄退回 P1", async () => {
+    const { client, calls } = fakeClient({
+      biliInfo: ok({
+        aid: 9,
+        bvid: "BV1xx411c7mD",
+        title: "短链合集",
+        duration: 90,
+        pages: [
+          { cid: 111, page: 1, part: "一", duration: 30 },
+          { cid: 222, page: 2, part: "二", duration: 30 },
+          { cid: 333, page: 3, part: "三", duration: 30 },
+        ],
+      }),
+      biliStream: ok({ dash: { video: [{ id: 16, baseUrl: "https://upos.hdslb.com/s.m4s", codecid: 7 }] } }),
+    });
+    const r = okRes(
+      await makeEngine(client, async (u) =>
+        u.includes("b23.tv") ? "https://www.bilibili.com/video/BV1xx411c7mD" : u
+      ).run({ platform: "bilibili", url: "https://b23.tv/abcd?p=3" })
+    );
+    expect(calls).toContain("bilibili.stream:9/333");
+    expect(r.data?.page).toBe(3);
+  });
+
+  it("单 P 稿件不加 P 标记、也不动时长口径：顶层 duration 就是这一条的长度", async () => {
+    const { client } = fakeClient({
+      biliInfo: ok({
+        aid: 3,
+        bvid: "BV1xx411c7mD",
+        cid: 279786,
+        title: "单 P 视频",
+        duration: 213,
+        pic: "https://i0.hdslb.com/one.jpg",
+        pages: [{ cid: 279786, page: 1, part: "单 P 视频", duration: 213 }],
+      }),
+      biliStream: ok({ dash: { video: [{ id: 80, baseUrl: "https://upos.hdslb.com/one.m4s", codecid: 7 }] } }),
+    });
+    const r = okRes(
+      await makeEngine(client).run({ platform: "bilibili", url: "https://www.bilibili.com/video/BV1xx411c7mD" })
+    );
+    expect(r.data?.title).toBe("单 P 视频");
+    expect(r.data?.duration).toBe(213000);
+    expect(r.data?.cover).toBe("https://i0.hdslb.com/one.jpg");
+    // 单 P 不标 P：文件名与标签里那个「P1」是白挂的区分位
+    expect(r.data?.page).toBeUndefined();
+    // 清单仍只有这一条，且与主链同一条直链（渲染层按 URL 去重，不会下两遍）
+    expect((r.data?.videos ?? []).map((v) => v.url)).toEqual(["https://upos.hdslb.com/one.m4s"]);
   });
 });
 
