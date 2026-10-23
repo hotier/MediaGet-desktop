@@ -63,7 +63,7 @@ function relativeOutput() {
 // 一个如实的边界：不带扩展名的 URL 与「双击 dist/index.html 预览」在原理上不可
 // 兼得——file:// 没有服务器补 index.html，点向 /changelog/ 会被当成本地目录列表。
 // 首页自身与其资源照常能开；上线形态（Pages）没有这个问题。
-// 端口避开主仓 dev server 的 5433。
+// 端口避开主仓 dev server 的 15433。
 export default defineConfig({
   build: { format: "directory" },
   server: { port: 5174 },
