@@ -20,6 +20,9 @@ import type { UpdateState } from "../../types/ipc";
 export interface UpdaterSource {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
+  /** electron-updater 的发布通道；GitHub provider 据此找 beta.yml / latest.yml */
+  channel?: string | null;
+  allowPrerelease?: boolean;
   on(event: string, listener: (payload: unknown) => void): void;
   checkForUpdates(): Promise<unknown>;
   downloadUpdate(cancellationToken?: CancellationToken): Promise<unknown>;
@@ -48,6 +51,9 @@ export function pickAutoUpdater<T>(mod: {
 /** 更新策略（AppSettings 的「静默下载」落点；启动检查在 index.ts 把关，安装固定手动确认）。 */
 export interface UpdaterPolicy {
   autoDownload: boolean;
+  /** 只在通道初始化时给；设置热更不会改它 */
+  channel?: string;
+  allowPrerelease?: boolean;
 }
 
 export interface Updater {
@@ -101,6 +107,9 @@ function normalizeNotes(raw: string | ReleaseNote[] | null | undefined): string 
 export function createUpdater(opts: {
   currentVersion: string;
   onChange: (state: UpdateState) => void;
+  /** 「beta」/「latest」；省略时沿用 electron-updater 默认（latest） */
+  channel?: string;
+  allowPrerelease?: boolean;
   source?: UpdaterSource;
 }): Updater {
   let state: UpdateState = {
@@ -111,7 +120,11 @@ export function createUpdater(opts: {
   let source: UpdaterSource | null = null;
   // 不静默下载为默认（省带宽）；安装不随退出自动进行 —— setup 包做不了无感静默安装，
   // 统一由更新卡片「立即重启」显式触发
-  let policy: UpdaterPolicy = { autoDownload: false };
+  let policy: UpdaterPolicy = {
+    autoDownload: false,
+    channel: opts.channel,
+    allowPrerelease: opts.allowPrerelease,
+  };
   // 当前下载传输的取消令牌；pause 即 cancel 它，electron-updater 无断点续传，
   // resume 只能重新起流从头下载（见 types/ipc-contract.ts paused 阶段注释）。
   let dlToken: CancellationToken | null = null;
@@ -123,6 +136,8 @@ export function createUpdater(opts: {
   function applyPolicy(target: UpdaterSource): void {
     target.autoDownload = policy.autoDownload;
     target.autoInstallOnAppQuit = false;
+    if (policy.channel !== undefined) target.channel = policy.channel;
+    if (policy.allowPrerelease !== undefined) target.allowPrerelease = policy.allowPrerelease;
   }
 
   function commit(patch: Partial<UpdateState>): void {

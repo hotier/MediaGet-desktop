@@ -43,6 +43,7 @@ import type {
 // 续传身份与续链身份必须是同一把尺（pathname + 非时效参数）：`.part` 能不能接着写、
 // 403 之后哪条新链属于这一份资源，两处各写一套比较规则就会得出互相矛盾的答案
 import { isSameResource } from "../../shared/link-identity";
+import { isPublicFinalUrl, isPublicHttpUrl } from "../../shared/net-guard";
 import { resolveKey } from "../../shared/platforms";
 import type { TrackMerger } from "./media-merge";
 
@@ -123,31 +124,13 @@ const RETRY_BASE_DELAY_MS = 1000;
 const DEFAULT_STALL_TIMEOUT_MS = 30_000;
 
 /**
- * SSRF 面治理（§6.3）：只放行 http/https，拒私网/回环/链路本地/元数据地址。
- * 主机名字面 IP 才做网段判断（不做 DNS 解析——桌面威胁模型下用户自己受害，
- * 目标是「不让畸形链接打到内网」，不是对抗 DNS rebinding）。
+ * SSRF 面治理（§6.3）：只放行公网 http/https。
+ *
+ * 判据只有 `shared/net-guard.ts` 一份（预览代理、图片回落、下载器共用）。旧实现自带的
+ * 前缀判据对 `[::ffff:127.0.0.1]`、`[fd00::1]`、`100.64/10` 全部放行——这类规则一旦抄成
+ * 两份，补丁就只会落在被报告的那一份上。
  */
-export function isSafeRemoteUrl(raw: string): boolean {
-  let u: URL;
-  try {
-    u = new URL(raw);
-  } catch {
-    return false;
-  }
-  if (u.protocol !== "http:" && u.protocol !== "https:") return false;
-  const host = u.hostname.toLowerCase();
-  if (host === "localhost" || host.endsWith(".local") || host.endsWith(".internal")) return false;
-  if (/^127\.|^10\.|^192\.168\.|^169\.254\.|^0\.|^224\.|^240\./.test(host)) return false;
-  if (host === "::1" || host.startsWith("fe80") || host.startsWith("fc") || host.startsWith("fd")) return false;
-  if (host === "0:0:0:0:0:0:0:1" || host === "[::1]") return false;
-  // 172.16-31 私网段
-  const m = host.match(/^172\.(\d+)\./);
-  if (m) {
-    const n = Number(m[1]);
-    if (n >= 16 && n <= 31) return false;
-  }
-  return true;
-}
+export const isSafeRemoteUrl = isPublicHttpUrl;
 
 /**
  * 同名冲突避让（纯函数版，供测试与降级使用）：只看最终文件是否已存在。
@@ -192,8 +175,6 @@ export class Downloader {
   private order: string[] = [];
   private running = 0;
   private seq = 0;
-  /** 本实例写过的 part（URL 身份哈希，防跨任务串写） */
-  private claimedTargets = new Set<string>();
 
   constructor(private opts: DownloaderOptions) {}
 
@@ -284,7 +265,6 @@ export class Downloader {
         headers: item.headers,
         filePath: target,
       };
-      this.claimedTargets.add(target);
       this.tasks.set(id, t);
       this.order.unshift(id);
       ids.push(id);
@@ -331,8 +311,6 @@ export class Downloader {
         return true;
       }
     }
-    // 重启恢复前旧实例的占位不在内存：claimedTargets 只在进程内有效（可接受——
-    // 同一目标两个活下载在 restore 语义里互斥于 status，恢复即重排）
     return false;
   }
 
@@ -371,7 +349,9 @@ export class Downloader {
 
   pause(taskId: string): boolean {
     const t = this.tasks.get(taskId);
-    if (!t || t.status !== "downloading") return false;
+    // queued 也要能暂停：组操作「全部暂停」点下去时，并发槽外的成员都还是 queued，
+    // 只认 downloading 会让 pump 在槽位释放后把它们接着拉起来——用户以为整组停了。
+    if (!t || (t.status !== "downloading" && t.status !== "queued")) return false;
     t.status = "paused";
     // speed 故意不清：它是**暂停那一刻的快照**（业主指令 2026-10-18），界面据它显示暂停行的
     // 「速度」与「剩余」——两个值都冻结在暂停时，重启后靠队列档里的同一个键带回来（契约 v17）。
@@ -394,6 +374,8 @@ export class Downloader {
     if (t.status !== "paused" && t.status !== "error" && t.status !== "canceled") return false;
     t.status = "queued";
     t.error = undefined;
+    // 续链提示只属于它那一次进度事件：留着它，下一次下载的每条进度都会带着旧话术
+    t.note = undefined;
     // 暂停快照的寿命到「继续」为止：重新连上游的那几秒报一个过期速度就是在说谎
     t.speed = 0;
     // 续链额度跟着重开：上一次已经换过一条链，不代表用户这次按下「继续/重试」时手上还是那条。
@@ -453,7 +435,6 @@ export class Downloader {
     } as InternalTask;
     if (!t.filePath) t.filePath = join(this.opts.getDownloadDir(), t.filename);
     // 与 restore 同一条占位纪律：复活的行也是活下载，别让新入队抢走同一个落点
-    this.claimedTargets.add(t.filePath);
     this.tasks.set(t.taskId, t);
     this.order.push(t.taskId);
     this.order.sort(
@@ -499,7 +480,6 @@ export class Downloader {
       // filePath 以档内为准：同名冲突时落的是 `xxx(1).mp4`，按「目录 + 文件名」重算会指向
       // 一个从没落地的名字，「打开所在文件夹」跳到不存在的路径。缺这个键（v13 之前的旧档）才重算。
       if (!t.filePath) t.filePath = join(this.opts.getDownloadDir(), t.filename);
-      this.claimedTargets.add(t.filePath);
       this.tasks.set(t.taskId, t);
       this.order.push(t.taskId);
     }
@@ -621,9 +601,21 @@ export class Downloader {
    * 分开写的话，「完成」这一瞬的三件套（事件 / 历史 / 落盘）迟早会有一条路漏掉。
    */
   private landAndFinish(t: InternalTask, source: string): void {
+    // 冲突改名会改写 t.filePath：身份 meta 还挂在改名前的旧 part 名下，先把路径记下来，
+    // 否则删的是新名字的 meta，旧 `.part.meta` 变成永远没人认领的孤儿
+    const part = this.partPath(t);
     this.landFile(source, t);
+    // 字节账以落地文件为准：DASH 任务的 received 是视频轨 + 音频轨，比合流后的文件多出
+    // 一条整音轨（历史与统计的 bytes 取的就是 received）。copyCached 分支早就这么做了。
     try {
-      rmSync(metaPathFor(this.partPath(t)), { force: true }); // 身份使命完成
+      const size = statSync(this.targetPath(t)).size;
+      t.received = size;
+      t.total = size;
+    } catch {
+      /* stat 失败保留运行时的字节计数，不影响落地结果 */
+    }
+    try {
+      rmSync(metaPathFor(part), { force: true }); // 身份使命完成
     } catch {
       /* ignore */
     }
@@ -694,6 +686,10 @@ export class Downloader {
     if (start > 0) headers["Range"] = `bytes=${start}-`;
 
     const resp = await fetchImpl(url, { headers, signal: t.signal?.signal, redirect: "follow" });
+    if (!isPublicFinalUrl(resp.url)) {
+      void resp.body?.cancel().catch(() => undefined);
+      throw new Error("音频轨重定向后的地址不在公网范围，已中止");
+    }
     if (resp.status === 416 && start > 0) return;
     if (!resp.ok && resp.status !== 206) {
       // 403 对音频轨是死路：续链只换主链（`renewUrl` 接口按一条链设计），这里如实说清
@@ -752,6 +748,45 @@ export class Downloader {
     }
   }
 
+  /**
+   * 收尾：字节已确认（完整性闸门通过，或上游对 Range 回了 416）→ 合流（如需）→ 落地。
+   * 正常下载与「上一轮其实已下完」两条入口共用；分开写迟早有一边漏掉合流或清理。
+   */
+  private async finishDownload(
+    t: InternalTask,
+    part: string,
+    fetchImpl: typeof fetch,
+    baseHeaders: Record<string, string>
+  ): Promise<void> {
+    if (t.audioUrl) {
+      const merged = await this.mergeAudioTrack(t, part, fetchImpl, baseHeaders);
+      if (!merged) throw new Error("音视频合流失败（音频轨未取到或 ffmpeg 不可用）");
+      // 并流是本地 copy，中途停不下来：用户在合流那几秒里按了取消/暂停，产物当垃圾清掉，
+      // 状态留给用户按下的那个动作——不能因为副本已经跑完就替他宣布「下载完成」
+      const afterMerge = t.status;
+      if (afterMerge === "canceled" || afterMerge === "paused") {
+        try {
+          rmSync(this.mergedPartPath(t), { force: true });
+        } catch {
+          /* ignore */
+        }
+        if (afterMerge === "canceled" && !this.opts.getKeepPartials()) this.removePartFiles(part);
+        return;
+      }
+      this.landAndFinish(t, this.mergedPartPath(t));
+      // 并流已落地：两条轨的 part 是纯垃圾，留着会一直占下载目录
+      for (const stale of [part, this.audioPartPath(t)]) {
+        try {
+          rmSync(stale, { force: true });
+        } catch {
+          /* ignore */
+        }
+      }
+      return;
+    }
+    this.landAndFinish(t, part);
+  }
+
   private pump(): void {
     const max = Math.max(1, this.opts.getMaxConcurrent());
     if (this.running >= max) return;
@@ -798,6 +833,9 @@ export class Downloader {
     const fetchImpl = this.opts.fetchImpl ?? fetch;
     t.status = "downloading";
     t.error = undefined;
+    // 续链提示是一次性的：写上它的那次进度事件发完，下一次起跑就清掉，别让它随
+    // 每 200ms 一条的进度事件重复播报（渲染层另有 taskId+note 去重兜底）
+    t.note = undefined;
     t.signal = new AbortController();
     // pause/cancel 在事件循环的其他回调里改 t.status；经闭包读取跳出
     // TS 的赋值收窄（直线流分析看不到跨回调突变）
@@ -898,6 +936,25 @@ export class Downloader {
     try {
       armStall();
       const resp = await fetchImpl(t.url, { headers, signal: t.signal.signal, redirect: "follow" });
+      // 闸门只校验了发起时的地址：公网链 302 到内网仍会被 follow 打过去，落点必须再看一眼
+      if (!isPublicFinalUrl(resp.url)) {
+        void resp.body?.cancel().catch(() => undefined);
+        throw new Error("重定向后的地址不在公网范围，已中止下载");
+      }
+      if (resp.status === 416 && start > 0) {
+        clearStall();
+        void resp.body?.cancel().catch(() => undefined);
+        // Range 起点越过上游长度 = 上一轮其实已经下完（暂停在 100%、合流前崩溃等）。
+        // 当成失败会让每次重试都带着同一个 Range，永远死在「HTTP 416」上。
+        if (t.total > 0 && start < t.total) {
+          // 记录的总长还说没下完 → 这份 .part 不属于当前资源，清掉后由重试从头下
+          this.removePartFiles(part);
+          throw new Error("断点与上游不一致，已清除半成品后重试");
+        }
+        t.received = start;
+        await this.finishDownload(t, part, fetchImpl, headers);
+        return;
+      }
       if (!resp.ok && resp.status !== 206) {
         httpStatus = resp.status;
         throw new Error(`HTTP ${resp.status}`);
@@ -985,34 +1042,7 @@ export class Downloader {
 
       // DASH 双轨：上面这段落的是画面，音频轨在同一任务的另一条链上。产品规则是交付
       // 音画完整的文件——先并流再落地，绝不把 video-only 的 part 改名成「完成」。
-      if (t.audioUrl) {
-        const merged = await this.mergeAudioTrack(t, part, fetchImpl, headers);
-        if (!merged) throw new Error("音视频合流失败（音频轨未取到或 ffmpeg 不可用）");
-        // 并流是本地 copy，中途停不下来：用户在合流那几秒里按了取消/暂停，产物当垃圾清掉，
-        // 状态留给用户按下的那个动作——不能因为副本已经跑完就替他宣布「下载完成」
-        const afterMerge = st();
-        if (afterMerge === "canceled" || afterMerge === "paused") {
-          try {
-            rmSync(this.mergedPartPath(t), { force: true });
-          } catch {
-            /* ignore */
-          }
-          if (afterMerge === "canceled" && !this.opts.getKeepPartials()) this.removePartFiles(part);
-          return;
-        }
-        this.landAndFinish(t, this.mergedPartPath(t));
-        // 并流已落地：两条轨的 part 是纯垃圾，留着会一直占下载目录
-        for (const stale of [part, this.audioPartPath(t)]) {
-          try {
-            rmSync(stale, { force: true });
-          } catch {
-            /* ignore */
-          }
-        }
-        return;
-      }
-
-      this.landAndFinish(t, part);
+      await this.finishDownload(t, part, fetchImpl, headers);
     } catch (e) {
       clearStall();
       const live = st();

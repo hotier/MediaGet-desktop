@@ -20,6 +20,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { protocol } from "electron";
+import { isPublicFinalUrl } from "../../shared/net-guard";
 import { PREVIEW_SCHEME, readPreviewTarget } from "../../shared/preview-link";
 import { DESKTOP_USER_AGENT, refererFor } from "./hotlink";
 import { createImageCache, imageCacheKey, type ImageCache } from "./image-cache";
@@ -50,13 +51,16 @@ const PASSTHROUGH_HEADER = [
  * - `standard`：按标准 URL 解析，`mgpreview://media/?u=…` 才有查询串可取；
  * - `secure`：算作潜在可信源，否则从可信页面里请求它会被当成混合内容挡掉；
  * - `stream`：允许响应体分块流出。没有这条，`protocol.handle` 会把整段媒体先攒进内存，
- *   `<video>` 的拖动（Range 请求）也就无从谈起——大文件预览会变成「先下完再看」。
+ *   `<video>` 的拖动（Range 请求）也就无从谈起——大文件预览会变成「先下完再看」；
+ * - `supportFetchAPI` + `corsEnabled`：MSE 预览（契约 v35）由渲染层 `fetch` 两条轨道，
+ *   自定义 scheme 默认既不走 Fetch 也不参与 CORS，缺任何一条都只会在控制台里被拦掉，
+ *   界面演的是「一直转圈 → 回退合流」。跨源放行只靠响应上的 ACAO（见文件末尾）。
  */
 export function registerPreviewScheme(): void {
   protocol.registerSchemesAsPrivileged([
     {
       scheme: PREVIEW_SCHEME,
-      privileges: { standard: true, secure: true, stream: true },
+      privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true },
     },
   ]);
 }
@@ -174,6 +178,11 @@ export function installPreviewProtocol(deps: { merger?: PreviewMerger; images?: 
     let upstream: Response;
     try {
       upstream = await fetch(target.url, { headers });
+      // 公网链 302 到内网仍会被 follow 打过去：解链时那道闸只盖住了发起地址
+      if (!isPublicFinalUrl(upstream.url)) {
+        await upstream.body?.cancel();
+        return new Response(null, { status: 502 });
+      }
       /**
        * 403 降一档重试：同一个图床对 Referer 的胃口并不统一——`weibo` 要站点域名那张，
        * `redbook` 有一档只认空 Referer（带了就 403），而我们只能发一个值。所以「带 Referer
@@ -187,6 +196,10 @@ export function installPreviewProtocol(deps: { merger?: PreviewMerger; images?: 
         const withoutReferer = { ...headers };
         delete withoutReferer.Referer;
         upstream = await fetch(target.url, { headers: withoutReferer });
+        if (!isPublicFinalUrl(upstream.url)) {
+          await upstream.body?.cancel();
+          return new Response(null, { status: 502 });
+        }
       }
     } catch {
       // 失败原因可能是 DNS、TLS、也可能是链被平台掐了——都不带直链，日志里也无从归因
@@ -226,6 +239,10 @@ export function installPreviewProtocol(deps: { merger?: PreviewMerger; images?: 
     }
 
     // accept-ranges 只照上游表态：这里替它写死 bytes，播放器就会拖到没支持的那一段黑屏
+    //
+    // ACAO：MSE 预览由渲染层 `fetch` 两条轨道（契约 v35），自定义 scheme 对它算跨源，
+    // 不带这个头时 body 读不到、只能退回「先合流再播」。只放开读，不带 credentials。
+    out.set("access-control-allow-origin", "*");
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,

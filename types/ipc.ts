@@ -238,7 +238,29 @@ export type InvokeResult<T> = InvokeOk<T> | InvokeErr;
 //     粘贴」）：渲染层的 `navigator.clipboard.readText` 与 `writeText` 被主进程那条「所有权限
 //     一律拒」同时挡死（Electron 把读写都报成 `clipboard-read`），要读剪贴板只能由主进程代读。
 //     新增通道 + 出参 `{ text }`，通道集合变了，按 v6 起同一条口径升号。
-export const CONTRACT_VERSION = 34;
+// v35：双轨 DASH 预览改「边缓存边播」（2026-10-23 业主定调「凡是 dash 流都需要做到一边缓存
+//     一边播放，而不是等到全部合流完」）：`ParseData` 新增 `videoCodecs`/`videoMimeType`
+//     （主链）、`audioCodecs`/`audioMimeType`（音轨），`ParsedVideoQuality` 新增
+//     `codecs`/`mimeType`——渲染层建 MSE SourceBuffer 需要精确的 codec 串。全部可选，缺键
+//     （内核、单文件源）按「预览走合流回退」处理，不需要迁移；但渲染层/主进程必须同版，
+//     否则新的预览入口拿不到 codec 会静默退回慢路径，照 v6 起同一条口径升号。
+// v36：一个分 P 就是一份独立资源（业主指令 2026-10-23「对于分p的应该是一个分p就是一个资源」）：
+//     `ParsedVideoItem` 新增 `audioUrl` 与 `videoCodecs`/`videoMimeType`/`audioCodecs`/`audioMimeType`
+//     ——DASH 引擎的分 P 条目此前只有视频轨，下载器拿不到这一 P 自己的音轨，交付的就是无声文件
+//     （v33「一律合流」的前提是音画出自同一次取流，顶层那条音轨配到别的 P 上更糟）；
+//     `ParsedVideoItem` 与 `ParseData` 各新增 `page`（第几 P）：某一 P 取流失败会整条缺席，
+//     数组下标随之前移，靠下标报「分 P 2」会把名字贴到第三 P 上，主链不带 P 号则 P1/P2 同名。
+//     全部可选，内核（渐进式单文件）与单 P 稿件缺键按旧行为处理，不需要迁移；但渲染层与主进程
+//     必须同版——旧渲染层读不到 `page` 会把分 P 编号写错，照 v6 起同一条口径升号。
+// v37：`AppMeta` 新增必填 `kernel`（业主指令 2026-10-23「需要直接显示解析内核的版本号」）：
+//     随包 `@mediaget/parse-core` 的版本号由主进程报出，设置页「内核版本」直接显示——渲染层
+//     不许自己 import 内核包（会把解析器整棵打进 renderer 包，与 zero-runtime 那条同源）。
+//     必填而非可选：主进程与渲染层同包发布，不存在「新渲染层配旧主进程」；写成可选只会把
+//     「忘了填」变成界面上的空白。通道集合没变、载荷形状变了，照 v6 起同一条口径升号。
+// v38：`stats:get` 的 `authors[]` 新增可选 `platform`（业主指令 2026-10-23「作者卡片加一列平台」）：
+//     取该作者范围内最新一条历史行的平台键，缺省就不填 —— 界面那一格写「—」，不按名字猜平台。
+//     纯新增可选键、通道集合不变；仍按「载荷形状变了就升号」的老规矩升。
+export const CONTRACT_VERSION = 38;
 
 // ————————————————————————————————————————————————
 // channel 常量（preload/main/renderer 三方共用字面量，禁止散落拼写）

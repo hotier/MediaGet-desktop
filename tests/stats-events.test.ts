@@ -71,7 +71,10 @@ describe("queryable statistical events", () => {
     expect(result.byPlatform.redbook).toMatchObject({ downloads: 1, failures: 1, bytes: 2048, parses: 3, parseFailures: 1 });
     expect(result.byKind.image).toEqual({ downloads: 1, bytes: 2048 });
     expect(result.byKind.video).toBeUndefined();
-    expect(result.authors).toEqual([{ name: "Author A", parsedWorks: 1, downloadedFiles: 1, downloadedBytes: 2048 }]);
+    // 平台随作者一起报出（契约 v38，业主 2026-10-23 作者表加平台列）：取该作品历史行的平台键
+    expect(result.authors).toEqual([
+      { name: "Author A", platform: "redbook", parsedWorks: 1, downloadedFiles: 1, downloadedBytes: 2048 },
+    ]);
     expect(database.get<{ count: number }>("SELECT COUNT(*) AS count FROM stats_events")?.count).toBe(6);
   });
 

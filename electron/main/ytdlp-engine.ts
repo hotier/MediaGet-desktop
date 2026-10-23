@@ -117,6 +117,33 @@ function formatUrl(f: Unknown): string | undefined {
 }
 
 /**
+ * 轨道 → MSE 的容器族（契约 v35）。只认 mp4 / webm 两族：
+ * yt-dlp 的 `ext` 对纯音频是 m4a/webm、对视频是 mp4/webm；flv/3gp 之类不写，
+ * 预览据此退回主进程合流，不会拿一个建不出的 MIME 去试。
+ */
+function mseMimeOf(f: Unknown, kind: "video" | "audio"): string | undefined {
+  const ext = (str(f["ext"]) ?? "").toLowerCase();
+  if (ext === "mp4" || ext === "m4v" || ext === "m4a") return `${kind}/mp4`;
+  if (ext === "webm") return `${kind}/webm`;
+  return undefined;
+}
+
+/** 单轨的 codec 元数据；合流档（自带音轨）不给，免得 MSE 把混流塞进 video-only 缓冲 */
+function separatedVideoMeta(f: Unknown): { codecs?: string; mimeType?: string } {
+  const acodec = acodecOf(f);
+  if (acodec !== undefined && acodec !== "none") return {};
+  const codecs = vcodecOf(f);
+  const mimeType = mseMimeOf(f, "video");
+  return codecs && codecs !== "none" && mimeType ? { codecs, mimeType } : {};
+}
+
+function audioMeta(f: Unknown): { codecs?: string; mimeType?: string } {
+  const codecs = acodecOf(f);
+  const mimeType = mseMimeOf(f, "audio");
+  return codecs && codecs !== "none" && mimeType ? { codecs, mimeType } : {};
+}
+
+/**
  * 一档的显示名：有分辨率就写分辨率。
  *
  * 分辨率缺失时退 `format_note`——YouTube 的 m3u8/合流档会在这里给 `default`/`medium`
@@ -165,6 +192,7 @@ function mapVideoInfo(info: Unknown): ParseData | null {
       quality: height || num(f["tbr"]) || 0,
       label: labelOf(f),
       url: formatUrl(f) as string,
+      ...separatedVideoMeta(f),
     };
   });
 
@@ -172,12 +200,14 @@ function mapVideoInfo(info: Unknown): ParseData | null {
   const progressive = videos.filter((f) => acodecOf(f) !== undefined && acodecOf(f) !== "none");
   const mainFormat = progressive[0] ?? videos[0];
   const mainUrl = formatUrl(mainFormat ?? {}) ?? formatUrl(videos[0] ?? {});
+  const mainMeta = mainFormat ? separatedVideoMeta(mainFormat) : {};
 
   // 音频最优一档（audio-only，按 abr/tbr 降序）
-  const audioUrl = formats
+  const audioFormat = formats
     .filter((f) => acodecOf(f) !== undefined && acodecOf(f) !== "none" && (vcodecOf(f) === "none" || !vcodecOf(f)))
-    .sort((a, b) => (num(b["abr"]) ?? num(b["tbr"]) ?? 0) - (num(a["abr"]) ?? num(a["tbr"]) ?? 0))
-    .map(formatUrl)[0];
+    .sort((a, b) => (num(b["abr"]) ?? num(b["tbr"]) ?? 0) - (num(a["abr"]) ?? num(a["tbr"]) ?? 0))[0];
+  const audioUrl = audioFormat ? formatUrl(audioFormat) : undefined;
+  const audio = audioFormat ? audioMeta(audioFormat) : {};
 
   // 契约硬口径：duration 是**毫秒**（yt-dlp 给秒）
   const durationSec = num(info["duration"]);
@@ -202,6 +232,10 @@ function mapVideoInfo(info: Unknown): ParseData | null {
     cover,
     url: mainUrl,
     audioUrl,
+    videoCodecs: mainMeta.codecs,
+    videoMimeType: mainMeta.mimeType,
+    audioCodecs: audio.codecs,
+    audioMimeType: audio.mimeType,
     videoId: str(info["id"]),
     /**
      * 主直链自己的档位名。`data.url` 是渐进式那一档，分辨率通常比最高档低；

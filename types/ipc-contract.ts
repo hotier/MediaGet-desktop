@@ -19,6 +19,7 @@ import { z } from "zod";
 import { IPC } from "./ipc";
 import { COOKIE_LOGIN_KEYS, type CookieLoginKey } from "../shared/cookie-login";
 import { SWITCHABLE_ENGINE_IDS } from "../shared/platforms";
+import { isSecretKey } from "../shared/secret-keys";
 
 const STR = z.string();
 export const DateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
@@ -36,6 +37,13 @@ export const ParsedVideoQualitySchema = z.object({
   quality: z.number(),
   label: STR,
   url: STR,
+  /**
+   * MSE 预览用的轨道身份（v35）：`codecs` 形如 `avc1.640032` / `mp4a.40.2`，
+   * `mimeType` 是 `video/mp4` / `audio/mp4`。上游给了才写——缺它只是预览走合流回退，
+   * 不影响下载。B站 playurl 与 yt-dlp 的 format 都自带这两项。
+   */
+  codecs: STR.optional(),
+  mimeType: STR.optional(),
 });
 
 /** 多分 P / 多清晰度视频项 */
@@ -53,6 +61,25 @@ export const ParsedVideoItemSchema = z.object({
   video_url: STR.optional(),
   /** 原始键并存：B站 `pic`，新消费方读 `cover` */
   pic: STR.optional(),
+  /**
+   * 这一条是第几 P（1 起，B站 `pages[].page`）。
+   *
+   * 不能用数组下标代替：某一 P 取流失败时它会整条缺席（内核与 amagi 都是 `filter(Boolean)`），
+   * 下标就整体前移——「分 P 2」标签与 `P2-` 文件名前缀会贴到真正的第三 P 上，
+   * 用户按名字找片找到的是另一条。缺键（其他平台、单 P）才退回下标。
+   */
+  page: z.number().int().min(1).optional(),
+  /**
+   * 这一 P 自己的 DASH 音轨（v36）：一条分 P 就是一份独立资源，音轨不能去借顶层那条
+   * ——借来的音轨配的是别的 P 的声音，比无声更难发现（v33「一律合流」的前提是音画同一次取流）。
+   * 缺键 = 该条是渐进式单文件（自带声音）或内核没补这一字段，按单流下载。
+   */
+  audioUrl: STR.optional(),
+  /** 这一 P 的双轨 MSE 身份（与 `ParseData` 顶层同名四键同一语义）：缺键 = 预览走合流回退 */
+  videoCodecs: STR.optional(),
+  videoMimeType: STR.optional(),
+  audioCodecs: STR.optional(),
+  audioMimeType: STR.optional(),
 });
 
 export const ParseStatSchema = z.object({
@@ -88,8 +115,25 @@ export const ParseDataSchema = z
     /** 主媒体直链（视频/音乐/单图）——渲染层只在结果卡内展示与转交下载，不自行发起网络请求 */
     url: STR.optional(),
     audioUrl: STR.optional(),
+    /**
+     * 主链与音轨的 MSE 身份（v35）：双轨 DASH 预览要在渲染层建两个 SourceBuffer，
+     * 创建时必须给出精确的 `mimeType; codecs=…`。主链是渐进式单文件时不写 codecs，
+     * 预览继续走 `<video>` 直读。缺任一项 = 该条预览回退到主进程合流。
+     */
+    videoCodecs: STR.optional(),
+    videoMimeType: STR.optional(),
+    audioCodecs: STR.optional(),
+    audioMimeType: STR.optional(),
     images: z.array(STR).optional(),
     videos: z.array(ParsedVideoItemSchema).optional(),
+    /**
+     * 主链（`url` + `qualities` + 顶层音轨）是第几 P（v36，1 起）。
+     *
+     * 多篇稿件里「用户点开的那一条」和「合集的第一条」不是同一个东西：主链要带上自己的
+     * P 号，否则同一合集的 P1 与 P2 各自解析一次会落成同一个文件名（下第二遍就覆盖第一遍）。
+     * 单 P 稿件与没报这一位的内核缺键，按「不需要 P 标记」处理。
+     */
+    page: z.number().int().min(1).optional(),
     videoId: STR.optional(),
     embedUrl: STR.optional(),
     embedOnly: z.boolean().optional(),
@@ -341,8 +385,25 @@ export const AppSettingsSchema = z.object({
   // 安装只由关于页流式下载弹窗的「立即重启」触发，不作为开关暴露
 });
 
+/**
+ * `settings:set` 的 Cookie 入参：键只认登记过的机密键（`shared/secret-keys.ts`）。
+ *
+ * 出参/存档仍用宽松的 `z.record`（`AppSettingsSchema`）：旧盘上的键要能读出来、能删。
+ * 但**写**必须收窄——handler 会把每个非掩码键同时写进 `settings.cookies` 与 kernel_config，
+ * 而 kernel_config 里的 `YTDLP_BIN` / `FFMPEG_BIN` 是下一轮解析要 spawn 的路径。
+ */
+const SecretCookieMapSchema = z.record(STR, STR).superRefine((map, ctx) => {
+  for (const key of Object.keys(map)) {
+    if (!isSecretKey(key)) {
+      ctx.addIssue({ code: "custom", message: `未登记的 Cookie 键：${key}`, path: [key] });
+    }
+  }
+});
+
 /** 部分字段 set —— strict：未知键直接拒，避免把拼错的键当成「已保存」 */
-export const SettingsPatchSchema = AppSettingsSchema.partial().strict();
+export const SettingsPatchSchema = AppSettingsSchema.extend({ cookies: SecretCookieMapSchema })
+  .partial()
+  .strict();
 
 /**
  * settings:cookieLogin（v19）：打开登录窗口 → 登录后自动抓 Cookie。
@@ -470,6 +531,13 @@ export const AppMetaSchema = z.object({
   version: STR,
   electron: STR,
   kernelMode: z.enum(["local", "mock"]),
+  /**
+   * 随包解析内核的版本号（v37）：`@mediaget/parse-core` 自己报的 `PARSE_CORE_VERSION`。
+   *
+   * 从主进程传，不让渲染层 `import` 内核包 —— 那会把整棵解析器打进 renderer bundle
+   * （与 `types/ipc-contract.ts` 零运行时的同一条纪律）。设置页「内核版本」直接显示它。
+   */
+  kernel: STR,
   // v6 起不再带 `platforms`：平台清单的真源是本仓 `shared/platforms.ts`，
   // 两进程 import 同一模块即可，过 IPC 复制一张表正是这次要消灭的并行真源
 });
@@ -868,6 +936,11 @@ export const StatsQueryResultSchema = z.object({
     name: STR.max(100),
     /** 作者头像（取该作者范围内最新一条历史行的快照）；老记录与匿名行为缺省 */
     avatar: STR.max(2000).optional(),
+    /**
+     * 平台契约键（v38，业主 2026-10-23 作者卡加平台列）：取该作者范围内最新一条历史行。
+     * 可选是因为老记录与匿名行可能没有归属；缺省时界面那一格写「—」，不猜一个平台。
+     */
+    platform: STR.max(40).optional(),
     parsedWorks: COUNT,
     downloadedFiles: COUNT,
     downloadedBytes: COUNT,

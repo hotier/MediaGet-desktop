@@ -146,7 +146,7 @@ function harness(
     settingsRepository,
     historyRepository,
     queueRepository,
-    getAppMeta: () => ({ version: "0.0.0-test", electron: "44" }),
+    getAppMeta: () => ({ version: "0.0.0-test", electron: "44", kernel: "1.1.1-test" }),
     kernelMode: () => "local",
     // 来源链接归一：缺省离线桩（原样返回），跟跳行为归 source-url.test.ts（禁真网络）
     resolveSourceUrl: opts.resolveSourceUrl ?? (async ({ raw }) => raw ?? undefined),

@@ -163,12 +163,26 @@ const COL = {
  */
 const filesCell = (count: number): string => (count === 0 ? "未下载" : `${count} 个`);
 
+/**
+ * 定位闪烁的总时长（业主 2026-10-23「闪烁速度稍微慢一点」：600ms × 3 → 800ms × 3）。
+ *
+ * 与 `styles.css` 的 `--animate-row-flash: row-flash 800ms ease-in-out 3` **必须同改**：
+ * 一个是熄灭定时器、一个是动画时长。短了动画被拦腰截断（最后一轮没跑到亮就没了），
+ * 长了跑完还挂着 `flashKey`——行上留着一层已结束的动画声明，看着像没熄干净。
+ */
+const FLASH_MS = 2400;
+
 export default function HistoryPage({
-  focusKey,
+  focus,
   platformFocus,
   onReparse,
 }: {
-  focusKey?: string | null;
+  /**
+   * 队列页「查看作品信息」带过来的定位意图：`key` 是历史行的作品键（`w-…`），
+   * `seq` 让「连点同一个作品」也能重放一次（同值 setState 不触发渲染）。
+   * 与 `platformFocus` 同一形状，理由也一样。
+   */
+  focus?: { key: string; seq: number } | null;
   /** 统计页平台榜带过来的意图：seq 变一次就应用一次（同值复点也要生效） */
   platformFocus?: { key: string; seq: number } | null;
   /** 多选「重新解析」：把分享链接交给首页输入面，由 App 切页（本页不自己编排解析） */
@@ -209,6 +223,10 @@ export default function HistoryPage({
     setDetailShown(true);
   };
   const [flashKey, setFlashKey] = useState<string | null>(null);
+  /** 已处理过的定位意图（`focus.seq`）：同一意图只跑一次，翻页把 `rows` 变长时不再重放滚动与闪烁 */
+  const handledFocus = useRef<number | null>(null);
+  /** 为这次定位额外拉过一页没有（只拉一次：不为了找一个键把整部历史翻到底） */
+  const focusPaged = useRef<number | null>(null);
   /** 多选态（行键集合 + Shift 锚点）；状态机在 lib/history-selection.ts，可无 DOM 测 */
   const [sel, setSel] = useState<SelState>(EMPTY_SEL);
   /** 多选·移除记录的二次确认（destructive） */
@@ -219,6 +237,8 @@ export default function HistoryPage({
   const [exportFmt, setExportFmt] = useState<ExportFormat>("csv");
   // 全局 keydown 只挂一次，但 Ctrl+A 要读**最新的可见行键** —— 用 ref 桥接，避免把 rows 塞进依赖数组反复重挂
   const visibleKeysRef = useRef<string[]>([]);
+  // 筛选代次：翻页/全选在途时若筛选变了，旧页的行不能拼进新列表（游标属于旧查询）
+  const filterSeq = useRef(0);
 
   const dateFilter = useMemo(() => {
     if (timeRange === "all") return {};
@@ -237,6 +257,7 @@ export default function HistoryPage({
   }), [platform, dateFilter, query]);
 
   useEffect(() => {
+    filterSeq.current += 1;
     let active = true;
     setLoading(true);
     setList([]);
@@ -253,31 +274,42 @@ export default function HistoryPage({
 
   function loadMore(): void {
     if (!nextCursor || loading) return;
+    const seq = filterSeq.current;
     setLoading(true);
     void api.history.list({ ...serverFilter, cursor: nextCursor }).then((page) => {
+      // 筛选已变：这批行属于旧查询，拼进新列表会混页（含旧游标继续翻就更糟）
+      if (seq !== filterSeq.current) return;
       setList((current) => [...current, ...page.rows]);
       setNextCursor(page.nextCursor);
-    }).catch(() => toast.error("更多历史记录读取失败")).finally(() => setLoading(false));
+    }).catch(() => {
+      if (seq === filterSeq.current) toast.error("更多历史记录读取失败");
+    }).finally(() => {
+      if (seq === filterSeq.current) setLoading(false);
+    });
   }
 
   /** 跨页全选：逐页把筛选结果读进当前列表后再全选 —— 导出/重新解析需要行内容，
    *  只拿键的选择集会让这两个动作对未加载行静默跳过。 */
   async function selectAllFiltered(): Promise<void> {
     if (selectingAll) return;
+    const seq = filterSeq.current;
     setSelectingAll(true);
     try {
       let rows = list;
       let cursor = nextCursor;
       while (cursor) {
         const page = await api.history.list({ ...serverFilter, cursor });
+        // 遍历期间改了筛选：整批结果不再对应界面上的筛选，静默作废而不是混页
+        if (seq !== filterSeq.current) return;
         rows = [...rows, ...page.rows];
         cursor = page.nextCursor;
       }
+      if (seq !== filterSeq.current) return;
       setList(rows);
       setNextCursor(null);
       setSel({ keys: groupWorks(rows).map((row) => row.key), anchor: null });
     } catch {
-      toast.error("读取全部筛选结果失败");
+      if (seq === filterSeq.current) toast.error("读取全部筛选结果失败");
     } finally {
       setSelectingAll(false);
     }
@@ -352,16 +384,43 @@ export default function HistoryPage({
     setQuery("");
   }
 
-  // 队列页跳转定位：历史是异步到位的，rows.length 变化后再重试一次滚动与高亮
+  /**
+   * 队列页跳转定位（业主 2026-10-23：跳到对应历史行 + 自动展开作品信息卡片 + 短暂高亮闪烁）。
+   *
+   * 历史是异步到位的，`rows` 还是空就先等。目标不在当前列表时按两条兜底走，顺序不能换：
+   * ① 本页还留着上次的筛选（平台 / 搜索 / 时间窗）就先清掉、等重读一轮——跳转意图优先于旧筛选；
+   * ② 筛选已经是最宽，就按游标再拉一页（只拉一次）。两条都试过仍没有，收下这次意图并明说一句，
+   * 不留「点了没反应」。
+   */
   useEffect(() => {
-    if (!focusKey || rows.length === 0) return;
-    const el = document.querySelector<HTMLElement>(`[data-group="${CSS.escape(focusKey)}"]`);
-    if (!el) return;
-    el.scrollIntoView({ block: "center" });
-    setFlashKey(focusKey);
-    const h = setTimeout(() => setFlashKey(null), 1800);
+    if (!focus || rows.length === 0) return;
+    if (handledFocus.current === focus.seq) return;
+    const row = rows.find((r) => r.key === focus.key);
+    if (!row) {
+      if (platform !== "" || query.trim() !== "" || timeRange !== "all") {
+        clearFilters();
+        return;
+      }
+      if (nextCursor && !loading && focusPaged.current !== focus.seq) {
+        focusPaged.current = focus.seq;
+        loadMore();
+        return;
+      }
+      handledFocus.current = focus.seq;
+      toast.error("历史记录里没有这个作品");
+      return;
+    }
+    handledFocus.current = focus.seq;
+    const el = document.querySelector<HTMLElement>(`[data-group="${CSS.escape(row.key)}"]`);
+    el?.scrollIntoView({ block: "center" });
+    // 自动展开作品信息卡片：直接置位，不走 `openDetail` ——
+    // 后者是 toggle（同一行再点会收起），定位意图要的是「打开」，不能把用户刚开的卡片关掉。
+    setDetailRow(row);
+    setDetailShown(true);
+    setFlashKey(row.key);
+    const h = setTimeout(() => setFlashKey(null), FLASH_MS);
     return () => clearTimeout(h);
-  }, [focusKey, rows.length]);
+  }, [focus, rows, platform, query, timeRange, nextCursor, loading]);
 
   /** 复制走主进程代发（`app:copyText`）：本窗口的 renderer 被「所有权限请求一律拒」的
    *  权限钩子挡死，`navigator.clipboard` 在这里永远 reject —— 契约 v11。 */
@@ -382,7 +441,8 @@ export default function HistoryPage({
     a.href = url;
     a.download = fileName;
     a.click();
-    URL.revokeObjectURL(url);
+    // 立即 revoke 在慢盘/杀软扫描下可能让浏览器取不到内容：让出一轮事件循环再释放
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   /** 文本档一律前置 BOM —— 记事本与 Excel 都靠它认 UTF-8，CSV 缺 BOM 中文直接成乱码。
@@ -458,7 +518,9 @@ export default function HistoryPage({
       setSel(EMPTY_SEL);
       setSelDelOpen(false);
       setReloadSeq((n) => n + 1);
-      toast.success(`已移除 ${selectedRows.length} 条记录（文件仍在磁盘）`);
+      // 只报「移除了几条」（业主 2026-10-23：去掉「（文件仍在磁盘）」那半句）——
+      // 回执是结果的计数，不是一句免责说明；「只撤台账、文件不动」已由按钮名与确认弹窗承担。
+      toast.success(`已移除 ${selectedRows.length} 条记录`);
     })().catch(() => toast.error("移除失败"));
   }
 
@@ -585,16 +647,17 @@ export default function HistoryPage({
                   className={cn(
                     // `group` 是给行内那枚勾选框用的：常态隐藏，鼠标落到这一行才显形（业主指令 2026-10-17）
                     "group cursor-pointer",
-                    // 带主色底的行（选中 / 跳转定位闪烁）把 kit 那颗 hover 灰底换成一档更深的蓝：
+                    // 带主色底的行（选中）把 kit 那颗 hover 灰底换成一档更深的蓝：
                     // 两种底色叠在同一行就是「选中是蓝、hover 是灰」的脏色冲突（业主指令 2026-10-17）。
                     // 只压暗、不取消 hover——光标仍是 pointer、行仍要点得动，hover 得有反馈，只是别换色相。
-                    isSelected(sel, r.key) || flashKey === r.key
-                      ? "bg-primary/15 hover:bg-primary/25"
-                      : undefined,
-                    // 选中态只上底色、不描边（业主指令 2026-10-17：整行已经跟着底色走，
-                    // 再框一道就是把一行切成格子）。跳转定位那一下仍留描边——它要指认的
-                    // 是「这一行在这儿」，且 1.8 秒就退，不是常驻状态。
-                    flashKey === r.key && "outline outline-1 -outline-offset-1 outline-primary/50"
+                    isSelected(sel, r.key) ? "bg-primary/15 hover:bg-primary/25" : undefined,
+                    // 底色是唯一的定位信号，不描边（业主指令 2026-10-17 与 2026-10-23 同向：
+                    // 「高亮显示是没有边框的」）。选中态也早已只上底色、不描边——两种状态
+                    // 在同一列里不该用两套信号去说「这是我指的那一行」。
+                    // 闪烁（2026-10-23 业主「短暂高亮闪烁」→「闪烁速度稍微慢一点」）：
+                    // 主色底呼吸三次，keyframes 见 styles.css 的 `row-flash`（800ms × 3 = 2.4s）；
+                    // 动画优先级高于 `bg-*` 与选中底色，跑完自动交还。
+                    flashKey === r.key && "animate-row-flash"
                   )}
                 >
                   <TableCell className={COL.select}>
@@ -885,7 +948,9 @@ function Field({
   return (
     <div
       className={cn(
-        "grid grid-cols-[5rem_1fr] items-baseline gap-2 border-b border-border py-2",
+        // `last:` 让最后一栏收尾：不画那条没有后续行的分隔线、也不留 8px 下内边距 ——
+        // 否则「来源链接」是最后一行时（未下载的作品），下面会多出一条线和一截空白（2026-10-23）
+        "grid grid-cols-[5rem_1fr] items-baseline gap-2 border-b border-border py-2 last:border-b-0 last:pb-0",
         rowClassName
       )}
     >

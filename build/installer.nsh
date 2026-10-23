@@ -133,7 +133,7 @@
     DetailPrint "安装目录：$INSTDIR"
     DetailPrint "安装范围：$installScopeLabel"
     DetailPrint "沙箱读/执行权限：icacls 返回 $sandboxAclResult（0 = 成功）"
-    DetailPrint "安装完成：MediaGet ${VERSION}"
+    DetailPrint "安装完成：${PRODUCT_NAME} ${VERSION}"
   ${EndIf}
 !macroend
 
@@ -149,17 +149,21 @@
   !macro customUnInstall
     ${IfNot} ${Silent}
       SetDetailsPrint both
-      DetailPrint "正在卸载 MediaGet：$INSTDIR"
+      DetailPrint "正在卸载 ${PRODUCT_NAME}：$INSTDIR"
 
       ; 默认按钮 = 否（保留数据）：误点一次不该把用户的历史清空
       MessageBox MB_YESNO|MB_ICONQUESTION|MB_DEFBUTTON2 "卸载时是否同时删除本地数据？$\r$\n$\r$\n包含设置、Cookie、解析历史、统计与未完成的下载队列。$\r$\n选「否」将保留这些数据，重新安装后可以继续使用。" IDNO mediagetKeepUserData
 
       ; 与模板处理 --delete-app-data 时同样的上下文切换：per-machine 卸载器是提权跑的，
-      ; $APPDATA 会指到管理员账户上去
+      ; $APPDATA 会指到管理员账户上去。
+      ;
+      ; 删的是 userData（Electron 按 productName 建目录），所以必须用 ${PRODUCT_NAME} 而非
+      ; ${APP_FILENAME}：后者由 executableName 派生，且 electron-builder 对带括号的 productName
+      ; 会退回包名（beta 是「MediaGet (Beta)」）——用它删会删错目录。
       ${If} $installMode == "all"
         SetShellVarContext current
       ${EndIf}
-      RMDir /r "$APPDATA\${APP_FILENAME}"
+      RMDir /r "$APPDATA\${PRODUCT_NAME}"
       ${If} $installMode == "all"
         SetShellVarContext all
       ${EndIf}

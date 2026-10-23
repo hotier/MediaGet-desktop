@@ -139,10 +139,25 @@ describe("接线：CSP 只认自家 scheme，媒体 src 必经代理", () => {
     fileURLToPath(new URL("../renderer/src/components/ResultCard.tsx", import.meta.url)),
     "utf8"
   );
+  const protocol = readFileSync(
+    fileURLToPath(new URL("../electron/main/preview-protocol.ts", import.meta.url)),
+    "utf8"
+  );
 
-  it("media-src 恰好是 'self' + 代理 scheme，没多出 https:", () => {
+  it("media-src 恰好是 'self' + 代理 scheme + blob:（MSE 的 object URL），没多出 https:", () => {
     const mediaSrc = /media-src\s+([^;"]+)/.exec(html)?.[1]?.trim();
-    expect(mediaSrc).toBe(`'self' ${PREVIEW_SCHEME}:`);
+    // `blob:` 只给 MSE：`MediaSource` 通过 object URL 交给 <video>，不放行则预览建不起来。
+    // 仍然没有 `https:`——上游直链只许经代理。
+    expect(mediaSrc).toBe(`'self' ${PREVIEW_SCHEME}: blob:`);
+  });
+
+  it("connect-src 放行代理 scheme：MSE 预览由渲染层 fetch 两条轨道（契约 v35）", () => {
+    const connectSrc = /connect-src\s+([^;"]+)/.exec(html)?.[1]?.trim();
+    expect(connectSrc).toBe(`'self' ${PREVIEW_SCHEME}:`);
+    // 自定义 scheme 默认既不走 Fetch 也不参与 CORS；缺任一条，上面这条 CSP 形同虚设。
+    expect(protocol).toContain("supportFetchAPI: true");
+    expect(protocol).toContain("corsEnabled: true");
+    expect(protocol).toContain('out.set("access-control-allow-origin", "*")');
   });
 
   it("音视频的 src 由 buildPreviewLink 生成；图片同走代理（buildImageSrc）", () => {
@@ -181,11 +196,12 @@ describe("buildImageSrc（代理优先；回落只放行浏览器自己能安全
     expect(buildImageSrc(uri, "weibo")).toBe(uri);
   });
 
-  it("绝对 http(s) 回落原链（图床不吃 Referer 时少一跳；img-src 放行 https:）", () => {
-    expect(buildImageSrc("https://cdn.example.invalid/1.jpg", "douyin")).toBe(
-      "https://cdn.example.invalid/1.jpg"
-    );
-    expect(buildImageSrc("http://cdn.local/1.jpg", "douyin")).toBe("http://cdn.local/1.jpg");
+  it("闸门判不过的 http(s) 不回落原链（私网地址不能借 <img> 出网）", () => {
+    // 旧实现把「绝对 http(s)」当安全回落：cdn.example.invalid 只是 DNS 必败，
+    // 但同一分支会放行 http://cdn.local / http://127.0.0.1 —— 渲染层借此访问内网。
+    expect(buildImageSrc("https://cdn.example.invalid/1.jpg", "douyin")).toBeNull();
+    expect(buildImageSrc("http://cdn.local/1.jpg", "douyin")).toBeNull();
+    expect(buildImageSrc("http://127.0.0.1:8080/a.jpg", "douyin")).toBeNull();
   });
 
   // 事故形态本体：0.1.2 内核吐出来的站内相对路由。盘上存量（那段时间写进 history/queue 的

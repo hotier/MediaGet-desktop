@@ -107,22 +107,4 @@ export const KERNEL_CONFIG_KEYS = [
 export type KernelConfigKey = (typeof KERNEL_CONFIG_KEYS)[number];
 
 /** Cookie 类键（导出配置时须剔除，ARCHITECTURE §6.2） */
-export const SECRET_CONFIG_KEYS = [
-  "DOUYIN_COOKIE",
-  "BILIBILI_COOKIE",
-  "XHS_COOKIE",
-  "IG_COOKIE",
-  "KUAISHOU_COOKIE",
-  // 内核 1.0.0 删了 QQ 音乐，但旧版本用户盘上可能还留着这颗值：
-  // 继续按机密剔除，导出配置不会把它吐出去（保留比移除安全）
-  "QQMUSIC_COOKIE",
-  "YOUTUBE_API_KEY",
-  // 2026-10-21：YouTube 改由 yt-dlp 主解，可以配 Cookie（年龄限制 / 登录墙内容）。
-  // 内核自己不读它，但「导出配置须剔除」与「掩码」两条按同一张表走，不在这里登记
-  // 就等于让这颗值明文进导出文件。
-  "YOUTUBE_COOKIE",
-] as const;
-
-export function isSecretKey(key: string): boolean {
-  return (SECRET_CONFIG_KEYS as readonly string[]).includes(key);
-}
+export { SECRET_CONFIG_KEYS, isSecretKey } from "../shared/secret-keys";

@@ -10,7 +10,10 @@
 export function fmtBytes(n: number): string {
   if (!Number.isFinite(n) || n <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+  // 下界也要夹：`0 < n < 1`（图表坐标轴在无数据时会给出 0.2 / 0.8 这类小数刻度）时
+  // `log` 为负，单位下标会变成 -1，`units[-1]` 是 undefined，界面上就出现
+  // 「819.2 undefined」这种残缺文本（2026-10-23 实测于统计页字节轴）。
+  const i = Math.max(0, Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024))));
   return `${(n / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 

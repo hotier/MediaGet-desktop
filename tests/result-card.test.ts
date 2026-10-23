@@ -88,11 +88,11 @@ describe("ResultCard 通用骨架", () => {
       via: "local",
       durationMs: 120,
     });
-    expect(html).toContain("资源列表"); // 开关在
+    expect(html).toContain("展开资源"); // 开关在
     // 靠左（业主指令 2026-10-18）：DOM 顺序上它排在清晰度与下载之前，
     // 摘要把它挤到右侧的那版布局不许回来
-    expect(html.indexOf("资源列表")).toBeLessThan(html.indexOf("下载清晰度"));
-    expect(html.indexOf("资源列表")).toBeLessThan(html.indexOf("下载 4 项"));
+    expect(html.indexOf("展开资源")).toBeLessThan(html.indexOf("下载清晰度"));
+    expect(html.indexOf("展开资源")).toBeLessThan(html.indexOf("下载 4 项"));
     // 动作条不放预览按钮（主视觉本身就是入口）；行内「预览/下载」随清单展开才出现，
     // 收起时一个都不该提前铺
     expect(html).not.toContain(">预览<");
@@ -163,7 +163,7 @@ describe("ResultCard 通用骨架", () => {
     const html = render(outcome({ title: "t", embedOnly: true, embedUrl: "https://play/x" }));
     expect(html).toContain("在浏览器中打开播放");
     expect(html).not.toContain("下载 1 项");
-    expect(html).not.toContain("资源列表");
+    expect(html).not.toContain("展开资源");
   });
 
   it("失败态：按 failType 给标题与下一步动作", () => {

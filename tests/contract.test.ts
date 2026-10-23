@@ -11,10 +11,11 @@
  * 6. 事件通道不进 CONTRACT（无入参校验语义），但载荷形状同样归 EVENTS 管。
  */
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 import { registerIpc, type IpcRegistryDeps } from "../electron/main/ipc";
 import { createStats } from "../electron/main/stats";
-import { CONTRACT, EVENTS, describeIssues, type InvokeContract } from "../types/ipc-contract";
+import { AppSettingsSchema, CONTRACT, EVENTS, SettingsPatchSchema, describeIssues, type InvokeContract } from "../types/ipc-contract";
 import {
   DEFAULT_SETTINGS,
   IPC,
@@ -163,7 +164,7 @@ function stubDeps(opts: StubOpts = {}): { handlers: Map<string, Handler> } {
       // 删组的落库行为归 history-pagination.test.ts 管，这里只要出参形状对
       remove: (keys: string[]) => keys.length,
     },
-    getAppMeta: opts.getAppMeta ?? (() => ({ version: "0.0.0-test", electron: "44" })),
+    getAppMeta: opts.getAppMeta ?? (() => ({ version: "0.0.0-test", electron: "44", kernel: "0.0.0-test" })),
     kernelMode: () => "local" as const,
     getBinaryStatus: () => ({
       manifestLoaded: true,
@@ -337,6 +338,14 @@ describe("入参校验（renderer 是不可信输入源）", () => {
     }
   });
 
+  it("settings:set 的 Cookie 键白名单：未登记的键在入参侧就拒（不能指向 YTDLP_BIN）", () => {
+    expect(SettingsPatchSchema.safeParse({ cookies: { DOUYIN_COOKIE: "x" } }).success).toBe(true);
+    expect(SettingsPatchSchema.safeParse({ cookies: { YTDLP_BIN: "C:\\evil.exe" } }).success).toBe(false);
+    expect(SettingsPatchSchema.safeParse({ cookies: { FFMPEG_BIN: "x" } }).success).toBe(false);
+    // 键白名单不影响其它字段的合法 patch
+    expect(SettingsPatchSchema.safeParse({ theme: "light" }).success).toBe(true);
+  });
+
   it("字段路径进文案：设置页要按它做字段级内联提示", async () => {
     const { handlers } = stubDeps();
     const r = await handlers.get(IPC.parseRun)!({}, {});
@@ -361,6 +370,18 @@ describe("入参校验（renderer 是不可信输入源）", () => {
   });
 });
 
+describe("settings:set 字段覆盖守卫（P2-10）", () => {
+  it("AppSettingsSchema 的每个键都有落盘分支（漏写 = 界面显示已保存、实际没落盘）", () => {
+    const src = readFileSync(new URL("../electron/main/ipc.ts", import.meta.url), "utf8");
+    const handled = new Set(
+      [...src.matchAll(/patch\.([A-Za-z0-9_]+)\s*!==\s*undefined/g)].map((match) => match[1])
+    );
+    // cookies 走「非掩码才写、空串即清除」的另一条分支，不在 !== undefined 之列
+    const declared = Object.keys(AppSettingsSchema.shape).filter((key) => key !== "cookies");
+    expect([...handled].sort()).toEqual([...declared].sort());
+  });
+});
+
 describe("出参校验（dev-only 的契约漂移警报）", () => {
   it("每个通道的一次真实调用都过 out schema", async () => {
     const { handlers } = stubDeps({ validateOutputs: true });
@@ -374,7 +395,11 @@ describe("出参校验（dev-only 的契约漂移警报）", () => {
   });
 
   it("出参漂移 → dev 报 contract-drift，打包版放行（这就是 validateOutputs 的代价开关）", async () => {
-    const drift = () => ({ version: "0.0.0-test", electron: undefined as unknown as string });
+    const drift = () => ({
+      version: "0.0.0-test",
+      electron: undefined as unknown as string,
+      kernel: "0.0.0-test",
+    });
     const devR = await stubDeps({ validateOutputs: true, getAppMeta: drift }).handlers.get(
       IPC.appGetMeta
     )!({}, undefined);

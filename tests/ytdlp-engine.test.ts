@@ -74,6 +74,26 @@ describe("yt-dlp × YouTube", () => {
     expect(data?.qualities?.some((q) => q.url.includes("drm"))).toBe(false);
   });
 
+  it("video-only 档带 MSE 轨道身份，渐进式主链不带（混流不能塞进 video-only 缓冲）", async () => {
+    const out = await runYoutube(() => ({
+      ...YT_INFO,
+      formats: [
+        { format_id: "140", vcodec: "none", acodec: "mp4a.40.2", abr: 129, ext: "m4a", url: "https://rr1.googlevideo.com/a.m4a" },
+        { format_id: "22", vcodec: "avc1.64001F", acodec: "mp4a.40.2", height: 720, ext: "mp4", url: "https://rr1.googlevideo.com/22.mp4" },
+        { format_id: "137", vcodec: "avc1.640028", acodec: "none", height: 1080, ext: "mp4", url: "https://rr1.googlevideo.com/137.mp4" },
+      ],
+    }));
+    const data = out.ok ? out.result.data : undefined;
+    const hd = data?.qualities?.find((q) => q.quality === 1080);
+    expect(hd?.codecs).toBe("avc1.640028");
+    expect(hd?.mimeType).toBe("video/mp4");
+    // 渐进式 720P 自带音轨：不给身份，预览走 <video> 直读
+    expect(data?.qualities?.find((q) => q.quality === 720)?.codecs).toBeUndefined();
+    expect(data?.videoCodecs).toBeUndefined();
+    expect(data?.audioCodecs).toBe("mp4a.40.2");
+    expect(data?.audioMimeType).toBe("audio/mp4");
+  });
+
   it("契约字段按 YT 口径落位：duration 是毫秒、订阅数进 subscriberCount、来源标 yt-dlp", async () => {
     const out = await runYoutube(() => YT_INFO);
     const data = out.ok ? out.result.data : undefined;

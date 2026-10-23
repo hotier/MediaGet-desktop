@@ -95,29 +95,50 @@ export const FIXTURES: Record<string, { platform: string; data: ParseData }> = {
         { quality: 720, label: "720P", url: "https://mirror.example/bili/720p.m4s" },
         { quality: 480, label: "480P", url: "https://mirror.example/bili/480p.m4s" },
       ],
+      // 「一个分 P 就是一份资源」（v36）：每一 P 各带自己的音轨与双轨身份，`page` 报它是第几 P。
+      // 时长口径是**毫秒**（`ParseData.duration` 硬口径，见 ResultCard 那条 2026-10-19 事故注）。
       videos: [
         {
-          title: "P1 夜景篇",
+          page: 1,
+          title: "夜景篇",
           url: "https://mirror.example/bili/p1-1080.m4s",
-          duration: 372,
+          audioUrl: "https://mirror.example/bili/p1-audio.m4s",
+          videoCodecs: "avc1.640032",
+          videoMimeType: "video/mp4",
+          audioCodecs: "mp4a.40.2",
+          audioMimeType: "audio/mp4",
+          duration: 372000,
           qualities: [
             { quality: 1080, label: "1080P", url: "https://mirror.example/bili/p1-1080.m4s" },
             { quality: 720, label: "720P", url: "https://mirror.example/bili/p1-720.m4s" },
           ],
         },
         {
-          title: "P2 街巷篇",
+          page: 2,
+          title: "街巷篇",
           url: "https://mirror.example/bili/p2-1080.m4s",
-          duration: 415,
+          audioUrl: "https://mirror.example/bili/p2-audio.m4s",
+          videoCodecs: "avc1.640032",
+          videoMimeType: "video/mp4",
+          audioCodecs: "mp4a.40.2",
+          audioMimeType: "audio/mp4",
+          duration: 415000,
           qualities: [
             { quality: 1080, label: "1080P", url: "https://mirror.example/bili/p2-1080.m4s" },
             { quality: 720, label: "720P", url: "https://mirror.example/bili/p2-720.m4s" },
           ],
         },
         {
-          title: "P3 幕后：调色台本",
+          // 故意没有 1080P：展开计划时这一 P 要显式报「无 1080P，用默认清晰度」，不能静默降档
+          page: 3,
+          title: "幕后：调色台本",
           url: "https://mirror.example/bili/p3-default.m4s",
-          duration: 268,
+          audioUrl: "https://mirror.example/bili/p3-audio.m4s",
+          videoCodecs: "avc1.640032",
+          videoMimeType: "video/mp4",
+          audioCodecs: "mp4a.40.2",
+          audioMimeType: "audio/mp4",
+          duration: 268000,
           qualities: [{ quality: 720, label: "720P", url: "https://mirror.example/bili/p3-720.m4s" }],
         },
       ],
@@ -640,7 +661,14 @@ function mockStatsQuery(range: StatsDateRange): StatsQueryResult {
     }
     const name = event.type === "cancel" ? undefined : event.author?.trim();
     if (!name) continue;
-    const author = authorRows.get(name) ?? { name, parsedWorks: 0, downloadedFiles: 0, downloadedBytes: 0 };
+    const author = authorRows.get(name) ?? {
+      name,
+      // 平台随作者一起报出（v38）：dev 预览里那一列才有东西可看
+      ...(event.platform ? { platform: event.platform } : {}),
+      parsedWorks: 0,
+      downloadedFiles: 0,
+      downloadedBytes: 0,
+    };
     const work = event.type === "cancel" ? "" : event.workKey;
     if (event.type === "parse" && event.ok && !parsedWorks.has(`${name}\u0000${work}`)) {
       parsedWorks.add(`${name}\u0000${work}`);
@@ -969,7 +997,8 @@ function mockCacheStatus(): CacheStatus {
 }
 
 const mockBridge: MgBridge = {
-  getMeta: async () => ok<AppMeta>({ version: "0.1.0", electron: "34.0.0 (mock)", kernelMode: "local" }),
+  getMeta: async () =>
+    ok<AppMeta>({ version: "0.1.0", electron: "34.0.0 (mock)", kernelMode: "local", kernel: "1.1.1" }),
 
   identify: async ({ text }) => {
     const platform = detectPlatform(text);

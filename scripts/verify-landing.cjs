@@ -54,7 +54,7 @@ if (!fs.existsSync(DIST)) fail("landing/dist 不存在：先跑 pnpm landing:bui
 
 for (const { file } of PAGES) {
   if (!fs.existsSync(path.join(DIST, file))) {
-    fail(`缺少产物 ${file}：build.format="directory" 时五页各在自己目录、404 在产物根`);
+    fail(`缺少产物 ${file}：build.format="directory" 时每页各在自己的目录、404 在产物根`);
   }
 }
 

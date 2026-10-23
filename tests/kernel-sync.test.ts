@@ -115,14 +115,38 @@ const LOCAL_SCHEMAS: Record<string, z.ZodObject<z.ZodRawShape>> = {
 /**
  * 镜像允许多出、而上游 `.d.ts` **尚未声明**的键（唯一一档例外，其余多出仍是红叉）。
  *
- * 依据是内核运行时真的写它们，只是自己的接口没声明：
+ * 两类来源，加一条都要写清证据：
+ *  A. 内核运行时真的写它们，只是自己的接口没声明：
  *  - `dist/index.cjs:1393` 把 kuaishou 的 `likeCount / viewCount / commentCount / shareCount /
  *    forwardCount` 原样平铺到 data（`likeCount` 等三个上游已声明，这四个才是缺口）；
  *  - `dist/index.cjs:1033 / 1038 / 1221` 写 `authorSign` 与 `worksCount`。
- * 客户端要读、要验形状，只能在镜像侧补声明 —— 上游把 `.d.ts` 补齐后，这里应该清空；
- * 往里加一条 = 承认一次上游缺口，必须同时写上内核行号证据。
+ *  B. 本仓的其它引擎写进同一个 ParseData，内核不产这个能力：
+ *  - 契约 v35（2026-10-23 MSE 预览）：`codecs` / `mimeType`（ParsedVideoQuality）与
+ *    `videoCodecs / videoMimeType / audioCodecs / audioMimeType`（ParseData）由
+ *    `electron/main/amagi-engine.ts`（B站 dash）与 `ytdlp-engine.ts`（YouTube 分离轨）写入；
+ *    内核只解渐进式单流，`.d.ts` 自然没有这几个键。渲染层据此建 SourceBuffer 边拉边播。
+ *  - 契约 v36（2026-10-23「一个分 P 就是一份资源」）：`page`（ParseData 与 ParsedVideoItem，
+ *    这一条是第几 P）与 `audioUrl`（ParsedVideoItem，这一 P 自己的 DASH 音轨）由
+ *    `electron/main/amagi-engine.ts` 写入；内核的 B 站分支走未登录 durl 渐进式单流
+ *    （`dist/index.cjs:4246` 的 `fnval=3`），一条文件自带声音，既不需要音轨位也没有 P 号出口。
+ *    渲染层用它做分 P 编号（`download-plan.ts`）与逐 P 合流。
+ *
+ * 上游把 `.d.ts` 补齐后，这里应该清空。
  */
-const LOCAL_ONLY_FIELDS = new Set(["worksCount", "authorSign", "viewCount", "forwardCount"]);
+const LOCAL_ONLY_FIELDS = new Set([
+  "worksCount",
+  "authorSign",
+  "viewCount",
+  "forwardCount",
+  "codecs",
+  "mimeType",
+  "videoCodecs",
+  "videoMimeType",
+  "audioCodecs",
+  "audioMimeType",
+  "page",
+  "audioUrl",
+]);
 
 const pairs = [
   ["ParsedVideoQuality", "ParsedVideoQuality"],

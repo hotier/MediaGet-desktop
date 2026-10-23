@@ -126,6 +126,18 @@ describe("JSON storage migration", () => {
     expect(payload("task-done").headers).toBeUndefined();
   });
 
+  it("duplicate task ids collapse before insert (keeps the newest, counts deduped)", () => {
+    const dir = userData();
+    writeJson(dir, "queue.json", [queueTask(1), { ...queueTask(1), filename: "newer.mp4", createdAt: 99 }]);
+    const db = openTestDatabase(join(dir, "mediaget.sqlite"));
+
+    // task_id 是主键：不去重会让整批 INSERT 抛错，首启迁移从此每次启动都失败且永不自愈
+    expect(migrateJsonStore({ userDataDir: dir, db }).imported.queue).toBe(1);
+    expect(db.get<{ count: number }>("SELECT COUNT(*) AS count FROM queue_tasks")?.count).toBe(1);
+    const payload = db.get<{ payload_json: string }>("SELECT payload_json FROM queue_tasks WHERE task_id = 'task-1'")?.payload_json ?? "";
+    expect(payload).toContain("newer.mp4");
+  });
+
   it("is idempotent when the same source fingerprints are imported again", () => {
     const dir = userData();
     writeJson(dir, "history.json", [historyRow(1)]);

@@ -13,6 +13,7 @@ import { fmtBytes } from "../lib/format";
 import { CACHE_ITEMS as SETTINGS_CACHE_ITEMS } from "../lib/cache-items";
 import { SETTINGS_GLYPHS, type AnimGlyph } from "../lib/nav-icons";
 import { setFontSize, setTheme, setThemeStyle, setFontFamily } from "../lib/theme";
+import { toSettingsPatch } from "../lib/settings-patch";
 import {
   buildFilename,
   type FilenamePreset,
@@ -24,7 +25,6 @@ import type {
   EngineHealth,
   UpdateState,
 } from "../../../types/ipc";
-import { CONTRACT_VERSION } from "../../../types/ipc";
 import {
   ENGINE_INFO,
   PLATFORMS,
@@ -506,13 +506,21 @@ export default function SettingsPage({
     }
   }
 
-  /** 引擎开关：同一条纪律——乐观写 + 失败回滚 + 复检让「通道」列当场跟着变 */
+  /**
+   * 引擎开关：同一条纪律——乐观写 + 失败回滚 + 复检让「通道」列当场跟着变。
+   *
+   * 成功也要出声（业主 2026-10-23「切换引擎时虽然不用点击确认按钮，但是要弹一个 toast」）：
+   * 这一批开关**即时落盘、没有确认按钮**，于是屏幕上除了那颗开关自己翻转之外没有任何回执；
+   * 而关掉一个引擎会让相关平台当场换引擎或解析直接 400，这个后果必须有人说一声。
+   */
   async function toggleEngine(id: SwitchableEngineId, enabled: boolean): Promise<void> {
+    const label = ENGINE_INFO[id].label;
     try {
       await setEngineEnabled(id, enabled);
       setEngines(await api.probe.engines());
+      toast.success(enabled ? `已启用 ${label} 引擎` : `已关闭 ${label} 引擎`);
     } catch (e) {
-      toast.error(`${ENGINE_INFO[id].label}：开关未能落盘，已回滚（${e instanceof BridgeError ? e.message : String(e)}）`);
+      toast.error(`${label}：开关未能落盘，已回滚（${e instanceof BridgeError ? e.message : String(e)}）`);
     }
   }
 
@@ -526,11 +534,19 @@ export default function SettingsPage({
     }
   }
 
-  /** 通道下拉：选中的引擎成为该平台的主引擎（失败后按回退开关决定是否再试其余） */
+  /**
+   * 通道下拉：选中的引擎成为该平台的主引擎（失败后按回退开关决定是否再试其余）。
+   *
+   * 与引擎开关同一条回执纪律（业主 2026-10-23）：下拉选完即落盘，没有确认按钮，
+   * 所以「这一格的通道现在是哪家」只能靠一句 toast 告诉用户。文案带上平台名——
+   * 一行一平台，只说引擎名的话，切了五行就分不清哪一行生效了。
+   */
   async function choosePrimary(platform: string, engine: SwitchableEngineId): Promise<void> {
+    const label = ENGINE_INFO[engine].label;
     try {
       await setPrimaryEngine(platform, engine);
       setEngines(await api.probe.engines());
+      toast.success(`${displayName(platform)}：主引擎已切换为 ${label}`);
     } catch (e) {
       toast.error(`${displayName(platform)}：主引擎未能落盘，已回滚（${e instanceof BridgeError ? e.message : String(e)}）`);
     }
@@ -582,6 +598,7 @@ export default function SettingsPage({
   function doExit(): void {
     if (saved) {
       setTheme(saved.theme);
+      setThemeStyle(saved.themeStyle);
       setFontSize(saved.fontSizePx);
       setFontFamily(saved.fontFamily);
     }
@@ -602,7 +619,8 @@ export default function SettingsPage({
       else if (cookieClears[row.key]) cookies[row.key] = "";
     }
     try {
-      const next = await api.settings.set({ ...draft, cookies });
+      // 开关表只走各自的即时通道（草稿是进页时的旧快照）；Cookie 只提交本次编辑过的键
+      const next = await api.settings.set({ ...toSettingsPatch(draft), cookies });
       setSaved(next);
       setDraft(structuredClone(next));
       setCookieEdits({});
@@ -892,7 +910,7 @@ export default function SettingsPage({
 
       case "log": {
         return (
-          <ItemCard title="日志" desc="运行日志写到 userData/logs/app.log，超 2 MB 自动轮转。只记录运行事件，不写入 Cookie 与媒体直链。">
+          <ItemCard title="日志" desc="运行日志写到 userData/logs/app.log，超 2 MB 自动轮转。不写 Cookie；失败现场可含媒体直链，仅存本机。">
             <Row
               label="日志级别"
               hint="「关闭」不再写新行，已落盘文件用下方「清理日志」删除；保存后立即生效。"
@@ -1360,12 +1378,10 @@ export default function SettingsPage({
                 <span className="pt-2 font-mono text-sm">v{meta?.version ?? "—"}</span>
               </Row>
               <Row label="框架版本" end>
-                <span className="pt-2 font-mono text-sm">契约 v{CONTRACT_VERSION} · Electron {meta?.electron ?? "—"}</span>
+                <span className="pt-2 font-mono text-sm">Electron {meta?.electron ?? "—"}</span>
               </Row>
               <Row label="内核版本" end>
-                <span className="pt-2 font-mono text-sm">
-                  {meta ? `${meta.kernelMode} · ${PLATFORMS.length} 平台` : "—"}
-                </span>
+                <span className="pt-2 font-mono text-sm">{meta ? `parse-core v${meta.kernel}` : "—"}</span>
               </Row>
             </ItemCard>
 

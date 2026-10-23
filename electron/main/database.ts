@@ -135,24 +135,37 @@ export function openDatabase(path: string): DatabaseHandle {
   if (path !== ":memory:") native.pragma("journal_mode = WAL");
   const schemaVersion = migrate(native);
 
+  // 预编译语句缓存：run/get/all 都在热路径（队列每 2s 全量 upsert、统计聚合逐页读），
+  // 每次 prepare 一遍等于白付解析 SQL 的开销。close() 时清空，之后不再借用已死亡的句柄。
+  const statements = new Map<string, BetterSqlite3.Statement>();
+  const prepare = (sql: string): BetterSqlite3.Statement => {
+    let stmt = statements.get(sql);
+    if (!stmt) {
+      stmt = native.prepare(sql);
+      statements.set(sql, stmt);
+    }
+    return stmt;
+  };
+
   return {
     schemaVersion,
     exec(sql) {
       native.exec(sql);
     },
     run(sql, ...params) {
-      return native.prepare(sql).run(...params) as SqlRunResult;
+      return prepare(sql).run(...params) as SqlRunResult;
     },
     get<T>(sql: string, ...params: SqlValue[]) {
-      return native.prepare(sql).get(...params) as T | undefined;
+      return prepare(sql).get(...params) as T | undefined;
     },
     all<T>(sql: string, ...params: SqlValue[]) {
-      return native.prepare(sql).all(...params) as T[];
+      return prepare(sql).all(...params) as T[];
     },
     transaction<T>(fn: () => T) {
       return native.transaction(fn)();
     },
     close() {
+      statements.clear();
       if (native.open && path !== ":memory:") native.pragma("wal_checkpoint(TRUNCATE)");
       native.close();
     },

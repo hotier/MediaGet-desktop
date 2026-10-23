@@ -64,6 +64,22 @@ describe("unlimited history pagination", () => {
     expect(history.list({ platform: "redbook", from: "1970-01-01", to: "1970-01-01", limit: 10 }).rows.map((row) => row.id)).toEqual(["a-file", "a-parse"]);
   });
 
+  it("坏 payload 只丢它自己：截断 JSON 与形状不符都跳过，其余行照常返回", () => {
+    const { database, history } = setup();
+    addEntry(database, { id: "good", workKey: "work-good", createdAt: 10 });
+    const insertRaw = (id: string, workKey: string, createdAt: number, payload: string): void => {
+      database.run(
+        "INSERT INTO history_entries (id, work_key, group_id, created_at, platform, title, payload_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        id, workKey, null, createdAt, "bilibili", id, payload
+      );
+    };
+    insertRaw("truncated", "work-truncated", 20, '{"id":"truncated"');
+    insertRaw("wrong-shape", "work-wrong-shape", 30, '{"id":"wrong-shape"}');
+    const page = history.list({ limit: 10 });
+    // 旧实现直接 JSON.parse：一条坏行让 history:list 抛 internal，整页变空态
+    expect(page.rows.map((row) => row.id)).toEqual(["good"]);
+  });
+
   it("pages beyond 5000 works with stable cursors and returns key pages capped at 5000", () => {
     const { database, history } = setup();
     database.transaction(() => {

@@ -88,6 +88,54 @@
   }
 }
 
+/* 品牌加载动画：三点跳动（业主 2026-10-23，替换预览遮罩上的 `Loader2` 转圈）。
+ * 为什么不再用转环：那一圈是浏览器/系统「正在加载」的通用语汇，盖在视频画面上像系统提示，
+ * 而不像这个 App 的反馈；点阵没有边框也没有轨道，压在封面上不破坏画面。
+ * 三颗点相位差 160ms（1.05s 一轮）：错开才有「依次抬起」的节奏，同步跳只会像闪三下。
+ * 全局 `prefers-reduced-motion` 那条把时长压到 0.01ms，这里不必再写降级。 */
+@theme {
+  --animate-brand-dot: brand-dot 1.05s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+@keyframes brand-dot {
+  0%,
+  60%,
+  100% {
+    transform: translateY(0);
+    opacity: 0.35;
+  }
+  25% {
+    transform: translateY(-5px);
+    opacity: 1;
+  }
+}
+.brand-dot:nth-child(2) {
+  animation-delay: 160ms;
+}
+.brand-dot:nth-child(3) {
+  animation-delay: 320ms;
+}
+
+/* 定位行闪烁（队列页「查看作品信息」→ 历史页对应的那一行）：主色底呼吸三次，共 2.4s。
+ * 只上底色、不描边（业主 2026-10-23「高亮显示是没有边框的」）；节奏取 800ms × 3，
+ * 比初版的 600ms 慢一档（同批「闪烁速度稍微慢一点」）。
+ * 总时长与 `HistoryPage` 的 `FLASH_MS` 是同一件事的两半，改一处必须改另一处。
+ * 为什么要 keyframes 而不是 utility：行的常驻底色是 `bg-primary/15`（选中态），
+ * 「亮—暗—亮」这个往返 utility 表达不了；动画声明优先级高于普通声明，
+ * 所以闪烁期间能压过选中底色，结束后自动交还。颜色由层 2 的 `--color-primary` 派生，
+ * 不写 hex（`style-discipline` 守着这一条）。 */
+@theme {
+  --animate-row-flash: row-flash 800ms ease-in-out 3;
+}
+@keyframes row-flash {
+  0%,
+  100% {
+    background-color: transparent;
+  }
+  50% {
+    background-color: color-mix(in oklab, var(--color-primary) 22%, transparent);
+  }
+}
+
 /* —— 层 1：原始色板（唯一允许 hex 字面量之处）——
  * 中性色带一点蓝调（纯灰在 Windows 上显脏）；发丝线用实色而非白 alpha：
  * 工具风的可信度来自「线条恒定」，透明线会随底下内容变色。
@@ -365,6 +413,17 @@ body {
 /* 滚动条：Windows 默认常显粗槽在暗色界面里很刺眼，收成细槽（Chromium 121+ 标准属性） */
 * {
   scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
+}
+
+/* 静默滚动区（统计页平台表）：滑块默认透明，指针进到这块区域才浮出来。
+ * 只改颜色不改宽度 —— `scrollbar-width` 在 Chromium 里是占位式的，hover 时切换
+ * 会让内容宽度抖 8px；颜色透明则位置恒定，只是看不见。滚轮、键盘、触屏照常滚。 */
+.stat-scroll {
+  scrollbar-color: transparent transparent;
+}
+
+.stat-scroll:hover {
   scrollbar-color: var(--line-strong) transparent;
 }
 
