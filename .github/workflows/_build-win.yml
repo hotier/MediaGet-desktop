@@ -112,15 +112,17 @@ jobs:
           if (-not $blockmap) { throw "release/ 下缺少 *.exe.blockmap：增量更新会退化成整包下载" }
           Write-Host "  OK $($setup[0].Name) ($($setup[0].Length) 字节) + $($archive[0].Name) ($($archive[0].Length) 字节) + $ymlName + $($blockmap[0].Name)"
 
-      # 只留发布所需的四类文件：win-unpacked 有几万个文件、体积数倍于安装包，
-      # 传上去既慢又没人下载。
+      # 只留发布所需的产物：win-unpacked 有几万个文件、体积数倍于安装包，
+      # 传上去既慢又没人下载。更新清单按名字收两个——release/*.yml 会把
+      # electron-builder 的 builder-debug.yml 一起带进 Release。
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ inputs.artifact_name }}
           path: |
             release/*.exe
             release/*.7z
-            release/*.yml
+            release/latest.yml
+            release/beta.yml
             release/*.blockmap
           if-no-files-found: error
           retention-days: 14
