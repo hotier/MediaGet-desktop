@@ -1,7 +1,7 @@
 {
   "name": "mediaget-desktop",
   "productName": "MediaGet",
-  "version": "0.2.1",
+  "version": "0.3.0-beta.1",
   "description": "MediaGet 桌面客户端（Electron，Windows 首发）：解析 + 下载闭环，解析内核单一代码源来自 mediaGet。",
   "main": "dist-electron/main/index.js",
   "author": "hotier",
