@@ -67,7 +67,8 @@ function saveImportTemplate(fileName: string, mime: string): void {
   a.href = url;
   a.download = fileName;
   a.click();
-  URL.revokeObjectURL(url);
+  // 与历史页导出同一条纪律：立即 revoke 在慢盘/杀软扫描下可能取消保存
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 type ParsedHit = {
@@ -198,6 +199,11 @@ export default function HomePage({
 
   /** 手动解析（按钮 / Ctrl+Enter）：没有可提取链接时把原文交给引擎如实报错 */
   const parseManual = useCallback(() => {
+    // 手动解析先撤掉粘贴防抖：缓存命中时它先完成，600ms 后的定时器会再跑一轮
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+      debounceRef.current = null;
+    }
     const t = text.trim();
     if (!t) return;
     const tokens = candidateTokens(t);

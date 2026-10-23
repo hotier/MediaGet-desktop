@@ -136,3 +136,45 @@ describe("零敏感资产入包（铁律 3/§6.1）", () => {
     }
   });
 });
+
+describe("窗口导航守卫（§7 第 2 条）", () => {
+  // 主窗口曾只装 setWindowOpenHandler 漏掉 will-navigate：preload 会随导航重新注入，
+  // 一次同页跳转就把 window.mg 交给远程页面。守卫按窗口点名，别假设「全局配了」。
+  const windowFiles = walk(join(ROOT, "electron"), isSource).filter((p) =>
+    stripComments(readFileSync(p, "utf8")).includes("new BrowserWindow")
+  );
+
+  it("扫描到窗口工厂（防止 walk 失效后本条静默变绿）", () => {
+    expect(windowFiles.length).toBeGreaterThan(0);
+  });
+
+  it.each(windowFiles.map((f) => [relative(ROOT, f)]))(
+    "%s 同时装了 will-navigate 与 setWindowOpenHandler",
+    (relPath) => {
+      const src = stripComments(readFileSync(join(ROOT, relPath), "utf8"));
+      expect(src).toMatch(/\.on\(\s*["']will-navigate["']/);
+      expect(src).toContain("setWindowOpenHandler");
+    }
+  );
+});
+
+describe("URL 闸门单源（§7 第 3 条）", () => {
+  // P1-1 修的就是第二份判据：preview-link.ts 曾自带一套 BLOCKED_V4 / IPv6 展开，
+  // 与下载侧各自漂移过一次。私网段字面量只许活在 net-guard.ts，别处一律 import。
+  const sourceFiles = ["electron", "shared", "renderer", "types", "core-adapter", "scripts"]
+    .flatMap((dir) => walk(join(ROOT, dir), isSource))
+    .filter((p) => !p.endsWith(join("shared", "net-guard.ts")));
+
+  it("判据文件还在（防止改名后本条静默失去扫描对象）", () => {
+    expect(readFileSync(join(ROOT, "shared/net-guard.ts"), "utf8")).toContain("BLOCKED_V4");
+  });
+
+  it("除 shared/net-guard.ts 外没有第二份私网段判据", () => {
+    for (const file of sourceFiles) {
+      const src = stripComments(readFileSync(file, "utf8"));
+      expect(src, `${relative(ROOT, file)} 出现私网段判据，应 import shared/net-guard`).not.toMatch(
+        /0x64400000|0xa9fe0000|0xfc00|0xfe80|BLOCKED_V4/
+      );
+    }
+  });
+});

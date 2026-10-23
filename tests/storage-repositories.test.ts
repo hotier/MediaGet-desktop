@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -53,6 +53,25 @@ describe("settings repository", () => {
     const loaded = createSettingsRepository(db).loadConfig().settings;
     expect(loaded.minimizeToTray).toBe(DEFAULT_SETTINGS.minimizeToTray);
     expect(loaded.theme).toBe(DEFAULT_SETTINGS.theme);
+  });
+
+  it("坏设置档回落默认值而不是让启动期读配置抛错", () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const db = testDatabase();
+      db.run("INSERT INTO app_settings (key, value) VALUES ('settings', '{\"theme\":')");
+      expect(createSettingsRepository(db).loadConfig().settings).toEqual(DEFAULT_SETTINGS);
+
+      const shaped = testDatabase();
+      shaped.run(
+        "INSERT INTO app_settings (key, value) VALUES ('settings', ?)",
+        JSON.stringify({ theme: "neon" })
+      );
+      expect(createSettingsRepository(shaped).loadConfig().settings).toEqual(DEFAULT_SETTINGS);
+      expect(error).toHaveBeenCalledTimes(2);
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("does not include Cookie values in database errors", () => {

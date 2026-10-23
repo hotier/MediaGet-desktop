@@ -13,6 +13,7 @@ import { fmtBytes } from "../lib/format";
 import { CACHE_ITEMS as SETTINGS_CACHE_ITEMS } from "../lib/cache-items";
 import { SETTINGS_GLYPHS, type AnimGlyph } from "../lib/nav-icons";
 import { setFontSize, setTheme, setThemeStyle, setFontFamily } from "../lib/theme";
+import { toSettingsPatch } from "../lib/settings-patch";
 import {
   buildFilename,
   type FilenamePreset,
@@ -582,6 +583,7 @@ export default function SettingsPage({
   function doExit(): void {
     if (saved) {
       setTheme(saved.theme);
+      setThemeStyle(saved.themeStyle);
       setFontSize(saved.fontSizePx);
       setFontFamily(saved.fontFamily);
     }
@@ -602,7 +604,8 @@ export default function SettingsPage({
       else if (cookieClears[row.key]) cookies[row.key] = "";
     }
     try {
-      const next = await api.settings.set({ ...draft, cookies });
+      // 开关表只走各自的即时通道（草稿是进页时的旧快照）；Cookie 只提交本次编辑过的键
+      const next = await api.settings.set({ ...toSettingsPatch(draft), cookies });
       setSaved(next);
       setDraft(structuredClone(next));
       setCookieEdits({});
@@ -892,7 +895,7 @@ export default function SettingsPage({
 
       case "log": {
         return (
-          <ItemCard title="日志" desc="运行日志写到 userData/logs/app.log，超 2 MB 自动轮转。只记录运行事件，不写入 Cookie 与媒体直链。">
+          <ItemCard title="日志" desc="运行日志写到 userData/logs/app.log，超 2 MB 自动轮转。不写 Cookie；失败现场可含媒体直链，仅存本机。">
             <Row
               label="日志级别"
               hint="「关闭」不再写新行，已落盘文件用下方「清理日志」删除；保存后立即生效。"

@@ -219,6 +219,8 @@ export default function HistoryPage({
   const [exportFmt, setExportFmt] = useState<ExportFormat>("csv");
   // 全局 keydown 只挂一次，但 Ctrl+A 要读**最新的可见行键** —— 用 ref 桥接，避免把 rows 塞进依赖数组反复重挂
   const visibleKeysRef = useRef<string[]>([]);
+  // 筛选代次：翻页/全选在途时若筛选变了，旧页的行不能拼进新列表（游标属于旧查询）
+  const filterSeq = useRef(0);
 
   const dateFilter = useMemo(() => {
     if (timeRange === "all") return {};
@@ -237,6 +239,7 @@ export default function HistoryPage({
   }), [platform, dateFilter, query]);
 
   useEffect(() => {
+    filterSeq.current += 1;
     let active = true;
     setLoading(true);
     setList([]);
@@ -253,31 +256,42 @@ export default function HistoryPage({
 
   function loadMore(): void {
     if (!nextCursor || loading) return;
+    const seq = filterSeq.current;
     setLoading(true);
     void api.history.list({ ...serverFilter, cursor: nextCursor }).then((page) => {
+      // 筛选已变：这批行属于旧查询，拼进新列表会混页（含旧游标继续翻就更糟）
+      if (seq !== filterSeq.current) return;
       setList((current) => [...current, ...page.rows]);
       setNextCursor(page.nextCursor);
-    }).catch(() => toast.error("更多历史记录读取失败")).finally(() => setLoading(false));
+    }).catch(() => {
+      if (seq === filterSeq.current) toast.error("更多历史记录读取失败");
+    }).finally(() => {
+      if (seq === filterSeq.current) setLoading(false);
+    });
   }
 
   /** 跨页全选：逐页把筛选结果读进当前列表后再全选 —— 导出/重新解析需要行内容，
    *  只拿键的选择集会让这两个动作对未加载行静默跳过。 */
   async function selectAllFiltered(): Promise<void> {
     if (selectingAll) return;
+    const seq = filterSeq.current;
     setSelectingAll(true);
     try {
       let rows = list;
       let cursor = nextCursor;
       while (cursor) {
         const page = await api.history.list({ ...serverFilter, cursor });
+        // 遍历期间改了筛选：整批结果不再对应界面上的筛选，静默作废而不是混页
+        if (seq !== filterSeq.current) return;
         rows = [...rows, ...page.rows];
         cursor = page.nextCursor;
       }
+      if (seq !== filterSeq.current) return;
       setList(rows);
       setNextCursor(null);
       setSel({ keys: groupWorks(rows).map((row) => row.key), anchor: null });
     } catch {
-      toast.error("读取全部筛选结果失败");
+      if (seq === filterSeq.current) toast.error("读取全部筛选结果失败");
     } finally {
       setSelectingAll(false);
     }
@@ -382,7 +396,8 @@ export default function HistoryPage({
     a.href = url;
     a.download = fileName;
     a.click();
-    URL.revokeObjectURL(url);
+    // 立即 revoke 在慢盘/杀软扫描下可能让浏览器取不到内容：让出一轮事件循环再释放
+    setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   /** 文本档一律前置 BOM —— 记事本与 Excel 都靠它认 UTF-8，CSV 缺 BOM 中文直接成乱码。

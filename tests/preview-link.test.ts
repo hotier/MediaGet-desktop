@@ -181,11 +181,12 @@ describe("buildImageSrc（代理优先；回落只放行浏览器自己能安全
     expect(buildImageSrc(uri, "weibo")).toBe(uri);
   });
 
-  it("绝对 http(s) 回落原链（图床不吃 Referer 时少一跳；img-src 放行 https:）", () => {
-    expect(buildImageSrc("https://cdn.example.invalid/1.jpg", "douyin")).toBe(
-      "https://cdn.example.invalid/1.jpg"
-    );
-    expect(buildImageSrc("http://cdn.local/1.jpg", "douyin")).toBe("http://cdn.local/1.jpg");
+  it("闸门判不过的 http(s) 不回落原链（私网地址不能借 <img> 出网）", () => {
+    // 旧实现把「绝对 http(s)」当安全回落：cdn.example.invalid 只是 DNS 必败，
+    // 但同一分支会放行 http://cdn.local / http://127.0.0.1 —— 渲染层借此访问内网。
+    expect(buildImageSrc("https://cdn.example.invalid/1.jpg", "douyin")).toBeNull();
+    expect(buildImageSrc("http://cdn.local/1.jpg", "douyin")).toBeNull();
+    expect(buildImageSrc("http://127.0.0.1:8080/a.jpg", "douyin")).toBeNull();
   });
 
   // 事故形态本体：0.1.2 内核吐出来的站内相对路由。盘上存量（那段时间写进 history/queue 的

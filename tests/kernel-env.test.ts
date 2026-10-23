@@ -32,10 +32,15 @@ describe("kernel-env：Cookie 必须在内核求值之前铺进环境", () => {
     expect(specifiers.indexOf("./kernel-env")).toBeLessThan(specifiers.indexOf("./engine"));
   });
 
-  it("单实例锁模块不开库、不碰内核：只 import electron", () => {
+  it("单实例锁模块不开库、不碰内核：只 import electron 与 profile，且先分档再抢锁", () => {
     const lockSrc = readFileSync(new URL("../electron/main/single-instance.ts", import.meta.url), "utf8");
-    expect(importsInOrder(lockSrc)).toEqual(["electron"]);
-    expect(lockSrc).toMatch(/requestSingleInstanceLock\(\)/);
+    // profile 只依赖 electron 与 node:path，不触库；但它必须在抢锁前把 dev 的 userData 挪走，
+    // 否则 dev 会先占住打包版的单实例锁（两个实例没法并排做 A/B）
+    expect(importsInOrder(lockSrc)).toEqual(["electron", "./profile"]);
+    const profileAt = lockSrc.indexOf("applyProfile()");
+    const lockAt = lockSrc.indexOf("requestSingleInstanceLock()");
+    expect(profileAt).toBeGreaterThan(-1);
+    expect(profileAt).toBeLessThan(lockAt);
   });
 
   it("kernel-env 自己从本机设置库读 SECRET_CONFIG_KEYS 并写进 process.env", () => {

@@ -19,6 +19,7 @@ import { z } from "zod";
 import { IPC } from "./ipc";
 import { COOKIE_LOGIN_KEYS, type CookieLoginKey } from "../shared/cookie-login";
 import { SWITCHABLE_ENGINE_IDS } from "../shared/platforms";
+import { isSecretKey } from "../shared/secret-keys";
 
 const STR = z.string();
 export const DateKeySchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
@@ -341,8 +342,25 @@ export const AppSettingsSchema = z.object({
   // 安装只由关于页流式下载弹窗的「立即重启」触发，不作为开关暴露
 });
 
+/**
+ * `settings:set` 的 Cookie 入参：键只认登记过的机密键（`shared/secret-keys.ts`）。
+ *
+ * 出参/存档仍用宽松的 `z.record`（`AppSettingsSchema`）：旧盘上的键要能读出来、能删。
+ * 但**写**必须收窄——handler 会把每个非掩码键同时写进 `settings.cookies` 与 kernel_config，
+ * 而 kernel_config 里的 `YTDLP_BIN` / `FFMPEG_BIN` 是下一轮解析要 spawn 的路径。
+ */
+const SecretCookieMapSchema = z.record(STR, STR).superRefine((map, ctx) => {
+  for (const key of Object.keys(map)) {
+    if (!isSecretKey(key)) {
+      ctx.addIssue({ code: "custom", message: `未登记的 Cookie 键：${key}`, path: [key] });
+    }
+  }
+});
+
 /** 部分字段 set —— strict：未知键直接拒，避免把拼错的键当成「已保存」 */
-export const SettingsPatchSchema = AppSettingsSchema.partial().strict();
+export const SettingsPatchSchema = AppSettingsSchema.extend({ cookies: SecretCookieMapSchema })
+  .partial()
+  .strict();
 
 /**
  * settings:cookieLogin（v19）：打开登录窗口 → 登录后自动抓 Cookie。

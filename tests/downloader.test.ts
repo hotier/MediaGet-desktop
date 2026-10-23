@@ -125,6 +125,39 @@ describe("isSafeRemoteUrl（SSRF 闸门）", () => {
     expect(isSafeRemoteUrl("http://172.15.0.1/a")).toBe(true);
     expect(isSafeRemoteUrl("http://172.32.0.1/a")).toBe(true);
   });
+  it("IPv6 字面量 / 映射地址 / CGNAT / 基准测试段不再漏网", () => {
+    expect(isSafeRemoteUrl("http://[::1]/a")).toBe(false);
+    expect(isSafeRemoteUrl("http://[::ffff:127.0.0.1]/a")).toBe(false);
+    // WHATWG 会把上一条规范化成这个十六进制形，前缀匹配永远对不上
+    expect(isSafeRemoteUrl("http://[::ffff:7f00:1]/a")).toBe(false);
+    expect(isSafeRemoteUrl("http://[fd00::1]/a")).toBe(false);
+    expect(isSafeRemoteUrl("http://[fe80::1]/a")).toBe(false);
+    expect(isSafeRemoteUrl("http://100.64.0.1/a")).toBe(false);
+    expect(isSafeRemoteUrl("http://198.18.0.1/a")).toBe(false);
+    expect(isSafeRemoteUrl("https://user:pass@cdn.example.com/a.mp4")).toBe(false);
+    // 公网 IPv6 不误伤
+    expect(isSafeRemoteUrl("http://[2606:4700:4700::1111]/a")).toBe(true);
+  });
+  it("跟随重定向到私网：闸门在落点复检，任务失败且不落盘", async () => {
+    const dir = makeTempDir();
+    const { dl } = makeDownloader(
+      dir,
+      async () => {
+        const resp = fakeResponse(new TextEncoder().encode("SECRET"));
+        // 模拟 fetch follow 后的落点：`Response.url` 只读，但实例上可以覆盖出来
+        Object.defineProperty(resp, "url", { value: "http://169.254.169.254/latest/meta-data/" });
+        return resp;
+      },
+      1,
+      { retryBaseDelayMs: 10 }
+    );
+    const [taskId] = dl.enqueue([{ url: "https://cdn.example.com/a.mp4", filename: "a.mp4", kind: "video" }], "g");
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "error"), 8000);
+    expect(dl.list().find((t) => t.taskId === taskId)?.error).toBe("重定向后的地址不在公网范围，已中止下载");
+    expect(existsSync(join(dir, "a.mp4"))).toBe(false);
+    expect(existsSync(join(dir, "a.mp4.part"))).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
 });
 
 describe("resolveConflictPath（同名序号，只看最终文件）", () => {
@@ -706,7 +739,9 @@ describe("Downloader 403 自动续链", () => {
     // done 台账按隐私红线剥掉直链，运行中的新链只能从完成事件上取
     expect(events.find((e) => e.taskId === taskId && e.status === "done")?.url).toBe(NEW);
     expect(readFileSync(join(dir, "v.mp4"), "utf8")).toBe("FRESH-LINK");
-    expect(events.at(-1)?.note).toBe("直链已过期，已自动重新取链");
+    expect(events.at(-1)?.note).toBe(undefined);
+    // note 是一次性字段：只随续链成功那一条进度事件发出，后续每 200ms 的进度不再重复携带
+    expect(events.filter((e) => e.note === "直链已过期，已自动重新取链")).toHaveLength(1);
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -776,8 +811,87 @@ describe("Downloader 403 自动续链", () => {
   });
 });
 
+describe("416：.part 已到资源末尾（P1-2）", () => {
+  const URL = "https://cdn.example.com/v.mp4?video_id=1&sign=S1&expires=100";
+
+  it(".part 已完整 + 上游 416 → 按完成收尾，不报 HTTP 416", async () => {
+    const dir = makeTempDir();
+    writeFileSync(join(dir, "v.mp4.part"), "DONE");
+    writeFileSync(join(dir, "v.mp4.part.meta"), URL);
+    const { dl, history } = makeDownloader(dir, async () => new Response(null, { status: 416 }), 1, {
+      retryBaseDelayMs: 10,
+    });
+    const [taskId] = dl.enqueue([{ url: URL, filename: "v.mp4", kind: "video" }], "f1");
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "done"), 8000);
+    expect(readFileSync(join(dir, "v.mp4"), "utf8")).toBe("DONE");
+    // 历史/统计的 bytes 取落地后的真实大小
+    expect(history[0]?.groupTask.received).toBe(4);
+    expect(existsSync(join(dir, "v.mp4.part.meta"))).toBe(false);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("记录的总长比断点长 + 上游 416 → 清掉不可信断点，从头下一遍", async () => {
+    const dir = makeTempDir();
+    let calls = 0;
+    const { dl } = makeDownloader(
+      dir,
+      async (_input, init) => {
+        calls++;
+        const range = new Headers(init?.headers).get("range");
+        if (range === "bytes=4-") return new Response(null, { status: 416 });
+        // 第一次声明 8 字节只给 4 字节 → 完整性闸门保留断点并重试；重试拿到 416 后
+        // 记录的总长（8）仍大于断点（4），说明 .part 不可信，清掉从头下
+        const body = calls === 1 ? new TextEncoder().encode("HEAD") : new TextEncoder().encode("HEADTAIL");
+        return new Response(body as unknown as BodyInit, {
+          status: 200,
+          headers: { "content-length": calls === 1 ? "8" : String(body.byteLength) },
+        });
+      },
+      1,
+      { retryBaseDelayMs: 10 }
+    );
+    const [taskId] = dl.enqueue([{ url: URL, filename: "v.mp4", kind: "video" }], "f2");
+    await waitUntil(() => dl.list().some((t) => t.taskId === taskId && t.status === "done"), 8000);
+    expect(readFileSync(join(dir, "v.mp4"), "utf8")).toBe("HEADTAIL");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("pause 接受 queued（P1-4）", () => {
+  it("组暂停后，排队成员不会被 pump 接着拉起来", async () => {
+    const dir = makeTempDir();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { dl } = makeDownloader(
+      dir,
+      async (input) => {
+        if (String(input).includes("/a.mp4")) await gate;
+        return fakeResponse(new TextEncoder().encode("X"));
+      },
+      1
+    );
+    const ids = dl.enqueue(
+      [
+        { url: "https://cdn.example.com/a.mp4", filename: "a.mp4", kind: "video" },
+        { url: "https://cdn.example.com/b.mp4", filename: "b.mp4", kind: "video" },
+        { url: "https://cdn.example.com/c.mp4", filename: "c.mp4", kind: "video" },
+      ],
+      "g"
+    );
+    await waitUntil(() => dl.list().find((t) => t.taskId === ids[0])?.status === "downloading");
+    // 并发槽外的两条还在 queued：旧实现这里返回 false，a 一完成就会被 pump 拉起来
+    expect(dl.pause(ids[1])).toBe(true);
+    expect(dl.pause(ids[2])).toBe(true);
+    release();
+    await waitUntil(() => dl.list().find((t) => t.taskId === ids[0])?.status === "done", 8000);
+    await sleep(80);
+    expect(dl.list().find((t) => t.taskId === ids[1])?.status).toBe("paused");
+    expect(dl.list().find((t) => t.taskId === ids[2])?.status).toBe("paused");
+    rmSync(dir, { recursive: true, force: true });
+  });
+});
+
 /**
- * 「首次没下完，后续接着下」的两条保证（业主问题 2026-10-18）：
  * ① 直链没过期 → 靠 `.part` + `Range` 续（上面的 restore / pause 用例钉着）；
  * ② 直链过期了 → 403 续链拿新签名，`.part` 照旧接着写（`isSameResource` 判身份）。
  * 这里钉的是**第二类里最容易漏掉的两处**：重新解析后重新入队（新 URL 是新签名，不是新资源）、
@@ -942,7 +1056,7 @@ describe("DASH 双轨合流", () => {
     const dir = makeTempDir();
     const seen: string[] = [];
     let mergeArgs: string[] | null = null;
-    const { dl, events } = makeDownloader(dir, trackFetch(seen), 2, {
+    const { dl, events, history } = makeDownloader(dir, trackFetch(seen), 2, {
       retryBaseDelayMs: 1,
       tracks: {
         copyCached: async () => false,
@@ -962,6 +1076,10 @@ describe("DASH 双轨合流", () => {
     expect(mergeArgs?.[1]).toMatch(/a\.mp4\.part\.audio$/);
     const done = events.find((t) => t.status === "done");
     expect(done?.filePath && readFileSync(done.filePath, "utf8")).toBe("merged-file");
+    // 字节账以落地文件为准：两轨各 11 字节，合流产物 11 字节——历史/统计的 bytes 不能把
+    // 音频轨再算一遍（旧实现 received=22，每条 DASH 记录都比实际文件大一条音轨）
+    expect(done?.received).toBe(11);
+    expect(history[0]?.groupTask.received).toBe(11);
     // 两条轨的 part 是纯垃圾，完成后不许留在下载目录里
     expect(existsSync(join(dir, "a.mp4.part"))).toBe(false);
     expect(existsSync(join(dir, "a.mp4.part.audio"))).toBe(false);

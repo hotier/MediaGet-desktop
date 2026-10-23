@@ -29,16 +29,25 @@ export const shell = {
 
 
 const appListeners: Record<string, ((...a: unknown[]) => void)[]> = {};
+/** setPath 的落点：主进程入口会在抢锁前调 applyProfile() 把 dev 档 userData 挪走 */
+const appPaths: Record<string, string> = {};
 
 export const app = {
   requestSingleInstanceLock: () => true,
   setAppUserModelId: (_id: string) => {},
   getVersion: () => "0.0.0-test",
+  getName: () => "MediaGet",
   // headless 测试永远是「未打包」：自动更新的发布通道不该在测试里被挂载
   isPackaged: false,
   getPath: (name: string) => {
+    if (appPaths[name]) return appPaths[name];
     if (name === "userData") return process.env.MG_TEST_USERDATA || "/tmp/mg-userData";
+    if (name === "appData") return "/tmp/mg-appData";
+    if (name === "temp") return "/tmp/mg-temp";
     return "/tmp/mg-downloads";
+  },
+  setPath: (name: string, path: string) => {
+    appPaths[name] = path;
   },
   whenReady: () =>
     new Promise<void>(() => {

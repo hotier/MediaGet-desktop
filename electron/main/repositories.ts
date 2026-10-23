@@ -1,5 +1,5 @@
 import type { DatabaseHandle } from "./database";
-import { AppSettingsSchema, PersistedQueueTaskSchema } from "../../types/ipc-contract";
+import { AppSettingsSchema, HistoryEntrySchema, PersistedQueueTaskSchema } from "../../types/ipc-contract";
 import { randomUUID } from "node:crypto";
 import { displayName, resolveKey } from "../../shared/platforms";
 import { workKeyOf } from "../../shared/history";
@@ -64,20 +64,27 @@ export function createSettingsRepository(database: DatabaseHandle): SettingsRepo
       const stored = database.get<{ value: string }>("SELECT value FROM app_settings WHERE key = 'settings'");
       // 缺键按默认值兜底：契约字段会随版本增加，而库里的设置行只会写入当时的完整快照。
       // 缺键时直接 parse 会在升级后的第一次启动就抛错，等于让新增一个设置项变成破坏性变更。
-      const raw = stored ? (JSON.parse(stored.value) as Partial<AppSettings>) : {};
-      // v26 收窄：titleAuthorUnderscore 与连接符统一后的 titleAuthor 同义，读档时归一，
-      // 不让严格 parse 因一个已撤的枚举值把整份设置卡死
-      const legacyPreset = (raw as { filenamePreset?: string }).filenamePreset;
-      if (legacyPreset === "titleAuthorUnderscore") raw.filenamePreset = "titleAuthor";
-      const settings = AppSettingsSchema.parse({
-        ...DEFAULT_SETTINGS,
-        ...raw,
-        cookies: { ...DEFAULT_SETTINGS.cookies, ...(raw.cookies ?? {}) },
-        platformSwitches: { ...(raw.platformSwitches ?? {}) },
-        engineSwitches: { ...(raw.engineSwitches ?? {}) },
-        platformEngines: { ...(raw.platformEngines ?? {}) },
-        filenameExtra: { ...DEFAULT_SETTINGS.filenameExtra, ...(raw.filenameExtra ?? {}) },
-      });
+      // 坏档（手改/截断）同样回落默认值：队列与历史都做了逐行兜底，设置没有理由让启动期直接抛。
+      let settings: AppSettings;
+      try {
+        const raw = stored ? (JSON.parse(stored.value) as Partial<AppSettings>) : {};
+        // v26 收窄：titleAuthorUnderscore 与连接符统一后的 titleAuthor 同义，读档时归一，
+        // 不让严格 parse 因一个已撤的枚举值把整份设置卡死
+        const legacyPreset = (raw as { filenamePreset?: string }).filenamePreset;
+        if (legacyPreset === "titleAuthorUnderscore") raw.filenamePreset = "titleAuthor";
+        settings = AppSettingsSchema.parse({
+          ...DEFAULT_SETTINGS,
+          ...raw,
+          cookies: { ...DEFAULT_SETTINGS.cookies, ...(raw.cookies ?? {}) },
+          platformSwitches: { ...(raw.platformSwitches ?? {}) },
+          engineSwitches: { ...(raw.engineSwitches ?? {}) },
+          platformEngines: { ...(raw.platformEngines ?? {}) },
+          filenameExtra: { ...DEFAULT_SETTINGS.filenameExtra, ...(raw.filenameExtra ?? {}) },
+        });
+      } catch (e) {
+        console.error(`[settings] 设置档无法解析，回落到默认值：${e instanceof Error ? e.message : String(e)}`);
+        settings = structuredClone(DEFAULT_SETTINGS);
+      }
       const kernel = Object.fromEntries(
         database.all<{ key: string; value: string }>("SELECT key, value FROM kernel_config ORDER BY key").map(({ key, value }) => [key, value])
       );
@@ -171,6 +178,16 @@ function parseQueuePayload(json: string): PersistedQueueTask | null {
     return parsed.success ? parsed.data : null;
   } catch {
     // 坏行不应该让整页变空：跳过它，其余行照常返回
+    return null;
+  }
+}
+
+/** 历史行同理：一行被截断/手改过的 payload 不能让 history:list 整页抛 internal */
+function parseHistoryPayload(json: string): HistoryEntry | null {
+  try {
+    const parsed = HistoryEntrySchema.safeParse(JSON.parse(json));
+    return parsed.success ? parsed.data : null;
+  } catch {
     return null;
   }
 }
@@ -618,7 +635,11 @@ export function createHistoryRepository(database: DatabaseHandle): HistoryReposi
             `SELECT payload_json FROM history_entries WHERE work_key IN (${keys.map(() => "?").join(",")})
              ORDER BY created_at DESC, id DESC`,
             ...keys
-          ).map((row) => JSON.parse(row.payload_json) as HistoryEntry);
+          ).flatMap((row) => {
+            const entry = parseHistoryPayload(row.payload_json);
+            if (!entry) console.warn("[history] 跳过一条损坏的记录（payload 无法解析）");
+            return entry ? [entry] : [];
+          });
       const last = selected.at(-1);
       return {
         rows,

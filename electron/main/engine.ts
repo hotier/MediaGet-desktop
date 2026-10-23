@@ -215,7 +215,7 @@ export function createEngine(deps: EngineDeps) {
     () =>
       createYtdlpEngine({
         // 与 resources.ts 同键：用户自配 kernel.YTDLP_BIN > 随包释放（index.ts 的
-        // readKernelConfig 已接 resources.locate，二进制全部经 SHA-256 校验）
+        // readKernelConfig 已接 resources.locate；只有随包件做 SHA-256 校验，用户自备路径按设计不校验）
         getBinaryPath: () => deps.readKernelConfig("YTDLP_BIN"),
         getFfmpegPath: () => deps.readKernelConfig("FFMPEG_BIN"),
         // 平台 → Cookie 键名只从注册表查（redbook→XHS_COOKIE、instagram→IG_COOKIE

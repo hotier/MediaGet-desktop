@@ -150,13 +150,21 @@ function parseQueue(value: unknown, fingerprint: string): ParsedSource {
       throw new Error("Unable to migrate queue.json: a task has an unsupported shape; the original file was preserved");
     }
   });
+  // task_id 是主键：重复 id 会让整批 INSERT 抛错，首启迁移从此每次启动都失败且永不自愈
+  // （history 那份早就有同样的去重）。按 createdAt 保留最新一条，计数也用去重后的数量。
+  const byId = new Map<string, PersistedQueueTask>();
+  for (const task of tasks) {
+    const previous = byId.get(task.taskId);
+    if (!previous || task.createdAt >= previous.createdAt) byId.set(task.taskId, task);
+  }
+  const deduped = [...byId.values()];
   return {
     name: "queue",
     fingerprint,
-    rows: tasks.length,
+    rows: deduped.length,
     apply(db) {
       db.exec("DELETE FROM queue_tasks;");
-      for (const task of tasks) {
+      for (const task of deduped) {
         // Same rule as the repository write path: nonterminal rows keep URL and headers (restart
         // recovery and retry replay them as-is); a finished row drops both from the long-lived ledger.
         const safeTask: PersistedQueueTask =

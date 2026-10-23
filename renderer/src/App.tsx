@@ -151,12 +151,18 @@ export default function App(): React.ReactElement {
     ])
       .then(([active, failed]) => setTasks([...active.rows, ...failed.rows]))
       .catch(() => {});
+    const noted = new Set<string>();
     const offs = [
       api.download.onProgress((t) => {
         setTasks((prev) => upsert(prev, t));
-        // 403 自动续链成功时静默重试并通过 toast 告知用户
+        // 403 自动续链成功时用 toast 告知用户。note 在主进程里已是一次性字段，这里再按
+        // 「任务 + 话术」兜底：进度事件每 ~200ms 一条，去重一失手就是每秒 5 条同样的弹窗。
         if (t.note && t.status === "downloading") {
-          toast.info(t.note);
+          const key = `${t.taskId}:${t.note}`;
+          if (!noted.has(key)) {
+            noted.add(key);
+            toast.info(t.note);
+          }
         }
       }),
       api.download.onDone((t) => setTasks((prev) => upsert(prev, t))),

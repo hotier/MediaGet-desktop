@@ -20,6 +20,7 @@ import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { protocol } from "electron";
+import { isPublicFinalUrl } from "../../shared/net-guard";
 import { PREVIEW_SCHEME, readPreviewTarget } from "../../shared/preview-link";
 import { DESKTOP_USER_AGENT, refererFor } from "./hotlink";
 import { createImageCache, imageCacheKey, type ImageCache } from "./image-cache";
@@ -174,6 +175,11 @@ export function installPreviewProtocol(deps: { merger?: PreviewMerger; images?: 
     let upstream: Response;
     try {
       upstream = await fetch(target.url, { headers });
+      // 公网链 302 到内网仍会被 follow 打过去：解链时那道闸只盖住了发起地址
+      if (!isPublicFinalUrl(upstream.url)) {
+        await upstream.body?.cancel();
+        return new Response(null, { status: 502 });
+      }
       /**
        * 403 降一档重试：同一个图床对 Referer 的胃口并不统一——`weibo` 要站点域名那张，
        * `redbook` 有一档只认空 Referer（带了就 403），而我们只能发一个值。所以「带 Referer
@@ -187,6 +193,10 @@ export function installPreviewProtocol(deps: { merger?: PreviewMerger; images?: 
         const withoutReferer = { ...headers };
         delete withoutReferer.Referer;
         upstream = await fetch(target.url, { headers: withoutReferer });
+        if (!isPublicFinalUrl(upstream.url)) {
+          await upstream.body?.cancel();
+          return new Response(null, { status: 502 });
+        }
       }
     } catch {
       // 失败原因可能是 DNS、TLS、也可能是链被平台掐了——都不带直链，日志里也无从归因

@@ -55,7 +55,7 @@ jobs:
       - name: Build landing site
         run: pnpm run landing:build
 
-      - name: Verify artifact (five pages, relative refs, every local asset present)
+      - name: Verify artifact (all pages, relative refs, every local asset present)
         run: node scripts/verify-landing.cjs
 
       - uses: actions/upload-pages-artifact@v3

@@ -15,6 +15,7 @@ import { basename, extname } from "node:path";
 import { shell } from "electron";
 import { sanitizeFilename } from "@mediaget/parse-core";
 import { resolveKey } from "../../shared/platforms";
+import { isSecretKey } from "../../shared/secret-keys";
 import { refererFor } from "./hotlink";
 import { buildAuthorSnapshot } from "../../shared/author";
 import { parseHistoryEntry, workKeyOf } from "../../shared/history";
@@ -445,6 +446,9 @@ function sanitizeWithExt(name: string, maxLen: number): string {
       const entries = Object.entries(patch.cookies) as [string, string][];
       for (const [k, v] of entries) {
         if (v === "***") continue; // renderer 回传掩码 = 不修改
+        // 契约已按 SECRET_CONFIG_KEYS 收窄入参，这里再按同一张表判一次：写进 kernel 的键
+        // 会变成下一轮解析的 YTDLP_BIN/FFMPEG_BIN 候选，不能只靠「渲染层不会送」兜底
+        if (!isSecretKey(k)) continue;
         if (v === "") {
           delete next.settings.cookies[k];
           delete next.kernel[k];

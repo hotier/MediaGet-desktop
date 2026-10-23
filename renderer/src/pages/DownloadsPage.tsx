@@ -167,6 +167,8 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
   const [platform, setPlatform] = useState("");
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
   const searchRef = useRef<HTMLInputElement>(null);
+  // 筛选代次：翻页在途时筛选变了，旧游标的页不能拼进新列表
+  const filterSeq = useRef(0);
 
   const dateWindow = useMemo(() => {
     if (timeRange === "all") return null;
@@ -196,6 +198,7 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
   );
 
   useEffect(() => {
+    filterSeq.current += 1;
     let active = true;
     setLoading(true);
     setTasks([]);
@@ -246,15 +249,22 @@ export default function DownloadsPage({ onNav }: { onNav: OnNav }): React.ReactE
 
   function loadMore(): void {
     if (!nextCursor || loading) return;
+    const seq = filterSeq.current;
     setLoading(true);
     void api.download
       .list({ ...serverFilter, cursor: nextCursor })
       .then((page) => {
+        // 筛选已变：游标属于旧查询，旧页行拼进新列表就是混页
+        if (seq !== filterSeq.current) return;
         setTasks((current) => mergePage(current, page.rows));
         setNextCursor(page.nextCursor);
       })
-      .catch(() => toast.error("更多下载项读取失败"))
-      .finally(() => setLoading(false));
+      .catch(() => {
+        if (seq === filterSeq.current) toast.error("更多下载项读取失败");
+      })
+      .finally(() => {
+        if (seq === filterSeq.current) setLoading(false);
+      });
   }
 
   // 平台选项池来自注册表（不是当前已加载页）：选过一个平台也能切回别的，且不会因为
