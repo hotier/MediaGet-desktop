@@ -66,14 +66,15 @@ MediaGet Electron 桌面客户端（Windows 首发）。解析内核在 mediaGet
 - 文档 / 注释 / 勘误 → **不跑任何档**。界面文案、纯 className 与样式 → L0（typecheck + lint），改 `styles.css` 才加跑 `style-discipline` 那一个守卫。
 - 业务逻辑 / 纯函数 → 对应的 L1 单测，收尾 L3 一次。动 `types/**` 或 `electron/main/ipc.ts` → L2（`contract` / `boundaries` / `ipc` / `kernel-sync`）。
 - 新增 runtime 依赖、`resources/**`、打包链路 → 才 L4 与 `verify:binaries*`；主进程生命周期与像素/几何 → L5（实机人工，vitest 只吃 `tests/stubs/electron.ts`，测不到真窗口）。
-- **禁止**：没改代码就重跑同一档；每 edit 跑一次全量；用 `pnpm test` 去验只有 L5 才验得到的东西（假绿比不绿更坏）。几何/视觉用 dev server `127.0.0.1:5433`（mock 桥）人工核对，**不写进验收门**。
+- **禁止**：没改代码就重跑同一档；每 edit 跑一次全量；用 `pnpm test` 去验只有 L5 才验得到的东西（假绿比不绿更坏）。几何/视觉用 dev server `127.0.0.1:15433`（mock 桥）人工核对，**不写进验收门**。
 - 新测试只写两类：**纯函数/逻辑分支**，与**把一次事故钉成一条断言的回归守卫**。不写 UI 快照、不写依赖真网络的用例、不为 DOM 冒烟引 jsdom（test 依赖只保留 vitest）。源码扫描型守卫（`boundaries` 按文件生成用例、`style-discipline`、`toast-sonner`）会让纯样式/文案改动也能红，碰这三面跑**对应那一个**，不是全量。
 - 提交口由 husky 只卡 `eslint --fix` 与 commitlint，重量级判定留在 CI 与 `pnpm release`。本地少跑，兜底交给 CI。
 
 ## 本机的坑（配置里读不出来）
 
 - **`pnpm run build` 末段在本机被拦**：electron-builder 解包卸载器时 spawn 失败（exit null），是环境限制不是代码问题。本机验收用 `pnpm run build:app`，出包优先 `portable`。
-- **「UI 没变化」先看进程**：旧 Electron 实例持单实例锁会让新实例静默 `exit 0`，旧 vite 会占住 5433。重启 dev 前先按命令行把残留清干净。三档各有各的 userData：dev = `MediaGet-dev`、稳定版 = `MediaGet`、beta = `MediaGet (Beta)`，可以同时启动做 A/B；清数据只删对应那一档，别动另外两份。并排时全局快捷键 `Ctrl+Alt+V` 仍然只有一个实例能注册（系统级独占，不是分档失效）。
+- **「UI 没变化」先看进程**：旧 Electron 实例持单实例锁会让新实例静默 `exit 0`，旧 vite 会占住 15433。重启 dev 前先按命令行把残留清干净。三档各有各的 userData：dev = `MediaGet-dev`、稳定版 = `MediaGet`、beta = `MediaGet (Beta)`，可以同时启动做 A/B；清数据只删对应那一档，别动另外两份。并排时全局快捷键 `Ctrl+Alt+V` 仍然只有一个实例能注册（系统级独占，不是分档失效）。
+- **dev 起不来报 `EACCES`，别去找占用者**：`netstat` 查不到任何进程——WinNAT/WSL2 从系统动态端口范围（`netsh int ipv4 show dynamicport tcp`）里按 100 端口成批预留，落进保留段的端口 `listen` 直接被拒（5432 被 PostgreSQL 抢、5433 落进 5341–5440，都是这一类）。端口真源是 `vite.config.ts` 的 `server.port`，改它必须同时改 `package.json` 的 `dev:electron`（`wait-on tcp:` 与 `VITE_DEV_SERVER_URL` 两处），选动态范围之外的端口（现 15433）。
 - **dev/打包版并排时全局快捷键只有一个能注册**（`Ctrl+Alt+V` 同一键位，先启动者拿到）；这是并排运行的系统级限制，不是分档没生效。
 - renderer 走 HMR，**主进程/preload 改动必须重启 Electron**才生效。
 - Node 的全局 fetch 不读 Windows 系统代理：需要联网调试时导出 `HTTP_PROXY`/`HTTPS_PROXY` + `NODE_USE_ENV_PROXY=1`（git 则是另一个坑：`-c http.schannelCheckRevoke=false`）。

@@ -106,7 +106,7 @@
 | 现象 | 根因 | 口径 |
 |---|---|---|
 | `store.test.ts`「超过 500 条截断」在全量里偶尔 `Test timed out in 5000ms` | 505 次 `appendHistory` 每次 fsync 原子写；单文件跑 ≈2s，fork 并发 + 杀软拖到 5s 边缘 | **单独重跑该文件**确认即放行；不为此改被测实现、不加全局 `testTimeout`、不缩小用例（它钉的是 HISTORY_MAX 行为） |
-| agent-browser / headless Chrome 在本机挂起或空输出 | 环境限制 | 视觉/几何核对走用户已有的 dev server（127.0.0.1:5433）人工看，**不写进验收门**，也别为它折腾自动化 |
+| agent-browser / headless Chrome 在本机挂起或空输出 | 环境限制 | 视觉/几何核对走用户已有的 dev server（127.0.0.1:15433）人工看，**不写进验收门**，也别为它折腾自动化 |
 
 ## 8. 与 CI 的分工
 
