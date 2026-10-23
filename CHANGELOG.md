@@ -2,6 +2,18 @@
 
 本文件由 `pnpm release` 按 commit 前缀生成；用户可见的变化请在此基础上补一句人话。
 
+## [0.3.1](https://github.com/hotier/mediaGet-desktop/compare/v0.3.0-beta.1...v0.3.1) (2026-10-23)
+
+### 新增
+
+* **contract:** 内核版本与作者平台入载荷，契约升至 v38 ([07af65d](https://github.com/hotier/mediaGet-desktop/commit/07af65d4c3f3f4f4d0e85cea07dd5bab20b8f0ce))
+* **dash:** 分P独立资源与边缓存边播并升契约至 v36 ([37cd69b](https://github.com/hotier/mediaGet-desktop/commit/37cd69b85e88787688148ae7ffe02adebb6fc232))
+* **ui:** 预览加载态换品牌点阵、队列定位历史行、统计与引擎回执收尾 ([3014bac](https://github.com/hotier/mediaGet-desktop/commit/3014bac2bdf4d8d4976dc1406dc8ee52418bb55b))
+
+### 修复
+
+* **parse:** 重新解析跳过 24h 结果缓存 ([54a634b](https://github.com/hotier/mediaGet-desktop/commit/54a634b453ce30b51e694e5a25f4d807890c95b8))
+
 ## [0.2.1](https://github.com/hotier/mediaGet-desktop/compare/v0.2.0...v0.2.1) (2026-10-21)
 
 ### 新增
